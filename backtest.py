@@ -88,6 +88,7 @@ def resample_4h(df):
         return df
 
     def resample_4h(df):
+    def resample_4h(df):
     if df.empty:
         return df
     return df.resample("4h").agg({
@@ -98,14 +99,6 @@ def resample_4h(df):
         'Volume': 'sum'
     }).dropna()
 
-
-def download_timeframe(symbol, period, timeframe):
-    if timeframe == "4h":
-        raw_interval = "1h"
-    elif timeframe == "2h":
-        raw_interval = "1h"
-    else:
-        raw_interval = timeframe
 
     try:
         data = yf.download(
