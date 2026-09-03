@@ -692,4 +692,5 @@ if "all_rows" in st.session_state:
             })
         st.dataframe(pd.DataFrame(detail_table), use_container_width=True, hide_index=True)
     else:
-        st.info("لم توجد إشارات مكتملة لهذا Tim
+        st.info("لم توجد إشارات مكتملة لهذا Timeframe")
+    
