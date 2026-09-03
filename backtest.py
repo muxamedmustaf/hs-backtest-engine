@@ -88,7 +88,16 @@ def resample_4h(df):
         return df
 
     out = (
-        df.resample("4H")
+        def resample_4h(df):
+    # Beddel "4H" oo ka dhig "4h" xarfaha yar-yar
+    return df.resample("4h").agg({
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last',
+        'Volume': 'sum'
+    })
+    
         .agg({
             "Open": "first",
             "High": "max",
