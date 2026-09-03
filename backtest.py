@@ -126,7 +126,8 @@ def download_timeframe(symbol, period, timeframe):
 
     if timeframe == "2h":
         data = (
-            data.resample("2H")
+            data.resample("2h")
+
             .agg({
                 "Open": "first",
                 "High": "max",
