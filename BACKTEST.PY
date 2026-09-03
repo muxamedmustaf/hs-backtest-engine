@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -882,4 +883,694 @@ def build_summary_table(all_rows):
 
         reversed_head = int(
             sum(
-                x["hea
+                x["head_reversed_after_tp"]
+                for x in results
+            )
+        )
+
+        rows.append({
+            "Timeframe": timeframe,
+            "Signals": len(results),
+
+            "Shoulder TP": ss["tp"],
+            "Shoulder SL": ss["sl"],
+            "Shoulder OPEN": ss["open"],
+            "Shoulder Win %": round(
+                ss["win_rate"],
+                2
+            ),
+            "Shoulder Avg MFE %": round(
+                avg_mfe_shoulder,
+                2
+            ),
+            "Shoulder TP→Reversal": reversed_shoulder,
+
+            "Head TP": hs["tp"],
+            "Head SL": hs["sl"],
+            "Head OPEN": hs["open"],
+            "Head Win %": round(
+                hs["win_rate"],
+                2
+            ),
+            "Head Avg MFE %": round(
+                avg_mfe_head,
+                2
+            ),
+            "Head TP→Reversal": reversed_head
+        })
+
+    return pd.DataFrame(rows)
+
+
+def calculate_best_timeframe(summary_df):
+    """
+    الأفضلية تعتمد أساساً على:
+    1) Win Rate
+    2) TP count
+    3) Avg MFE
+    مع عدم اعتبار OPEN خسارة.
+    """
+    if summary_df.empty:
+        return None
+
+    temp = summary_df.copy()
+
+    temp["Best Win %"] = temp[
+        ["Shoulder Win %", "Head Win %"]
+    ].max(axis=1)
+
+    temp["Best TP"] = temp[
+        ["Shoulder TP", "Head TP"]
+    ].max(axis=1)
+
+    temp["Best MFE"] = temp[
+        ["Shoulder Avg MFE %", "Head Avg MFE %"]
+    ].max(axis=1)
+
+    temp = temp.sort_values(
+        by=[
+            "Best Win %",
+            "Best TP",
+            "Best MFE"
+        ],
+        ascending=False
+    )
+
+    return temp.iloc[0]
+
+
+# ==========================================================
+# التشغيل
+# ==========================================================
+
+if run:
+
+    if not symbol:
+        st.error("أدخل Symbol أولاً.")
+        st.stop()
+
+    if not timeframes:
+        st.error(
+            "اختر Timeframe واحداً على الأقل."
+        )
+        st.stop()
+
+    all_rows = {}
+    errors = []
+
+    progress = st.progress(
+        0,
+        text="بدء الاختبار..."
+    )
+
+    total_tf = len(timeframes)
+
+    for tf_index, timeframe in enumerate(timeframes):
+
+        progress.progress(
+            tf_index / total_tf,
+            text=f"اختبار {timeframe}..."
+        )
+
+        df, error = download_timeframe(
+            symbol,
+            period,
+            timeframe
+        )
+
+        if error:
+            errors.append({
+                "Timeframe": timeframe,
+                "Error": error
+            })
+
+        if df.empty:
+            continue
+
+        if len(df) < 60:
+            errors.append({
+                "Timeframe": timeframe,
+                "Error": (
+                    f"البيانات غير كافية "
+                    f"({len(df)} شمعة)."
+                )
+            })
+            continue
+
+        detections = run_engine_backtest(
+            df
+        )
+
+        results = []
+
+        for signal in detections:
+
+            try:
+                result = backtest_signal(
+                    signal,
+                    df,
+                    MAX_HOLDING_CANDLES
+                )
+
+                results.append(result)
+
+            except Exception:
+                continue
+
+        all_rows[timeframe] = {
+            "df": df,
+            "signals": detections,
+            "results": results
+        }
+
+    progress.progress(
+        1.0,
+        text="اكتمل الاختبار ✅"
+    )
+
+    st.session_state["all_rows"] = all_rows
+    st.session_state["errors"] = errors
+    st.session_state["symbol"] = symbol
+    st.session_state["period"] = period
+
+
+# ==========================================================
+# عرض النتائج
+# ==========================================================
+
+if "all_rows" in st.session_state:
+
+    all_rows = st.session_state["all_rows"]
+    errors = st.session_state.get(
+        "errors",
+        []
+    )
+
+    if not all_rows:
+        st.error(
+            "لم تتوفر بيانات صالحة للاختبار."
+        )
+        st.stop()
+
+    st.header("📊 النتائج الإجمالية")
+
+    summary_df = build_summary_table(
+        all_rows
+    )
+
+    # ------------------------------------------------------
+    # أفضل Timeframe
+    # ------------------------------------------------------
+
+    best = calculate_best_timeframe(
+        summary_df
+    )
+
+    if best is not None:
+
+        best_tf = best["Timeframe"]
+        best_win = best["Best Win %"]
+
+        st.success(
+            f"🏆 أفضل Timeframe حالياً: "
+            f"**{best_tf}** — أفضل Win Rate = "
+            f"**{best_win:.2f}%**"
+        )
+
+    # ------------------------------------------------------
+    # بطاقات عامة
+    # ------------------------------------------------------
+
+    total_signals = int(
+        sum(
+            len(x["results"])
+            for x in all_rows.values()
+        )
+    )
+
+    total_tp_shoulder = int(
+        sum(
+            sum(
+                r["shoulder_result"] == "TP"
+                for r in x["results"]
+            )
+            for x in all_rows.values()
+        )
+    )
+
+    total_tp_head = int(
+        sum(
+            sum(
+                r["head_result"] == "TP"
+                for r in x["results"]
+            )
+            for x in all_rows.values()
+        )
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "🔎 إجمالي الإشارات",
+        total_signals
+    )
+
+    c2.metric(
+        "🎯 TP — Shoulder SL",
+        total_tp_shoulder
+    )
+
+    c3.metric(
+        "🎯 TP — Head SL",
+        total_tp_head
+    )
+
+    c4.metric(
+        "⏱️ Timeframes",
+        len(all_rows)
+    )
+
+    # ------------------------------------------------------
+    # جدول مقارنة Timeframes
+    # ------------------------------------------------------
+
+    st.subheader(
+        "🏆 مقارنة جميع Timeframes"
+    )
+
+    display_summary = summary_df.copy()
+
+    st.dataframe(
+        display_summary,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # ------------------------------------------------------
+    # مقارنة SL بشكل مباشر
+    # ------------------------------------------------------
+
+    st.subheader(
+        "🛑 مقارنة SL: الكتف الأيمن مقابل الرأس"
+    )
+
+    comparison_rows = []
+
+    for _, row in summary_df.iterrows():
+
+        shoulder_win = row["Shoulder Win %"]
+        head_win = row["Head Win %"]
+
+        if shoulder_win > head_win:
+            best_sl = "Shoulder SL 🏆"
+        elif head_win > shoulder_win:
+            best_sl = "Head SL 🏆"
+        else:
+            best_sl = "تعادل"
+
+        comparison_rows.append({
+            "Timeframe": row["Timeframe"],
+            "Shoulder Win %": shoulder_win,
+            "Head Win %": head_win,
+            "الفرق %": round(
+                head_win - shoulder_win,
+                2
+            ),
+            "الأفضل": best_sl
+        })
+
+    st.dataframe(
+        pd.DataFrame(comparison_rows),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # ------------------------------------------------------
+    # TP / Reversal
+    # ------------------------------------------------------
+
+    st.subheader(
+        "🎯 تحليل TP والتجاوز والرجوع"
+    )
+
+    tp_rows = []
+
+    for timeframe, data in all_rows.items():
+
+        results = data["results"]
+
+        if not results:
+            continue
+
+        shoulder_tp = sum(
+            r["shoulder_result"] == "TP"
+            for r in results
+        )
+
+        head_tp = sum(
+            r["head_result"] == "TP"
+            for r in results
+        )
+
+        shoulder_reversal = sum(
+            r["shoulder_reversed_after_tp"]
+            for r in results
+        )
+
+        head_reversal = sum(
+            r["head_reversed_after_tp"]
+            for r in results
+        )
+
+        shoulder_extension = np.mean([
+            r["shoulder_tp_extension_pct"]
+            for r in results
+            if r["shoulder_result"] == "TP"
+        ]) if shoulder_tp else 0
+
+        head_extension = np.mean([
+            r["head_tp_extension_pct"]
+            for r in results
+            if r["head_result"] == "TP"
+        ]) if head_tp else 0
+
+        tp_rows.append({
+            "Timeframe": timeframe,
+            "Shoulder TP Hit": shoulder_tp,
+            "Shoulder TP→Reversal": shoulder_reversal,
+            "Shoulder Avg TP Extension %": round(
+                shoulder_extension,
+                2
+            ),
+            "Head TP Hit": head_tp,
+            "Head TP→Reversal": head_reversal,
+            "Head Avg TP Extension %": round(
+                head_extension,
+                2
+            )
+        })
+
+    st.dataframe(
+        pd.DataFrame(tp_rows),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # ------------------------------------------------------
+    # تفاصيل كل Timeframe
+    # ------------------------------------------------------
+
+    st.subheader(
+        "📋 تفاصيل الإشارات"
+    )
+
+    selected_tf = st.selectbox(
+        "اختر Timeframe لعرض كل الصفقات",
+        list(all_rows.keys())
+    )
+
+    selected_data = all_rows[
+        selected_tf
+    ]
+
+    detail_rows = selected_data[
+        "results"
+    ]
+
+    if detail_rows:
+
+        detail_table = []
+
+        for i, r in enumerate(
+            detail_rows,
+            start=1
+        ):
+
+            detail_table.append({
+                "#": i,
+                "النمط": r["pattern"],
+                "الاتجاه": r["direction"],
+                "وقت Entry": r["breakout_time"],
+                "Entry": round(
+                    r["entry"],
+                    6
+                ),
+                "TP": round(
+                    r["tp"],
+                    6
+                ),
+                "Shoulder SL": round(
+                    r["shoulder_sl"],
+                    6
+                ),
+                "Head SL": round(
+                    r["head_sl"],
+                    6
+                ),
+                "نتيجة Shoulder": r[
+                    "shoulder_result"
+                ],
+                "نتيجة Head": r[
+                    "head_result"
+                ],
+                "MFE Shoulder %": round(
+                    r["shoulder_mfe_pct"],
+                    2
+                ),
+                "MFE Head %": round(
+                    r["head_mfe_pct"],
+                    2
+                ),
+                "TP Extension Shoulder %": round(
+                    r["shoulder_tp_extension_pct"],
+                    2
+                ),
+                "TP Extension Head %": round(
+                    r["head_tp_extension_pct"],
+                    2
+                ),
+                "رجوع بعد TP Shoulder": (
+                    "نعم"
+                    if r[
+                        "shoulder_reversed_after_tp"
+                    ]
+                    else "لا"
+                ),
+                "رجوع بعد TP Head": (
+                    "نعم"
+                    if r[
+                        "head_reversed_after_tp"
+                    ]
+                    else "لا"
+                )
+            })
+
+        st.dataframe(
+            pd.DataFrame(detail_table),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    else:
+        st.info(
+            "لم توجد إشارات مكتملة لهذا Timeframe."
+        )
+
+    # ------------------------------------------------------
+    # عرض الشارت لإشارة محددة
+    # ------------------------------------------------------
+
+    st.subheader(
+        "📈 عرض إشارة على الشارت"
+    )
+
+    signals = selected_data[
+        "signals"
+    ]
+
+    if signals:
+
+        signal_index = st.selectbox(
+            "اختر الإشارة",
+            range(len(signals)),
+            format_func=lambda i:
+                f"{i + 1} — "
+                f"{signals[i]['breakout_time']} — "
+                f"{signals[i]['pattern']}"
+        )
+
+        sig = signals[
+            signal_index
+        ]
+
+        df = selected_data[
+            "df"
+        ]
+
+        start = max(
+            0,
+            sig["breakout_pos"] - 50
+        )
+
+        end = min(
+            len(df),
+            sig["breakout_pos"] + 40
+        )
+
+        chart_df = df.iloc[
+            start:end
+        ]
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Candlestick(
+                x=chart_df.index,
+                open=chart_df["Open"],
+                high=chart_df["High"],
+                low=chart_df["Low"],
+                close=chart_df["Close"],
+                name="Price"
+            )
+        )
+
+        nodes = sig.get(
+            "nodes",
+            []
+        )
+
+        if nodes:
+
+            x = []
+            y = []
+
+            for node in nodes:
+
+                try:
+                    x.append(
+                        node[0]
+                    )
+                    y.append(
+                        float(node[1])
+                    )
+                except Exception:
+                    pass
+
+            if x:
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=x,
+                        y=y,
+                        mode="lines+markers",
+                        name=sig[
+                            "pattern"
+                        ],
+                        line=dict(
+                            width=3
+                        ),
+                        marker=dict(
+                            size=8
+                        )
+                    )
+                )
+
+        # Entry
+        fig.add_hline(
+            y=sig["entry"],
+            line_dash="dash",
+            annotation_text="ENTRY"
+        )
+
+        # TP
+        fig.add_hline(
+            y=sig["tp"],
+            line_dash="dot",
+            annotation_text="TP"
+        )
+
+        # Shoulder SL
+        fig.add_hline(
+            y=sig["shoulder_sl"],
+            line_dash="dash",
+            annotation_text="Shoulder SL"
+        )
+
+        # Head SL
+        fig.add_hline(
+            y=sig["head_sl"],
+            line_dash="dash",
+            annotation_text="Head SL"
+        )
+
+        fig.update_layout(
+            template="plotly_white",
+            height=650,
+            xaxis_rangeslider_visible=False,
+            margin=dict(
+                l=10,
+                r=10,
+                t=30,
+                b=20
+            )
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
+
+    # ------------------------------------------------------
+    # معلومات قيود Yahoo
+    # ------------------------------------------------------
+
+    if errors:
+
+        st.warning(
+            "⚠️ بعض Timeframes لم تتوفر لها "
+            "البيانات المطلوبة من Yahoo Finance."
+        )
+
+        st.dataframe(
+            pd.DataFrame(errors),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # ------------------------------------------------------
+    # شرح منهجية الاختبار
+    # ------------------------------------------------------
+
+    with st.expander(
+        "ℹ️ منهجية الاختبار"
+    ):
+
+        st.markdown(
+            """
+**كيف يعمل الاختبار؟**
+
+- يتم تشغيل `engine.py` على البيانات التاريخية شمعةً بعد شمعة.
+- لا يتم إعطاء الـengine الشموع المستقبلية أثناء اكتشاف الإشارة.
+- يتم عدّ النمط مرة واحدة فقط حتى لا يتكرر نفس Head & Shoulders.
+- يتم استخدام Entry الذي أعاده `engine.py`.
+- في H&S العادي:
+  - Head SL = قمة الرأس.
+  - Shoulder SL = قمة الكتف الأيمن.
+- في Inverse H&S:
+  - Head SL = قاع الرأس.
+  - Shoulder SL = قاع الكتف الأيمن.
+- TP هو الهدف الذي أعاده `engine.py`.
+- إذا لامست شمعة واحدة TP وSL معاً، يتم احتساب SL أولاً كقاعدة محافظة.
+- إذا وصل السعر إلى TP ثم عاد إلى Entry، يتم تسجيل ذلك كـ **TP ثم Reversal** وليس كخسارة.
+- **MFE** يقيس أقصى حركة لصالح الصفقة بعد Entry.
+- `OPEN` تعني أن السعر لم يصل إلى TP أو SL قبل نهاية البيانات/مدة الاختبار.
+- أفضل Timeframe يتم اختياره بناءً على أفضل Win Rate، ثم عدد TP، ثم متوسط MFE.
+"""
+        )
+
+else:
+
+    st.info(
+        "اختر Symbol والفترة وTimeframes، "
+        "ثم اضغط 🚀 تشغيل الاختبار الكامل."
+    )
