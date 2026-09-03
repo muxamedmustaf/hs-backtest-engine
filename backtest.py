@@ -86,11 +86,6 @@ def normalize_ohlcv(df):
 def resample_4h(df):
     if df.empty:
         return df
-
-    def resample_4h(df):
-    def resample_4h(df):
-    if df.empty:
-        return df
     return df.resample("4h").agg({
         'Open': 'first',
         'High': 'max',
@@ -99,6 +94,20 @@ def resample_4h(df):
         'Volume': 'sum'
     }).dropna()
 
+def download_timeframe(symbol, period, timeframe):
+    raw_interval = "1h"
+    if timeframe == "5m":
+        raw_interval = "5m"
+    elif timeframe == "15m":
+        raw_interval = "15m"
+    elif timeframe == "30m":
+        raw_interval = "30m"
+    elif timeframe == "1h":
+        raw_interval = "1h"
+    elif timeframe in ["2h", "4h"]:
+        raw_interval = "1h"
+    elif timeframe == "1d":
+        raw_interval = "1d"
 
     try:
         data = yf.download(
@@ -120,7 +129,6 @@ def resample_4h(df):
     if timeframe == "2h":
         data = (
             data.resample("2h")
-
             .agg({
                 "Open": "first",
                 "High": "max",
@@ -687,4 +695,3 @@ if "all_rows" in st.session_state:
         st.dataframe(pd.DataFrame(detail_table), use_container_width=True, hide_index=True)
     else:
         st.info("لم توجد إشارات مكتملة لهذا Timeframe")
-    
