@@ -87,26 +87,17 @@ def resample_4h(df):
     if df.empty:
         return df
 
-    out = (
-        def resample_4h(df):
-    # Beddel "4H" oo ka dhig "4h" xarfaha yar-yar
+    def resample_4h(df):
+    if df.empty:
+        return df
     return df.resample("4h").agg({
         'Open': 'first',
         'High': 'max',
         'Low': 'min',
         'Close': 'last',
         'Volume': 'sum'
-    })
-    
-        .agg({
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last"
-        })
-        .dropna()
-    )
-    return out
+    }).dropna()
+
 
 def download_timeframe(symbol, period, timeframe):
     if timeframe == "4h":
