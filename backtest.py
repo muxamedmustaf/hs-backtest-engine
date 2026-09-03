@@ -90,9 +90,9 @@ def resample_4h(df):
         'Open': 'first',
         'High': 'max',
         'Low': 'min',
-        'Close': 'last',
-        'Volume': 'sum'
+        'Close': 'last'
     }).dropna()
+
 
 def download_timeframe(symbol, period, timeframe):
     raw_interval = "1h"
