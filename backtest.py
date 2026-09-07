@@ -22,29 +22,28 @@ st.markdown("""
 
 engine = importlib.reload(engine)
 
-# اختيار اللغة (العربية / English)
 lang = st.sidebar.radio("🌐 Language / اللغة", ["العربية", "English"], index=0)
 
 if lang == "العربية":
-    st.title("📊 نظام الاختبار الرجعي المتقدم للأنماط")
-    st.caption("إصدار دقيق يدمج الفواصل المنفصلة، تفاصيل الصفقات بالأرقام، التقرير الثنائي، وإخفاء الأصول الخالية من الصفقات.")
+    st.title("📊 نظام الاختبار الرجعي السريع للأنماط")
+    st.caption("أداء فائق السرعة يعتمد كلياً على دوال المحرك الأساسي.")
     txt_scan_mode = "طريقة اختيار الأصول:"
     txt_single = "بحث فردي"
     txt_sheet = "قائمة Google Sheet"
-    txt_small_tf = "الفواصل الزمنية الصغيرة والمتوسطة"
-    txt_large_tf = "الفواصل الزمنية الكبيرة"
+    txt_tf_label = "الفواصل الزمنية (Intervals):"
+    txt_period_label = "الفترة التاريخية للبيانات (Period):"
     txt_sl_strat = "استراتيجية وقف الخسارة:"
-    txt_run = "🚀 تشغيل الاختبار الشامل"
+    txt_run = "🚀 تشغيل الاختبار بأقصى سرعة"
 else:
-    st.title("📊 Advanced H&S True Backtester")
-    st.caption("Accurate engine integrating split timeframes, precise numerical trade logs, bilingual reports, and empty asset filtering.")
+    st.title("📊 High-Speed H&S True Backtester")
+    st.caption("Maximized execution speed relying entirely on engine core.")
     txt_scan_mode = "Asset Selection Method:"
     txt_single = "Single Asset"
     txt_sheet = "Google Sheet List"
-    txt_small_tf = "Small & Medium Timeframes"
-    txt_large_tf = "Large Timeframes"
+    txt_tf_label = "Timeframes (Intervals):"
+    txt_period_label = "Historical Data Period:"
     txt_sl_strat = "Stop Loss Strategy:"
-    txt_run = "🚀 Run Comprehensive Backtest"
+    txt_run = "🚀 Run Max-Speed Backtest"
 
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
 DEFAULT_SHEET_NAME = "GOLD"
@@ -67,33 +66,35 @@ else:
         symbols_to_test = fetched_symbols
         st.sidebar.success(f"تم تحميل {len(symbols_to_test)} أصل بنجاح!" if lang=="العربية" else f"Loaded {len(symbols_to_test)} assets!")
 
-# فصل الفواصل الزمنية إلى مجموعتين (صغيرة وكبيرة)
-small_tfs = st.sidebar.multiselect(txt_small_tf, ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"], default=["1h", "4h", "1d"])
-large_tfs = st.sidebar.multiselect(txt_large_tf, ["1wk", "1mo", "3mo", "6mo", "1y", "2y", "5y"], default=[])
-selected_tfs = small_tfs + large_tfs
+selected_tfs = st.sidebar.multiselect(
+    txt_tf_label, 
+    ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1wk", "1mo"], 
+    default=["1h", "4h", "1d"]
+)
+
+selected_period = st.sidebar.selectbox(
+    txt_period_label,
+    ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"],
+    index=4
+)
 
 sl_strategy = st.sidebar.radio(txt_sl_strat, ["الكل (Head & Shoulder)", "وقف الرأس فقط (Head SL)", "وقف الكتف فقط (Shoulder SL)"] if lang=="العربية" else ["All", "Head SL Only", "Shoulder SL Only"])
 run = st.sidebar.button(txt_run, use_container_width=True)
 
-def get_safe_period_for_tf(tf):
-    if tf in ["1m"]: return "7d"
-    elif tf in ["5m", "15m", "30m"]: return "60d"
-    elif tf in ["1h", "2h", "4h"]: return "730d"
-    else: return "5y"
-
 if run:
     if not symbols_to_test:
         st.error("⚠️ لا توجد أصول متاحة للاختبار.")
+    elif not selected_tfs:
+        st.error("⚠️ يرجى اختيار فاصل زمني واحد على الأقل.")
     else:
-        st.info("🚀 جاري بدء الاختبار الرجعي ومعالجة البيانات...")
+        st.info("🚀 جاري تنفيذ الاختبار الرجعي بأقصى سرعة...")
         
         for symbol in symbols_to_test:
             tf_results = []
             all_trades_detail = []
             
             for tf in selected_tfs:
-                fetch_period = get_safe_period_for_tf(tf)
-                df = yf.download(symbol, period=fetch_period, interval=tf, progress=False)
+                df = yf.download(symbol, period=selected_period, interval=tf, progress=False)
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                     
@@ -106,9 +107,14 @@ if run:
                     
                     trades = []
                     start_idx = min(100, len(df) // 2)
-                    for i in range(start_idx, len(df), max(1, len(df) // 40)):
+                    
+                    # تحسين السرعة عبر ضبط خطوة القفز لتفادي التكرارات المفرطة مع الحفاظ على دقة رصد الأنماط
+                    step_size = max(5, len(df) // 30)
+                    
+                    for i in range(start_idx, len(df), step_size):
                         df_slice = df.iloc[:i].copy()
                         
+                        # الاعتماد المطلق على وظائف المحرك الأساسية
                         df_ind = engine.calculate_indicators(df_slice)
                         df_ind = engine.calculate_zigzag(df_ind)
                         pivots = engine.get_chronological_pivots(df_ind)
@@ -120,7 +126,7 @@ if run:
                             if any(t.get("End_Idx") == end_idx and t.get("SL_Type") == sl_type_opt for t in trades):
                                 continue
                                 
-                            pattern_name = pat.get("pattern") # يحدد نوع النمط عادياً أو مقلوباً
+                            pattern_name = pat.get("pattern")
                             bias = pat.get("bias")
                             entry = pat.get("entry")
                             tp = pat.get("tp")
@@ -178,14 +184,13 @@ if run:
                             "Win Rate (%)": round(wr, 2)
                         })
             
-            # شرط منع ظهور الرموز التي بلا صفقات إلا في البحث الفردي
             if not tf_results:
                 if scan_mode == txt_single or scan_mode == "Single Asset":
                     with st.expander(f"📊 نتائج الفحص للرمز: {symbol}", expanded=True):
-                        st.warning("⚠️ لا توجد صفقات أو أنماط مسجلة لهذا الأصل بناءً على الشروط الحالية." if lang=="العربية" else "⚠️ No trades recorded for this asset.")
+                        st.warning("⚠️ لا توجد صفقات أو أنماط مسجلة لهذا الأصل بناءً على الفترة والفواصل المحددة." if lang=="العربية" else "⚠️ No trades recorded for this asset.")
                 continue
                 
-            with st.expander(f"📊 نتائج الفحص والتصفيقات للرمز: {symbol}", expanded=(len(symbols_to_test) == 1)):
+            with st.expander(f"📊 نتائج الفحص والصفقات للرمز: {symbol}", expanded=(len(symbols_to_test) == 1)):
                 res_df = pd.DataFrame(tf_results).sort_values(by="Win Rate (%)", ascending=False)
                 best_row = res_df.iloc[0]
                 
@@ -196,7 +201,6 @@ if run:
                 details_df = pd.DataFrame(all_trades_detail).drop(columns=["End_Idx"])
                 st.dataframe(details_df, use_container_width=True)
                 
-                # تقرير دقيق ومبني على النتائج الحقيقية (لا يعطي توصيات موجبة خاطئة إذا كانت النسبة ضعيفة)
                 wr_val = best_row['Win Rate (%)']
                 rec_action = "يوصى بالتداول" if wr_val >= 50 else "لا يُنصح بالتداول حالياً (نسبة النجاح ضعيفة)"
                 rec_action_en = "Recommended to trade" if wr_val >= 50 else "Not recommended (Low win rate)"
@@ -204,7 +208,7 @@ if run:
                 if lang == "العربية":
                     st.markdown(f"**📋 التقرير الشامل والتوصية الاستراتيجية للرمز: {symbol}**")
                     report_lines = [
-                        f"1. **إجمالي عدد الإشارات:** تم رصد ({sum(res_df['Total Signals'])} إشارة) تاريخية عبر الفواصل الزمنية المحددة.",
+                        f"1. **إجمالي عدد الإشارات:** تم رصد ({sum(res_df['Total Signals'])} إشارة) تاريخية عبر الفواصل والفترة المحددة ({selected_period}).",
                         f"2. **أفضل أداء:** حقق الفاصل ({best_row['Timeframe']}) أعلى كفاءة بنسبة نجاح بلغت {wr_val}% باستخدام ({best_row['SL Method']}).",
                         f"3. **تحليل المخاطر:** تم تقييم وتتبع الأوامر مع الأخذ بالاعتبار أسعار الدخول والوقف والأهداف الفعلية بدقة.",
                         f"4. **حالة الأداء:** بناءً على النتائج الفعلية، الأداء العام للصفقات لهذا الأصل يسجل معدل ربحية {wr_val}%.",
@@ -213,7 +217,7 @@ if run:
                 else:
                     st.markdown(f"**📋 Comprehensive Report & Strategic Recommendation for: {symbol}**")
                     report_lines = [
-                        f"1. **Total Signals:** Detected ({sum(res_df['Total Signals'])} historical signals) across selected timeframes.",
+                        f"1. **Total Signals:** Detected ({sum(res_df['Total Signals'])} historical signals) across selected timeframes and period ({selected_period}).",
                         f"2. **Best Performance:** Timeframe ({best_row['Timeframe']}) achieved highest success rate of {wr_val}% using ({best_row['SL Method']}).",
                         f"3. **Risk Analysis:** Orders and precise execution prices (Entry, SL, TP) were successfully tracked.",
                         f"4. **Performance State:** Based on actual metrics, overall win rate for this asset stands at {wr_val}%.",
@@ -222,4 +226,3 @@ if run:
                 
                 for line in report_lines:
                     st.markdown(line)
-                    
