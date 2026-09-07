@@ -4,13 +4,20 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import importlib
-import engine
 from datetime import datetime
 
+# Hubi in engine si sax ah loo soo dejiyay
+try:
+    import engine
+    engine = importlib.reload(engine)
+except Exception as e:
+    st.error(f"⚠️ Cillad ka jirta engine.py: {str(e)}")
+
+# Soo dejinta ffff.py si loo helo Google Sheets
 try:
     from ffff import get_symbols_from_sheet
 except ImportError:
-    st.error("⚠️ The file ffff.py was not found alongside backtest script")[span_0](start_span)[span_0](end_span)
+    st.error("⚠️ The file ffff.py was not found alongside backtest script")
 
 st.set_page_config(
     page_title="H&S Backtest Pro",
@@ -18,10 +25,12 @@ st.set_page_config(
     layout="wide"
 )
 
-engine = importlib.reload(engine)
-
 st.title("📊 H&S Backtest Pro")
 st.caption(
+    "اختبار تاريخي لـ Head & Shoulders و Inverse Head & Shoulders "
+    "باستخدام engine.py الحالي مع دعم Google Sheets."
+)
+
     "اختبار تاريخي لـ Head & Shoulders و Inverse Head & Shoulders "
     "باستخدام engine.py الحالي مع دعم Google Sheets."
 )[span_1](start_span)[span_1](end_span)
