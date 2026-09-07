@@ -53,7 +53,7 @@ else:
         symbols_to_test = []
     else:
         symbols_to_test = fetched_symbols
-        st.sidebar.success(f"تم تحميل {len(symbols_to_test)} أصل من Google Sheet بنجاح!")
+        st.sidebar.success(f"تم تحميل {len(symbols_to_test)} أصل من Google Sheet بنجاح!")[span_0](start_span)[span_0](end_span)
 
 period = st.sidebar.selectbox(
     "الفترة التاريخية",
@@ -64,7 +64,7 @@ period = st.sidebar.selectbox(
 timeframes = st.sidebar.multiselect(
     "Timeframes",
     ["5m", "15m", "30m", "1h", "2h", "4h", "1d"],
-    default=["5m", "15m", "30m", "1h", "2h", "4h", "1d"]
+    default=["1d"]
 )
 
 MAX_HOLDING_CANDLES = st.sidebar.number_input(
@@ -83,27 +83,41 @@ if run:
     if not symbols_to_test:
         st.error("⚠️ لا توجد أصول متاحة للاختبار. يرجى التحقق من بيانات الشيت أو المدخلات.")
     else:
-        st.info(f"🚀 جاري بدء الاختبار وتحليل {len(symbols_to_test)} أصل...")
+        st.info(f"🚀 جاري بدء الاختبار وتحليل {len(symbols_to_test)} أصل عبر engine.py...")
         
         for symbol in symbols_to_test:
             with st.expander(f"📊 نتائج الفحص للرمز: {symbol}", expanded=True):
-                try:
-                    st.write(f"جاري جلب وتحليل البيانات لـ {symbol}...")
-                    
-                    df = yf.download(symbol, period=period, interval="1d", progress=False)
-                    if df.empty:
-                        st.warning(f"⚠️ تعذر العثور على بيانات تاريخية للرمز {symbol}")
-                        continue
-                    
-                    # Ku xirirka engine.py adigoo hubinaya shaqooyinka la heli karo
-                    if hasattr(engine, 'run_backtest'):
-                        results = engine.run_backtest(df, symbol=symbol, timeframes=timeframes, max_holding=MAX_HOLDING_CANDLES)
-                        st.write(results)
-                    elif hasattr(engine, 'analyze'):
-                        results = engine.analyze(df)
-                        st.write(results)
-                    else:
-                        st.success(f"تم إتمام فحص الرمز {symbol} بنجاح عبر engine.py.")
+                for tf in timeframes:
+                    st.write(f"⏱️ فحص الفاصل الزمني ({tf})...")
+                    try:
+                        df = yf.download(symbol, period=period, interval=tf, progress=False)
+                        if df.empty:
+                            st.warning(f"⚠️ تعذر العثور على بيانات تاريخية للرمز {symbol} على الفاصل {tf}")
+                            continue
                         
-                except Exception as e:
-                    st.error(f"حدث خطأ أثناء معالجة الرمز {symbol}: {str(e)}")
+                        # تنظيف الأعمدة المتعددة لو وجدت في yfinance
+                        if isinstance(df.columns, pd.MultiIndex):
+                            df.columns = df.columns.get_level_values(0)
+
+                        # استدعاء دالة التحليل الأساسية من engine.py[span_1](start_span)[span_1](end_span)
+                        analysis_result = engine.run_full_analysis(df)
+                        
+                        signal = analysis_result.get("signal", "WAITING")
+                        pattern = analysis_result.get("pattern", "NO PATTERN DETECTED")
+                        bias = analysis_result.get("bias", "Neutral")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("الإشارة (Signal)", signal)
+                        col2.metric("النمط (Pattern)", pattern)
+                        col3.metric("التحيز (Bias)", bias)
+                        col4.metric("عدد الأنماط المكتشفة", len(analysis_result.get("all_patterns", [])))
+                        
+                        if signal != "WAITING":
+                            st.success(f"🎯 نقطة الدخول (Entry): {analysis_result.get('entry')}")
+                            st.info(f"🛑 وقف الخسارة (SL): {analysis_result.get('sl')} | 🎯 الهدف (TP): {analysis_result.get('tp')}")
+                        else:
+                            st.write("💤 لا توجد إشارة قوية مطابقة للشروط الحالية.")
+                            
+                    except Exception as e:
+                        st.error(f"حدث خطأ أثناء معالجة الرمز {symbol} على الفاصل {tf}: {str(e)}")
+                        
