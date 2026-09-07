@@ -98,7 +98,8 @@ if run:
                         continue
                     
                     # استدعاء دوال المحاكاة من engine.py (تأكد من مطابقة أسماء الدوال في ملف engine.py لديك)
-                    st.success(تم إتمام فحص الرمز {symbol} بنجاح.)
+                    st.success(f"تم إتمام فحص الرمز {symbol} بنجاح.")
+
                     
                 except Exception as e:
                     st.error(f"حدث خطأ أثناء معالجة الرمز {symbol}: {str(e)}")
