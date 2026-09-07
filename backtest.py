@@ -31,6 +31,7 @@ st.caption(
     "باستخدام engine.py الحالي مع دعم Google Sheets."
 )
 
+
     "اختبار تاريخي لـ Head & Shoulders و Inverse Head & Shoulders "
     "باستخدام engine.py الحالي مع دعم Google Sheets."
 )[span_1](start_span)[span_1](end_span)
