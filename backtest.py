@@ -82,4 +82,21 @@ run = st.sidebar.button(
     use_container_width=True
 )
 
+if run:
+    if not symbols_to_test:
+        st.error("⚠️ لا توجد أصول متاحة للاختبار. يجدر التحقق من بيانات Google Sheet أو المدخلات.")
+    else:
+        st.success(لنبداء! جاري فحص واختبار {len(symbols_to_test)} أصل...)
+        
+        # حلقة التكرار لتشغيل المحاكاة على كل رمز تم جذبه
+        for symbol in symbols_to_test:
+            st.write(f"--- فحص الرمز: {symbol} ---")
+            try:
+                # [هنا يتم استدعاء دالة الـ engine الخاصة بك لكل symbol]
+                # tusaale: run_backtest_for_symbol(symbol, period, timeframes, ...)
+                pass
+            except Exception as e:
+                st.error(f"خطأ في الرمز {symbol}: {str(e)}")
+                
+
 # [Qaybaha kale ee koodka sida normalize_ohlcv, resample_4h, download_timeframe, iwm. waxay ahaanayaan sidoodii hore...]
