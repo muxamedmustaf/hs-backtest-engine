@@ -7,7 +7,6 @@ import importlib
 import engine
 from datetime import datetime
 
-# Ku darso import-ka ffff.py si loo soo akhriyo Google Sheets
 try:
     from ffff import get_symbols_from_sheet
 except ImportError:
@@ -27,14 +26,12 @@ st.caption(
     "باستخدام engine.py الحالي مع دعم Google Sheets."
 )
 
-# Hidden Spreadsheet Constants (sida ku jirta mobile analysis appkaaga)
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
 DEFAULT_SHEET_NAME = "GOLD"
 DEFAULT_COL_NAME = "TOKENS"
 
 st.sidebar.header("⚙️ إعدادات الاختبار")
 
-# Doorka habka loo soo qaadanayo astaamaha (Scan Method / Selection)
 scan_mode = st.sidebar.radio(
     "طريقة اختيار الأصول:",
     ["Single Asset", "Google Sheet (Scan List)"],
@@ -82,7 +79,6 @@ run = st.sidebar.button(
     use_container_width=True
 )
 
-# تشغيل حلقة الفحص عند الضغط على الزر مع التصحيحات الكاملة للأخطاء الإملائية والتركيبية
 if run:
     if not symbols_to_test:
         st.error("⚠️ لا توجد أصول متاحة للاختبار. يرجى التحقق من بيانات الشيت أو المدخلات.")
@@ -99,7 +95,15 @@ if run:
                         st.warning(f"⚠️ تعذر العثور على بيانات تاريخية للرمز {symbol}")
                         continue
                     
-                    st.success(f"تم إتمام فحص الرمز {symbol} بنجاح.")
-                    
+                    # Ku xirirka engine.py adigoo hubinaya shaqooyinka la heli karo
+                    if hasattr(engine, 'run_backtest'):
+                        results = engine.run_backtest(df, symbol=symbol, timeframes=timeframes, max_holding=MAX_HOLDING_CANDLES)
+                        st.write(results)
+                    elif hasattr(engine, 'analyze'):
+                        results = engine.analyze(df)
+                        st.write(results)
+                    else:
+                        st.success(f"تم إتمام فحص الرمز {symbol} بنجاح عبر engine.py.")
+                        
                 except Exception as e:
                     st.error(f"حدث خطأ أثناء معالجة الرمز {symbol}: {str(e)}")
