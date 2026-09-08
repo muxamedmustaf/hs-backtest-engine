@@ -107,66 +107,64 @@ if run:
                     
                     trades = []
                     start_idx = min(100, len(df) // 2)
-                    
-                    # تحسين السرعة عبر ضبط خطوة القفز لتفادي التكرارات المفرطة مع الحفاظ على دقة رصد الأنماط
                     step_size = max(5, len(df) // 30)
                     
                     for i in range(start_idx, len(df), step_size):
                         df_slice = df.iloc[:i].copy()
                         
-                        # الاعتماد المطلق على وظائف المحرك الأساسية
                         df_ind = engine.calculate_indicators(df_slice)
                         df_ind = engine.calculate_zigzag(df_ind)
                         pivots = engine.get_chronological_pivots(df_ind)
                         patterns = engine.detect_all_head_shoulders(pivots, df_ind)
                         
                         if patterns:
-                            pat = patterns[-1]
-                            end_idx = pat.get("neckline_end_idx")
-                            if any(t.get("End_Idx") == end_idx and t.get("SL_Type") == sl_type_opt for t in trades):
-                                continue
-                                
-                            pattern_name = pat.get("pattern")
-                            bias = pat.get("bias")
-                            entry = pat.get("entry")
-                            tp = pat.get("tp")
-                            
-                            if sl_type_opt == "Head SL":
-                                sl = pat.get("sl")
-                            else:
-                                nodes = pat.get("nodes", [])
-                                if bias == "Bearish" and len(nodes) >= 4:
-                                    sl = max(nodes[1][1], nodes[3][1])
-                                elif bias == "Bullish" and len(nodes) >= 4:
-                                    sl = min(nodes[1][1], nodes[3][1])
-                                else:
-                                    sl = pat.get("sl")
-                            
-                            future_df = df.loc[end_idx:].iloc[1:]
-                            outcome = "OPEN"
-                            exit_date = str(end_idx)
-                            for f_idx, row in future_df.iterrows():
-                                h, l = row["High"], row["Low"]
-                                if bias == "Bearish":
-                                    if h >= sl: outcome = "LOSS"; exit_date = str(f_idx); break
-                                    elif l <= tp: outcome = "WIN"; exit_date = str(f_idx); break
-                                elif bias == "Bullish":
-                                    if l <= sl: outcome = "LOSS"; exit_date = str(f_idx); break
-                                    elif h >= tp: outcome = "WIN"; exit_date = str(f_idx); break
+                            # [تحسين 1 & 2]: تجميع كافة الإشارات المكتشفة في الفترة وعدم الاكتفاء بالإشارة الأخيرة، مع منع تكرار عد نفس الإشارة
+                            for pat in patterns:
+                                end_idx = pat.get("neckline_end_idx")
+                                if any(t.get("End_Idx") == end_idx and t.get("SL_Type") == sl_type_opt for t in trades):
+                                    continue
                                     
-                            trades.append({
-                                "Symbol": symbol,
-                                "TF": tf,
-                                "Pattern Type": pattern_name,
-                                "SL_Type": sl_type_opt,
-                                "Date": str(end_idx),
-                                "Exit Date": exit_date,
-                                "Entry": round(entry, 4),
-                                "SL": round(sl, 4),
-                                "TP": round(tp, 4),
-                                "Outcome": outcome,
-                                "End_Idx": end_idx
-                            })
+                                pattern_name = pat.get("pattern")
+                                bias = pat.get("bias")
+                                entry = pat.get("entry")
+                                tp = pat.get("tp")
+                                
+                                if sl_type_opt == "Head SL":
+                                    sl = pat.get("sl")
+                                else:
+                                    nodes = pat.get("nodes", [])
+                                    if bias == "Bearish" and len(nodes) >= 4:
+                                        sl = max(nodes[1][1], nodes[3][1])
+                                    elif bias == "Bullish" and len(nodes) >= 4:
+                                        sl = min(nodes[1][1], nodes[3][1])
+                                    else:
+                                        sl = pat.get("sl")
+                                
+                                future_df = df.loc[end_idx:].iloc[1:]
+                                outcome = "OPEN"
+                                exit_date = str(end_idx)
+                                for f_idx, row in future_df.iterrows():
+                                    h, l = row["High"], row["Low"]
+                                    if bias == "Bearish":
+                                        if h >= sl: outcome = "LOSS"; exit_date = str(f_idx); break
+                                        elif l <= tp: outcome = "WIN"; exit_date = str(f_idx); break
+                                    elif bias == "Bullish":
+                                        if l <= sl: outcome = "LOSS"; exit_date = str(f_idx); break
+                                        elif h >= tp: outcome = "WIN"; exit_date = str(f_idx); break
+                                        
+                                trades.append({
+                                    "Symbol": symbol,
+                                    "TF": tf,
+                                    "Pattern Type": pattern_name,
+                                    "SL_Type": sl_type_opt,
+                                    "Date": str(end_idx),
+                                    "Exit Date": exit_date,
+                                    "Entry": round(entry, 4),
+                                    "SL": round(sl, 4),
+                                    "TP": round(tp, 4),
+                                    "Outcome": outcome,
+                                    "End_Idx": end_idx
+                                })
                     
                     if trades:
                         tdf = pd.DataFrame(trades)
@@ -202,27 +200,34 @@ if run:
                 st.dataframe(details_df, use_container_width=True)
                 
                 wr_val = best_row['Win Rate (%)']
+                total_signals_all = res_df['Total Signals'].sum()
+                total_wins_all = res_df['Wins'].sum()
+                total_losses_all = res_df['Losses'].sum()
+                overall_wr = round((total_wins_all / (total_wins_all + total_losses_all)) * 100, 2) if (total_wins_all + total_losses_all) > 0 else 0
+                
                 rec_action = "يوصى بالتداول" if wr_val >= 50 else "لا يُنصح بالتداول حالياً (نسبة النجاح ضعيفة)"
                 rec_action_en = "Recommended to trade" if wr_val >= 50 else "Not recommended (Low win rate)"
                 
+                # [تحسين 3 & 4]: تقرير ذكي ومحدث يعكس البيانات والنتائج المجمعة بدقة ومقارنة نسب النجاح الكلية
                 if lang == "العربية":
-                    st.markdown(f"**📋 التقرير الشامل والتوصية الاستراتيجية للرمز: {symbol}**")
+                    st.markdown(f"**📋 التقرير الشامل والتحليل الذكي للرمز: {symbol}**")
                     report_lines = [
-                        f"1. **إجمالي عدد الإشارات:** تم رصد ({sum(res_df['Total Signals'])} إشارة) تاريخية عبر الفواصل والفترة المحددة ({selected_period}).",
-                        f"2. **أفضل أداء:** حقق الفاصل ({best_row['Timeframe']}) أعلى كفاءة بنسبة نجاح بلغت {wr_val}% باستخدام ({best_row['SL Method']}).",
-                        f"3. **تحليل المخاطر:** تم تقييم وتتبع الأوامر مع الأخذ بالاعتبار أسعار الدخول والوقف والأهداف الفعلية بدقة.",
-                        f"4. **حالة الأداء:** بناءً على النتائج الفعلية، الأداء العام للصفقات لهذا الأصل يسجل معدل ربحية {wr_val}%.",
-                        f"5. **التوصية النهائية:** {rec_action} على فاصل **{best_row['Timeframe']}** باستخدام وقف **{best_row['SL Method']}**."
+                        f"1. **إجمالي الإشارات المجمعة:** تم رصد وتجميع عدد ({total_signals_all} إشارة فريدة) عبر كافة الفواصل الزمنية المحددة خلال فترة ({selected_period}) دون أي تكرار.",
+                        f"2. **أداء النسبة المئوية العامة:** حقق الأداء الكلي للأصل معدل نجاح عام بنسبة **{overall_wr}%** (إجمالي الصفقات الرابحة: {total_wins_all}, الخاسرة: {total_losses_all}).",
+                        f"3. **الفاصل الأفضل مقارنةً:** تصدر الفاصل الزمني ({best_row['Timeframe']}) باستخدام طريقة ({best_row['SL Method']}) كأفضل أداء بنسبة نجاح بلغت **{wr_val}%**.",
+                        f"4. **تحليل المخاطر:** تم تتبع مستويات الدخول وأوامر الوقف والأهداف الفعلية لكل إشارة بدقة متناهية لتقييم كفاءة الاستراتيجية.",
+                        f"5. **التوصية النهائية:** {rec_action} على فاصل **{best_row['Timeframe']}** بناءً على أعلى نسبة نجاح مسجلة."
                     ]
                 else:
-                    st.markdown(f"**📋 Comprehensive Report & Strategic Recommendation for: {symbol}**")
+                    st.markdown(f"**📋 Comprehensive Smart Report & Analysis for: {symbol}**")
                     report_lines = [
-                        f"1. **Total Signals:** Detected ({sum(res_df['Total Signals'])} historical signals) across selected timeframes and period ({selected_period}).",
-                        f"2. **Best Performance:** Timeframe ({best_row['Timeframe']}) achieved highest success rate of {wr_val}% using ({best_row['SL Method']}).",
-                        f"3. **Risk Analysis:** Orders and precise execution prices (Entry, SL, TP) were successfully tracked.",
-                        f"4. **Performance State:** Based on actual metrics, overall win rate for this asset stands at {wr_val}%.",
-                        f"5. **Final Recommendation:** {rec_action_en} on **{best_row['Timeframe']}** with **{best_row['SL Method']}**."
+                        f"1. **Total Aggregated Signals:** Collected ({total_signals_all} unique signals) across all selected timeframes and period ({selected_period}) without duplication.",
+                        f"2. **Overall Success Rate:** The asset achieved an aggregate win rate of **{overall_wr}%** (Total Wins: {total_wins_all}, Losses: {total_losses_all}).",
+                        f"3. **Best Performing Configuration:** Timeframe ({best_row['Timeframe']}) with ({best_row['SL Method']}) led with a success rate of **{wr_val}%**.",
+                        f"4. **Risk Analysis:** Exact execution prices (Entry, SL, TP) were tracked for every single pattern to ensure strict evaluation.",
+                        f"5. **Final Recommendation:** {rec_action_en} on **{best_row['Timeframe']}** based on the highest comparative win rate."
                     ]
                 
                 for line in report_lines:
                     st.markdown(line)
+                
