@@ -106,8 +106,9 @@ if run:
                         continue
                     
                     trades = []
-                    start_idx = min(100, len(df) // 2)
-                    step_size = max(5, len(df) // 30)
+                    # البدء من الشمعات المبكرة (بعد اكتمال المؤشرات كحد أدنى 60 شمعة) لتغطية كامل الفترة المختبرة
+                    start_idx = 60
+                    step_size = 1  # فحص تسلسلي دقيق لضمان عدم تفويت أي إشارة عبر التاريخ المختار
                     
                     for i in range(start_idx, len(df), step_size):
                         df_slice = df.iloc[:i].copy()
@@ -118,7 +119,6 @@ if run:
                         patterns = engine.detect_all_head_shoulders(pivots, df_ind)
                         
                         if patterns:
-                            # [تحسين 1 & 2]: تجميع كافة الإشارات المكتشفة في الفترة وعدم الاكتفاء بالإشارة الأخيرة، مع منع تكرار عد نفس الإشارة
                             for pat in patterns:
                                 end_idx = pat.get("neckline_end_idx")
                                 if any(t.get("End_Idx") == end_idx and t.get("SL_Type") == sl_type_opt for t in trades):
@@ -208,11 +208,10 @@ if run:
                 rec_action = "يوصى بالتداول" if wr_val >= 50 else "لا يُنصح بالتداول حالياً (نسبة النجاح ضعيفة)"
                 rec_action_en = "Recommended to trade" if wr_val >= 50 else "Not recommended (Low win rate)"
                 
-                # [تحسين 3 & 4]: تقرير ذكي ومحدث يعكس البيانات والنتائج المجمعة بدقة ومقارنة نسب النجاح الكلية
                 if lang == "العربية":
                     st.markdown(f"**📋 التقرير الشامل والتحليل الذكي للرمز: {symbol}**")
                     report_lines = [
-                        f"1. **إجمالي الإشارات المجمعة:** تم رصد وتجميع عدد ({total_signals_all} إشارة فريدة) عبر كافة الفواصل الزمنية المحددة خلال فترة ({selected_period}) دون أي تكرار.",
+                        f"1. **إجمالي الإشارات المجمعة:** تم رصد وتجميع عدد ({total_signals_all} إشارة فريدة) عبر كافة الفواصل الزمنية المحددة طوال الفترة التاريخية ({selected_period}) دون استثناء أو تكرار.",
                         f"2. **أداء النسبة المئوية العامة:** حقق الأداء الكلي للأصل معدل نجاح عام بنسبة **{overall_wr}%** (إجمالي الصفقات الرابحة: {total_wins_all}, الخاسرة: {total_losses_all}).",
                         f"3. **الفاصل الأفضل مقارنةً:** تصدر الفاصل الزمني ({best_row['Timeframe']}) باستخدام طريقة ({best_row['SL Method']}) كأفضل أداء بنسبة نجاح بلغت **{wr_val}%**.",
                         f"4. **تحليل المخاطر:** تم تتبع مستويات الدخول وأوامر الوقف والأهداف الفعلية لكل إشارة بدقة متناهية لتقييم كفاءة الاستراتيجية.",
@@ -221,7 +220,7 @@ if run:
                 else:
                     st.markdown(f"**📋 Comprehensive Smart Report & Analysis for: {symbol}**")
                     report_lines = [
-                        f"1. **Total Aggregated Signals:** Collected ({total_signals_all} unique signals) across all selected timeframes and period ({selected_period}) without duplication.",
+                        f"1. **Total Aggregated Signals:** Collected ({total_signals_all} unique signals) across all selected timeframes throughout the entire historical period ({selected_period}) without omission or duplication.",
                         f"2. **Overall Success Rate:** The asset achieved an aggregate win rate of **{overall_wr}%** (Total Wins: {total_wins_all}, Losses: {total_losses_all}).",
                         f"3. **Best Performing Configuration:** Timeframe ({best_row['Timeframe']}) with ({best_row['SL Method']}) led with a success rate of **{wr_val}%**.",
                         f"4. **Risk Analysis:** Exact execution prices (Entry, SL, TP) were tracked for every single pattern to ensure strict evaluation.",
@@ -230,4 +229,4 @@ if run:
                 
                 for line in report_lines:
                     st.markdown(line)
-                
+                                
