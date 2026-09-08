@@ -1,11 +1,15 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import importlib
 import engine
 
-try:
- # إضافة المنطق الخاص بك هنا
- st.title("Backtest Application")
-except Exception as e:
- st.error(f"Error: {e}")
+def main():
+ st.sidebar.title("Settings")
+ uploaded_file = st.file_uploader("Upload CSV", type="csv")
+ 
+ if uploaded_file:
+ df = pd.read_csv(uploaded_file)
+ result = engine.run_analysis(df)
+ st.write(result)
+
+if __name__ == "__main__":
+ main()
