@@ -1,1096 +1,246 @@
+import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
-
-# ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER (v4.6)
-# شروط التعرف على الأنماط محفوظة
-# ==========================================================
-
-MIN_WAVE_CANDLES = 3
-
-
-def calculate_indicators(df):
-    df = df.copy()
-
-    df["EMA50"] = df["Close"].ewm(
-        span=50,
-        adjust=False
-    ).mean()
-
-    df["EMA200"] = df["Close"].ewm(
-        span=200,
-        adjust=False
-    ).mean()
-
-    delta = df["Close"].diff()
-
-    gain = delta.where(
-        delta > 0,
-        0.0
-    ).rolling(14).mean()
-
-    loss = -delta.where(
-        delta < 0,
-        0.0
-    ).rolling(14).mean()
-
-    loss_safe = loss.replace(
-        0,
-        1e-9
-    )
-
-    rs = gain / loss_safe
-
-    df["RSI"] = 100 - (
-        100 / (1 + rs)
-    )
-
-    df["RSI"] = df["RSI"].fillna(50.0)
-
-    high_low = df["High"] - df["Low"]
-
-    high_close = np.abs(
-        df["High"] - df["Close"].shift()
-    )
-
-    low_close = np.abs(
-        df["Low"] - df["Close"].shift()
-    )
-
-    ranges = pd.concat(
-        [
-            high_low,
-            high_close,
-            low_close
-        ],
-        axis=1
-    )
-
-    true_range = ranges.max(axis=1)
-
-    df["ATR"] = true_range.rolling(14).mean()
-
-    df["Dynamic_Swing"] = (
-        df["ATR"] / df["Close"]
-    ) * 0.5
-
-    df["Dynamic_Swing"] = (
-        df["Dynamic_Swing"].fillna(0.001)
-    )
-
-    return df
-
-
-def calculate_zigzag(
-    df,
-    depth=12,
-    backstep=6
-):
-    df = df.copy()
-
-    df["Pivot_H"] = np.nan
-    df["Pivot_L"] = np.nan
-
-    highs = (
-        df["High"]
-        .astype(float)
-        .values
-    )
-
-    lows = (
-        df["Low"]
-        .astype(float)
-        .values
-    )
-
-    n = len(df)
-
-    for i in range(
-        depth,
-        n - backstep
-    ):
-
-        high_window = highs[
-            i - depth:i + backstep + 1
-        ]
-
-        low_window = lows[
-            i - depth:i + backstep + 1
-        ]
-
-        current_high = highs[i]
-        current_low = lows[i]
-
-        is_high = (
-            current_high == np.max(high_window)
-            and
-            np.sum(
-                high_window == current_high
-            ) == 1
-        )
-
-        is_low = (
-            current_low == np.min(low_window)
-            and
-            np.sum(
-                low_window == current_low
-            ) == 1
-        )
-
-        if is_high and not is_low:
-
-            df.iloc[
-                i,
-                df.columns.get_loc("Pivot_H")
-            ] = current_high
-
-        elif is_low and not is_high:
-
-            df.iloc[
-                i,
-                df.columns.get_loc("Pivot_L")
-            ] = current_low
-
-    return df
-
-
-def get_chronological_pivots(df):
-
-    raw = []
-
-    for pos, (idx, row) in enumerate(
-        df.iterrows()
-    ):
-
-        if not pd.isna(row["Pivot_H"]):
-
-            raw.append(
-                {
-                    "idx": idx,
-                    "pos": pos,
-                    "val": float(
-                        row["Pivot_H"]
-                    ),
-                    "type": "H",
-                    "dynamic_swing": float(
-                        row.get(
-                            "Dynamic_Swing",
-                            0.001
-                        )
-                    )
-                }
-            )
-
-        elif not pd.isna(row["Pivot_L"]):
-
-            raw.append(
-                {
-                    "idx": idx,
-                    "pos": pos,
-                    "val": float(
-                        row["Pivot_L"]
-                    ),
-                    "type": "L",
-                    "dynamic_swing": float(
-                        row.get(
-                            "Dynamic_Swing",
-                            0.001
-                        )
-                    )
-                }
-            )
-
-    if not raw:
-        return []
-
-    clean = []
-
-    for p in raw:
-
-        if not clean:
-            clean.append(p)
-            continue
-
-        last = clean[-1]
-
-        current_min_swing = (
-            p["dynamic_swing"]
-        )
-
-        if last["type"] != p["type"]:
-
-            movement = abs(
-                p["val"] - last["val"]
-            ) / max(
-                abs(last["val"]),
-                1e-9
-            )
-
-            if movement >= current_min_swing:
-
-                clean.append(p)
-
-            else:
-
-                if (
-                    last["type"] == "H"
-                    and
-                    p["val"] > last["val"]
-                ):
-                    clean[-1] = p
-
-                elif (
-                    last["type"] == "L"
-                    and
-                    p["val"] < last["val"]
-                ):
-                    clean[-1] = p
-
-        elif (
-            p["type"] == "H"
-            and
-            p["val"] > last["val"]
-        ):
-
-            clean[-1] = p
-
-        elif (
-            p["type"] == "L"
-            and
-            p["val"] < last["val"]
-        ):
-
-            clean[-1] = p
-
-    final_clean = []
-
-    for p in clean:
-
-        if not final_clean:
-
-            final_clean.append(p)
-
-        else:
-
-            if (
-                final_clean[-1]["type"]
-                !=
-                p["type"]
-            ):
-
-                final_clean.append(p)
-
-            else:
-
-                if (
-                    p["type"] == "H"
-                    and
-                    p["val"]
-                    >
-                    final_clean[-1]["val"]
-                ):
-
-                    final_clean[-1] = p
-
-                elif (
-                    p["type"] == "L"
-                    and
-                    p["val"]
-                    <
-                    final_clean[-1]["val"]
-                ):
-
-                    final_clean[-1] = p
-
-    return final_clean
-
-
-class PatternValidatorPipeline:
-
-    def __init__(self, df):
-
-        self.df = df
-
-        self.filters = [
-            self.time_filter,
-            self.trend_filter,
-            self.invalidation_filter,
-            self.indicator_confirmation_filter,
-            self.breakout_filter
-        ]
-
-    def time_filter(
-        self,
-        p,
-        data
-    ):
-
-        i_l0, i_h1, i_l1, i_h2, i_l2, i_h3 = [
-            x["pos"] for x in p
-        ]
-
-        if (
-            (i_h1 - i_l0 < MIN_WAVE_CANDLES)
-            or
-            (i_l1 - i_h1 < MIN_WAVE_CANDLES)
-            or
-            (i_h2 - i_l1 < MIN_WAVE_CANDLES)
-            or
-            (i_l2 - i_h2 < MIN_WAVE_CANDLES)
-            or
-            (i_h3 - i_l2 < MIN_WAVE_CANDLES)
-        ):
-            return False, None, None
-
-        return True, None, None
-
-    def trend_filter(
-        self,
-        p,
-        data
-    ):
-
-        idx_l0 = p[0]["idx"]
-
-        pre_l0_df = data.loc[:idx_l0]
-
-        if len(pre_l0_df) > 10:
-
-            past_min = (
-                pre_l0_df["Low"]
-                .iloc[-10:]
-                .min()
-            )
-
-            if past_min > p[0]["val"]:
-
-                return False, None, None
-
-        return True, None, None
-
-    def invalidation_filter(
-        self,
-        p,
-        data
-    ):
-
-        h2 = p[3]["val"]
-        idx_h2 = p[3]["idx"]
-
-        post_head_df = data.loc[idx_h2:]
-
-        if not post_head_df.empty:
-
-            if (
-                post_head_df["High"].max()
-                >
-                h2
-            ):
-                return False, None, None
-
-        return True, None, None
-
-    def indicator_confirmation_filter(
-        self,
-        p,
-        data
-    ):
-
-        idx_h3 = p[5]["idx"]
-
-        rsi_val = data.loc[
-            idx_h3,
-            "RSI"
-        ]
-
-        if not (
-            30 <= rsi_val <= 75
-        ):
-            return False, None, None
-
-        ema50 = data.loc[
-            idx_h3,
-            "EMA50"
-        ]
-
-        ema200 = data.loc[
-            idx_h3,
-            "EMA200"
-        ]
-
-        if (
-            pd.isna(ema50)
-            or
-            pd.isna(ema200)
-        ):
-            return False, None, None
-
-        return True, None, None
-
-    def breakout_filter(
-        self,
-        p,
-        data
-    ):
-
-        idx_h3 = p[5]["idx"]
-
-        l1 = p[2]["val"]
-        l2 = p[4]["val"]
-
-        neckline_avg = (
-            l1 + l2
-        ) / 2.0
-
-        post_h3_df = data.loc[idx_h3:]
-
-        breakout_candles = (
-            post_h3_df[
-                post_h3_df["Close"]
-                <
-                neckline_avg
-            ]
-        )
-
-        if breakout_candles.empty:
-
-            return False, None, None
-
-        end_idx = (
-            breakout_candles
-            .index[0]
-        )
-
-        end_val = (
-            breakout_candles[
-                "Close"
-            ].iloc[0]
-        )
-
-        return (
-            True,
-            end_idx,
-            end_val
-        )
-
-    def run(self, p):
-
-        end_idx = None
-        end_val = None
-
-        for f in self.filters:
-
-            passed, e_idx, e_val = f(
-                p,
-                self.df
-            )
-
-            if not passed:
-
-                return (
-                    False,
-                    None,
-                    None
-                )
-
-            if e_idx is not None:
-
-                end_idx = e_idx
-                end_val = e_val
-
-        return (
-            True,
-            end_idx,
-            end_val
-        )
-
-
-def detect_all_head_shoulders(
-    pivots,
-    df
-):
-
-    patterns = []
-
-    if len(pivots) < 6:
-
-        return patterns
-
-    validator = PatternValidatorPipeline(
-        df
-    )
-
-    total_candles = len(df)
-
-    for i in range(
-        len(pivots) - 5
-    ):
-
-        p = pivots[
-            i:i + 6
-        ]
-
-        if [
-            x["type"] for x in p
-        ] != [
-            "L",
-            "H",
-            "L",
-            "H",
-            "L",
-            "H"
-        ]:
-
-            continue
-
-        l0, h1, l1, h2, l2, h3 = [
-            x["val"] for x in p
-        ]
-
-        if h1 <= l0 or l1 <= l0:
-            continue
-
-        if h2 <= h1 or h2 <= h3:
-            continue
-
-        neckline_min = min(
-            l1,
-            l2
-        )
-
-        head_height = (
-            h2 - neckline_min
-        )
-
-        if head_height <= 0:
-            continue
-
-        if abs(
-            h1 - h3
-        ) > (
-            head_height * 0.35
-        ):
-            continue
-
-        max_shoulder = max(
-            h1,
-            h3
-        )
-
-        if (
-            h2 - max_shoulder
-        ) < (
-            head_height * 0.25
-        ):
-            continue
-
-        if abs(
-            l1 - l2
-        ) > (
-            head_height * 0.25
-        ):
-            continue
-
-        passed, end_idx, end_val = (
-            validator.run(p)
-        )
-
-        if not passed:
-            continue
-
-        end_pos = df.index.get_loc(
-            end_idx
-        )
-
-        if (
-            total_candles - end_pos
-        ) > 10:
-            continue
-
-        l1_idx = p[2]["idx"]
-        l2_idx = p[4]["idx"]
-
-        neckline_avg = (
-            l1 + l2
-        ) / 2.0
-
-        actual_head_length = (
-            h2 - neckline_avg
-        )
-
-        entry = neckline_avg
-        sl = h2
-        tp = (
-            entry
-            -
-            actual_head_length
-        )
-
-        nodes = [
-            (
-                x["idx"],
-                x["val"]
-            )
-            for x in p
-        ]
-
-        nodes.append(
-            (
-                end_idx,
-                float(end_val)
-            )
-        )
-
-        neckline_nodes = [
-            (
-                l1_idx,
-                l1
-            ),
-            (
-                l2_idx,
-                l2
-            )
-        ]
-
-        target_nodes = [
-            (
-                end_idx,
-                float(
-                    round(
-                        entry,
-                        5
-                    )
-                )
-            ),
-            (
-                end_idx,
-                float(
-                    round(
-                        tp,
-                        5
-                    )
-                )
-            )
-        ]
-
-        patterns.append(
-            {
-                "name":
-                    "Head and Shoulders",
-
-                "pattern":
-                    "Head and Shoulders",
-
-                "bias":
-                    "Bearish",
-
-                "match":
-                    100.0,
-
-                "nodes":
-                    nodes,
-
-                "entry":
-                    float(
-                        round(
-                            entry,
-                            5
-                        )
-                    ),
-
-                "entry_trigger":
-                    float(
-                        round(
-                            entry,
-                            5
-                        )
-                    ),
-
-                "sl":
-                    float(
-                        round(
-                            sl,
-                            5
-                        )
-                    ),
-
-                "tp":
-                    float(
-                        round(
-                            tp,
-                            5
-                        )
-                    ),
-
-                "neckline_start_idx":
-                    l1_idx,
-
-                "neckline_end_idx":
-                    end_idx,
-
-                "neckline_nodes":
-                    neckline_nodes,
-
-                "target_nodes":
-                    target_nodes,
-
-                "end_pos":
-                    p[5]["pos"]
-            }
-        )
-
-    return patterns
-
-
-def detect_all_inverse_head_shoulders(
-    pivots,
-    df
-):
-
-    patterns = []
-
-    if len(pivots) < 6:
-
-        return patterns
-
-    total_candles = len(df)
-
-    for i in range(
-        len(pivots) - 5
-    ):
-
-        p = pivots[
-            i:i + 6
-        ]
-
-        if [
-            x["type"] for x in p
-        ] != [
-            "H",
-            "L",
-            "H",
-            "L",
-            "H",
-            "L"
-        ]:
-
-            continue
-
-        h0, l1, h1, l2, h2, l3 = [
-            x["val"] for x in p
-        ]
-
-        if l2 >= l1:
-            continue
-
-        if l2 >= l3:
-            continue
-
-        neckline_max = max(
-            h1,
-            h2
-        )
-
-        head_depth = (
-            neckline_max - l2
-        )
-
-        if head_depth <= 0:
-            continue
-
-        if abs(
-            l1 - l3
-        ) > (
-            head_depth * 0.35
-        ):
-            continue
-
-        min_shoulder = min(
-            l1,
-            l3
-        )
-
-        if (
-            min_shoulder - l2
-        ) < (
-            head_depth * 0.25
-        ):
-            continue
-
-        if abs(
-            h1 - h2
-        ) > (
-            head_depth * 0.25
-        ):
-            continue
-
-        positions = [
-            x["pos"] for x in p
-        ]
-
-        if (
-            positions[1]
-            -
-            positions[0]
-        ) < MIN_WAVE_CANDLES:
-            continue
-
-        if (
-            positions[2]
-            -
-            positions[1]
-        ) < MIN_WAVE_CANDLES:
-            continue
-
-        if (
-            positions[3]
-            -
-            positions[2]
-        ) < MIN_WAVE_CANDLES:
-            continue
-
-        if (
-            positions[4]
-            -
-            positions[3]
-        ) < MIN_WAVE_CANDLES:
-            continue
-
-        if (
-            positions[5]
-            -
-            positions[4]
-        ) < MIN_WAVE_CANDLES:
-            continue
-
-        idx_h0 = p[0]["idx"]
-
-        pre_left_df = data.loc[:idx_h0] if False else df.loc[:idx_h0]
-
-        if len(pre_left_df) > 10:
-
-            past_max = (
-                pre_left_df["High"]
-                .iloc[-10:]
-                .max()
-            )
-
-            if (
-                past_max
-                <
-                p[0]["val"]
-            ):
+import importlib
+import engine
+
+try:
+    from ffff import get_symbols_from_sheet
+except ImportError:
+    st.error("⚠️ The file ffff.py was not found alongside backtest script")
+
+st.set_page_config(page_title="H&S Ultimate Backtester Pro", page_icon="📊", layout="wide")
+
+st.markdown("""
+    <style>
+    .stApp { background-color: #0e1117; }
+    div.stExpander { background-color: #161b22; border-radius: 16px; border: 1px solid #30363d; padding: 10px; }
+    .stButton>button { border-radius: 12px; background-color: #2563eb; color: white; font-weight: bold; border: none; }
+    </style>
+""", unsafe_allow_html=True)
+
+engine = importlib.reload(engine)
+
+lang = st.sidebar.radio("🌐 Language / اللغة", ["العربية", "English"], index=0)
+
+if lang == "العربية":
+    st.title("📊 نظام الاختبار الرجعي السريع للأنماط")
+    st.caption("أداء فائق السرعة يعتمد كلياً على دوال المحرك الأساسي.")
+    txt_scan_mode = "طريقة اختيار الأصول:"
+    txt_single = "بحث فردي"
+    txt_sheet = "قائمة Google Sheet"
+    txt_tf_label = "الفواصل الزمنية (Intervals):"
+    txt_period_label = "الفترة التاريخية للبيانات (Period):"
+    txt_sl_strat = "استراتيجية وقف الخسارة:"
+    txt_run = "🚀 تشغيل الاختبار بأقصى سرعة"
+else:
+    st.title("📊 High-Speed H&S True Backtester")
+    st.caption("Maximized execution speed relying entirely on engine core.")
+    txt_scan_mode = "Asset Selection Method:"
+    txt_single = "Single Asset"
+    txt_sheet = "Google Sheet List"
+    txt_tf_label = "Timeframes (Intervals):"
+    txt_period_label = "Historical Data Period:"
+    txt_sl_strat = "Stop Loss Strategy:"
+    txt_run = "🚀 Run Max-Speed Backtest"
+
+SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
+DEFAULT_SHEET_NAME = "GOLD"
+DEFAULT_COL_NAME = "TOKENS"
+
+st.sidebar.header("⚙️ الإعدادات / Settings")
+
+scan_mode = st.sidebar.radio(txt_scan_mode, [txt_single, txt_sheet], index=0)
+symbols_to_test = []
+
+if scan_mode == txt_single:
+    symbol_input = st.sidebar.text_input("Symbol", "BTC-USD").strip()
+    symbols_to_test = [symbol_input] if symbol_input else []
+else:
+    fetched_symbols, err = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)
+    if err:
+        st.sidebar.error(err)
+        symbols_to_test = []
+    else:
+        symbols_to_test = fetched_symbols
+        st.sidebar.success(f"تم تحميل {len(symbols_to_test)} أصل بنجاح!" if lang=="العربية" else f"Loaded {len(symbols_to_test)} assets!")
+
+selected_tfs = st.sidebar.multiselect(
+    txt_tf_label, 
+    ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1wk", "1mo"], 
+    default=["1h", "4h", "1d"]
+)
+
+selected_period = st.sidebar.selectbox(
+    txt_period_label,
+    ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"],
+    index=4
+)
+
+sl_strategy = st.sidebar.radio(txt_sl_strat, ["الكل (Head & Shoulder)", "وقف الرأس فقط (Head SL)", "وقف الكتف فقط (Shoulder SL)"] if lang=="العربية" else ["All", "Head SL Only", "Shoulder SL Only"])
+run = st.sidebar.button(txt_run, use_container_width=True)
+
+if run:
+    if not symbols_test_check := symbols_to_test:
+        st.error("⚠️ لا توجد أصول متاحة للاختبار.")
+    elif not selected_tfs:
+        st.error("⚠️ يرجى اختيار فاصل زمني واحد على الأقل.")
+    else:
+        # إعداد شريط التقدم وعنصر الحالة الحية
+        total_steps = len(symbols_to_test) * len(selected_tfs)
+        current_step = 0
+        progress_bar = st.progress(0)
+        status_box = st.empty()
+        
+        for symbol in symbols_to_test:
+            tf_results = []
+            all_trades_detail = []
+            
+            for tf in selected_tfs:
+                current_step += 1
+                progress_percent = min(current_step / total_steps, 1.0)
+                progress_bar.progress(progress_percent)
+                
+                if lang == "العربية":
+                    status_box.info(f"⏳ جاري اختبار {symbol} | الفاصل الزمني: {tf}...")
+                else:
+                    status_box.info(f"⏳ Testing {symbol} | Timeframe: {tf}...")
+                
+                df = yf.download(symbol, period=selected_period, interval=tf, progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                    
+                if df.empty or len(df) < 50:
+                    continue
+                
+                # تنفيذ فحص كامل البيانات دفعة واحدة لضمان السرعة العالية جداً
+                df_ind = engine.calculate_indicators(df)
+                df_ind = engine.calculate_zigzag(df_ind)
+                pivots = engine.get_chronological_pivots(df_ind)
+                patterns = engine.detect_all_head_shoulders(pivots, df_ind)
+                
+                for sl_type_opt in ["Head SL", "Shoulder SL"]:
+                    if sl_strategy != "الكل (Head & Shoulder)" and sl_strategy != "All" and sl_type_opt not in sl_strategy:
+                        continue
+                    
+                    trades = []
+                    if patterns:
+                        for pat in patterns:
+                            end_idx = pat.get("neckline_end_idx")
+                            if not end_idx or end_idx not in df.index:
+                                continue
+                            if any(t.get("End_Idx") == end_idx and t.get("SL_Type") == sl_type_opt for t in trades):
+                                continue
+                                
+                            pattern_name = pat.get("pattern")
+                            bias = pat.get("bias")
+                            entry = pat.get("entry")
+                            tp = pat.get("tp")
+                            
+                            if sl_type_opt == "Head SL":
+                                sl = pat.get("sl")
+                            else:
+                                nodes = pat.get("nodes", [])
+                                if bias == "Bearish" and len(nodes) >= 4:
+                                    sl = max(nodes[1][1], nodes[3][1])
+                                elif bias == "Bullish" and len(nodes) >= 4:
+                                    sl = min(nodes[1][1], nodes[3][1])
+                                else:
+                                    sl = pat.get("sl")
+                            
+                            future_df = df.loc[end_idx:].iloc[1:]
+                            outcome = "OPEN"
+                            exit_date = str(end_idx)
+                            for f_idx, row in future_df.iterrows():
+                                h, l = row["High"], row["Low"]
+                                if bias == "Bearish":
+                                    if h >= sl: outcome = "LOSS"; exit_date = str(f_idx); break
+                                    elif l <= tp: outcome = "WIN"; exit_date = str(f_idx); break
+                                elif bias == "Bullish":
+                                    if l <= sl: outcome = "LOSS"; exit_date = str(f_idx); break
+                                    elif h >= tp: outcome = "WIN"; exit_date = str(f_idx); break
+                                    
+                            trades.append({
+                                "Symbol": symbol,
+                                "TF": tf,
+                                "Pattern Type": pattern_name,
+                                "SL_Type": sl_type_opt,
+                                "Date": str(end_idx),
+                                "Exit Date": exit_date,
+                                "Entry": round(entry, 4) if entry else 0,
+                                "SL": round(sl, 4) if sl else 0,
+                                "TP": round(tp, 4) if tp else 0,
+                                "Outcome": outcome,
+                                "End_Idx": end_idx
+                            })
+                    
+                    if trades:
+                        tdf = pd.DataFrame(trades)
+                        all_trades_detail.extend(trades)
+                        wins = len(tdf[tdf["Outcome"] == "WIN"])
+                        losses = len(tdf[tdf["Outcome"] == "LOSS"])
+                        total = wins + losses
+                        wr = (wins / total) * 100 if total > 0 else 0
+                        tf_results.append({
+                            "Timeframe": tf,
+                            "SL Method": sl_type_opt,
+                            "Total Signals": total,
+                            "Wins": wins,
+                            "Losses": losses,
+                            "Win Rate (%)": round(wr, 2)
+                        })
+            
+            # إخفاء رسالة الفحص المؤقتة عند الانتهاء
+            status_box.empty()
+            
+            if not tf_results:
+                if scan_mode == txt_single or scan_mode == "Single Asset":
+                    with st.expander(f"📊 نتائج الفحص للرمز: {symbol}", expanded=True):
+                        st.warning("⚠️ لا توجد صفقات أو أنماط مسجلة لهذا الأصل بناءً على الفترة والفواصل المحددة." if lang=="العربية" else "⚠️ No trades recorded for this asset.")
                 continue
-
-        idx_l2 = p[3]["idx"]
-
-        post_head_df = df.loc[idx_l2:]
-
-        if not post_head_df.empty:
-
-            if (
-                post_head_df["Low"].min()
-                <
-                l2
-            ):
-                continue
-
-        idx_l3 = p[5]["idx"]
-
-        if idx_l3 not in df.index:
-            continue
-
-        rsi_val = df.loc[
-            idx_l3,
-            "RSI"
-        ]
-
-        if not (
-            25 <= rsi_val <= 70
-        ):
-            continue
-
-        ema50 = df.loc[
-            idx_l3,
-            "EMA50"
-        ]
-
-        ema200 = df.loc[
-            idx_l3,
-            "EMA200"
-        ]
-
-        if (
-            pd.isna(ema50)
-            or
-            pd.isna(ema200)
-        ):
-            continue
-
-        h1_idx = p[2]["idx"]
-        h2_idx = p[4]["idx"]
-
-        neckline_avg = (
-            h1 + h2
-        ) / 2.0
-
-        post_l3_df = df.loc[idx_l3:]
-
-        breakout_candles = (
-            post_l3_df[
-                post_l3_df["Close"]
-                >
-                neckline_avg
-            ]
-        )
-
-        if breakout_candles.empty:
-            continue
-
-        end_idx = (
-            breakout_candles.index[0]
-        )
-
-        end_val = float(
-            breakout_candles[
-                "Close"
-            ].iloc[0]
-        )
-
-        end_pos = df.index.get_loc(
-            end_idx
-        )
-
-        if (
-            total_candles - end_pos
-        ) > 10:
-            continue
-
-        entry = neckline_avg
-
-        sl = l2
-
-        actual_head_length = (
-            neckline_avg - l2
-        )
-
-        tp = (
-            entry
-            +
-            actual_head_length
-        )
-
-        nodes = [
-            (
-                x["idx"],
-                x["val"]
-            )
-            for x in p
-        ]
-
-        nodes.append(
-            (
-                end_idx,
-                end_val
-            )
-        )
-
-        neckline_nodes = [
-            (
-                h1_idx,
-                h1
-            ),
-            (
-                h2_idx,
-                h2
-            )
-        ]
-
-        target_nodes = [
-            (
-                end_idx,
-                float(
-                    round(
-                        entry,
-                        5
-                    )
-                )
-            ),
-            (
-                end_idx,
-                float(
-                    round(
-                        tp,
-                        5
-                    )
-                )
-            )
-        ]
-
-        patterns.append(
-            {
-                "name":
-                    "Inverse Head and Shoulders",
-
-                "pattern":
-                    "Inverse Head and Shoulders",
-
-                "bias":
-                    "Bullish",
-
-                "match":
-                    100.0,
-
-                "nodes":
-                    nodes,
-
-                "entry":
-                    float(
-                        round(
-                            entry,
-                            5
-                        )
-                    ),
-
-                "entry_trigger":
-                    float(
-                        round(
-                            entry,
-                            5
-                        )
-                    ),
-
-                "sl":
-                    float(
-                        round(
-                            sl,
-                            5
-                        )
-                    ),
-
-                "tp":
-                    float(
-                        round(
-                            tp,
-                            5
-                        )
-                    ),
-
-                "neckline_start_idx":
-                    h1_idx,
-
-                "neckline_end_idx":
-                    end_idx,
-
-                "neckline_nodes":
-                    neckline_nodes,
-
-                "target_nodes":
-                    target_nodes,
-
-                "end_pos":
-                    p[5]["pos"]
-            }
-        )
-
-    retur
+                
+            with st.expander(f"📊 نتائج الفحص والصفقات للرمز: {symbol}", expanded=(len(symbols_to_test) == 1)):
+                res_df = pd.DataFrame(tf_results).sort_values(by="Win Rate (%)", ascending=False)
+                best_row = res_df.iloc[0]
+                
+                st.subheader("مقارنة الفواصل وأداء الإشارات" if lang=="العربية" else "Timeframe Comparison & Signals Performance")
+                st.dataframe(res_df, use_container_width=True)
+                
+                st.subheader("سجل الأوامر التاريخية التفصيلي" if lang=="العربية" else "Detailed Historical Order Logs")
+                details_df = pd.DataFrame(all_trades_detail).drop(columns=["End_Idx"])
+                st.dataframe(details_df, use_container_width=True)
+                
+                wr_val = best_row['Win Rate (%)']
+                total_signals_all = res_df['Total Signals'].sum()
+                total_wins_all = res_df['Wins'].sum()
+                total_losses_all = res_df['Losses'].sum()
+                overall_wr = round((total_wins_all / (total_wins_all + total_losses_all)) * 100, 2) if (total_wins_all + total_losses_all) > 0 else 0
+                
+                rec_action = "يوصى بالتداول" if wr_val >= 50 else "لا يُنصح بالتداول حالياً (نسبة النجاح ضعيفة)"
+                rec_action_en = "Recommended to trade" if wr_val >= 50 else "Not recommended (Low win rate)"
+                
+                if lang == "العربية":
+                    st.markdown(f"**📋 التقرير الشامل والتحليل الذكي للرمز: {symbol}**")
+                    report_lines = [
+                        f"1. **إجمالي الإشارات المجمعة:** تم رصد وتجميع عدد ({total_signals_all} إشارة فريدة) عبر كافة الفواصل الزمنية المحددة طوال الفترة التاريخية ({selected_period}) دون استثناء أو تكرار.",
+                        f"2. **أداء النسبة المئوية العامة:** حقق الأداء الكلي للأصل معدل نجاح عام بنسبة **{overall_wr}%** (إجمالي الصفقات الرابحة: {total_wins_all}, الخاسرة: {total_losses_all}).",
+                        f"3. **الفاصل الأفضل مقارنةً:** تصدر الفاصل الزمني ({best_row['Timeframe']}) باستخدام طريقة ({best_row['SL Method']}) كأفضل أداء بنسبة نجاح بلغت **{wr_val}%**.",
+                        f"4. **تحليل المخاطر:** تم تتبع مستويات الدخول وأوامر الوقف والأهداف الفعلية لكل إشارة بدقة متناهية لتقييم كفاءة الاستراتيجية.",
+                        f"5. **التوصية النهائية:** {rec_action} على فاصل **{best_row['Timeframe']}** بناءً على أعلى نسبة نجاح مسجلة."
+                    ]
+                else:
+                    st.markdown(f"**📋 Comprehensive Smart Report & Analysis for: {symbol}**")
+                    report_lines = [
+                        f"1. **Total Aggregated Signals:** Collected ({total_signals_all} unique signals) across all selected timeframes throughout the entire historical period ({selected_period}) without omission or duplication.",
+                        f"2. **Overall Success Rate:** The asset achieved an aggregate win rate of **{overall_wr}%** (Total Wins: {total_wins_all}, Losses: {total_losses_all}).",
+                        f"3. **Best Performing Configuration:** Timeframe ({best_row['Timeframe']}) with ({best_row['SL Method']}) led with a success rate of **{wr_val}%**.",
+                        f"4. **Risk Analysis:** Exact execution prices (Entry, SL, TP) were tracked for every single pattern to ensure strict evaluation.",
+                        f"5. **Final Recommendation:** {rec_action_en} on **{best_row['Timeframe']}** based on the highest comparative win rate."
+                    ]
+                
+                for line in report_lines:
+                    st.markdown(line)
+        
+        st.success("✨ تم الانتهاء من الاختبار الرجعي بنجاح تام!" if lang=="العربية" else "✨ Backtest completed successfully!")
+        
