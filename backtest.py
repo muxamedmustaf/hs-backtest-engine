@@ -87,7 +87,7 @@ if run:
     elif not selected_tfs:
         st.error("⚠️ يرجى اختيار فاصل زمني واحد على الأقل.")
     else:
-        st.info("🚀 جاري تنفيذ الاختبار الرجعي بأقصى سرعة...")
+        st.info("🚀 جاري تنفيذ الاختبار الرجعي بأقصى سرعة فائقة...")
         
         for symbol in symbols_to_test:
             tf_results = []
@@ -100,71 +100,67 @@ if run:
                     
                 if df.empty or len(df) < 50:
                     continue
-                    
+                
+                # [تحسين السرعة القصوى]: تنفيذ الحسابات على كامل البيانات دفعة واحدة بدلاً من التكرار البطيء شمعة بشمعة
+                df_ind = engine.calculate_indicators(df)
+                df_ind = engine.calculate_zigzag(df_ind)
+                pivots = engine.get_chronological_pivots(df_ind)
+                patterns = engine.detect_all_head_shoulders(pivots, df_ind)
+                
                 for sl_type_opt in ["Head SL", "Shoulder SL"]:
                     if sl_strategy != "الكل (Head & Shoulder)" and sl_strategy != "All" and sl_type_opt not in sl_strategy:
                         continue
                     
                     trades = []
-                    # البدء من الشمعات المبكرة (بعد اكتمال المؤشرات كحد أدنى 60 شمعة) لتغطية كامل الفترة المختبرة
-                    start_idx = 60
-                    step_size = 1  # فحص تسلسلي دقيق لضمان عدم تفويت أي إشارة عبر التاريخ المختار
-                    
-                    for i in range(start_idx, len(df), step_size):
-                        df_slice = df.iloc[:i].copy()
-                        
-                        df_ind = engine.calculate_indicators(df_slice)
-                        df_ind = engine.calculate_zigzag(df_ind)
-                        pivots = engine.get_chronological_pivots(df_ind)
-                        patterns = engine.detect_all_head_shoulders(pivots, df_ind)
-                        
-                        if patterns:
-                            for pat in patterns:
-                                end_idx = pat.get("neckline_end_idx")
-                                if any(t.get("End_Idx") == end_idx and t.get("SL_Type") == sl_type_opt for t in trades):
-                                    continue
-                                    
-                                pattern_name = pat.get("pattern")
-                                bias = pat.get("bias")
-                                entry = pat.get("entry")
-                                tp = pat.get("tp")
+                    if patterns:
+                        for pat in patterns:
+                            end_idx = pat.get("neckline_end_idx")
+                            if not end_idx or end_idx not in df.index:
+                                continue
+                            if any(t.get("End_Idx") == end_idx and t.get("SL_Type") == sl_type_opt for t in trades):
+                                continue
                                 
-                                if sl_type_opt == "Head SL":
-                                    sl = pat.get("sl")
+                            pattern_name = pat.get("pattern")
+                            bias = pat.get("bias")
+                            entry = pat.get("entry")
+                            tp = pat.get("tp")
+                            
+                            if sl_type_opt == "Head SL":
+                                sl = pat.get("sl")
+                            else:
+                                nodes = pat.get("nodes", [])
+                                if bias == "Bearish" and len(nodes) >= 4:
+                                    sl = max(nodes[1][1], nodes[3][1])
+                                elif bias == "Bullish" and len(nodes) >= 4:
+                                    sl = min(nodes[1][1], nodes[3][1])
                                 else:
-                                    nodes = pat.get("nodes", [])
-                                    if bias == "Bearish" and len(nodes) >= 4:
-                                        sl = max(nodes[1][1], nodes[3][1])
-                                    elif bias == "Bullish" and len(nodes) >= 4:
-                                        sl = min(nodes[1][1], nodes[3][1])
-                                    else:
-                                        sl = pat.get("sl")
-                                
-                                future_df = df.loc[end_idx:].iloc[1:]
-                                outcome = "OPEN"
-                                exit_date = str(end_idx)
-                                for f_idx, row in future_df.iterrows():
-                                    h, l = row["High"], row["Low"]
-                                    if bias == "Bearish":
-                                        if h >= sl: outcome = "LOSS"; exit_date = str(f_idx); break
-                                        elif l <= tp: outcome = "WIN"; exit_date = str(f_idx); break
-                                    elif bias == "Bullish":
-                                        if l <= sl: outcome = "LOSS"; exit_date = str(f_idx); break
-                                        elif h >= tp: outcome = "WIN"; exit_date = str(f_idx); break
-                                        
-                                trades.append({
-                                    "Symbol": symbol,
-                                    "TF": tf,
-                                    "Pattern Type": pattern_name,
-                                    "SL_Type": sl_type_opt,
-                                    "Date": str(end_idx),
-                                    "Exit Date": exit_date,
-                                    "Entry": round(entry, 4),
-                                    "SL": round(sl, 4),
-                                    "TP": round(tp, 4),
-                                    "Outcome": outcome,
-                                    "End_Idx": end_idx
-                                })
+                                    sl = pat.get("sl")
+                            
+                            future_df = df.loc[end_idx:].iloc[1:]
+                            outcome = "OPEN"
+                            exit_date = str(end_idx)
+                            for f_idx, row in future_df.iterrows():
+                                h, l = row["High"], row["Low"]
+                                if bias == "Bearish":
+                                    if h >= sl: outcome = "LOSS"; exit_date = str(f_idx); break
+                                    elif l <= tp: outcome = "WIN"; exit_date = str(f_idx); break
+                                elif bias == "Bullish":
+                                    if l <= sl: outcome = "LOSS"; exit_date = str(f_idx); break
+                                    elif h >= tp: outcome = "WIN"; exit_date = str(f_idx); break
+                                    
+                            trades.append({
+                                "Symbol": symbol,
+                                "TF": tf,
+                                "Pattern Type": pattern_name,
+                                "SL_Type": sl_type_opt,
+                                "Date": str(end_idx),
+                                "Exit Date": exit_date,
+                                "Entry": round(entry, 4) if entry else 0,
+                                "SL": round(sl, 4) if sl else 0,
+                                "TP": round(tp, 4) if tp else 0,
+                                "Outcome": outcome,
+                                "End_Idx": end_idx
+                            })
                     
                     if trades:
                         tdf = pd.DataFrame(trades)
@@ -229,4 +225,4 @@ if run:
                 
                 for line in report_lines:
                     st.markdown(line)
-                                
+                    
