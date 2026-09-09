@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import pandas as pd
 import numpy as np
 
@@ -530,6 +531,9 @@ def run_full_analysis(df):
 
     df = df.dropna(subset=required)
 
+    if len(df) < z:=30 < len(df) and len(df) < 30: # kept simple
+        pass
+
     if len(df) < 30:
         return {
             "df": df,
@@ -616,4 +620,4 @@ run_full_analysis = _run_full_analysis_both_directions
 
 if __name__ == "__main__":
     print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7).")
-    
+                
