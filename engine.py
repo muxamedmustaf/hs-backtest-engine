@@ -1,13 +1,14 @@
 import pandas as pd
 import numpy as np
+import streamlit as st
 
 # ==========================================================
-# ENGINE.PY - OPTIMIZED HIGH-SPEED BACKTESTER (v5.0)
+# ENGINE.PY - ULTRA-FAST OPTIMIZED BACKTESTER (v6.0)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
 
-
+@st.cache_data
 def calculate_indicators(df):
     df = df.copy()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
@@ -315,10 +316,10 @@ def backtest_strategy(df):
         df_clean[col] = pd.to_numeric(df_clean[col], errors="coerce")
     df_clean = df_clean.dropna(subset=["Open", "High", "Low", "Close"])
 
-    # تحسين السرعة القصوى بحساب المؤشرات كاملة مرة واحدة مسبقاً
     df_clean = calculate_indicators(df_clean)
 
-    step = 10  # زيادة خطوة المسح لتسريع التنفيذ الضعف
+    # رفع خطوة المسح إلى 25 لتخفيف الحمل الفائق على المعالج ومنع التقييد
+    step = 25  
     start_bar = 100
 
     for i in range(start_bar, len(df_clean) - 10, step):
@@ -359,4 +360,3 @@ def backtest_strategy(df):
             })
 
     return trades
-        
