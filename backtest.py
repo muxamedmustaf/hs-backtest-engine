@@ -33,20 +33,15 @@ app_mode = st.radio("App Mode:", ["🚀 Live Market Scanner", "🧪 Backtesting 
 
 st.markdown("---")
 
-# شريط اختيار الفترة الزمنية (Timeframe Bar)
-col_tf1, col_tf2 = st.columns([2, 3])
-with col_tf1:
-    tf_options = ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M"]
-    selected_tf = st.selectbox("⏱️ حدد الإطار الزمني (Timeframe):", options=tf_options, index=6)
+# شريطان منفصلان للفاصل (Interval) والفترة (Period)
+col_bar1, col_bar2 = st.columns(2)
+with col_bar1:
+    interval_options = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
+    selected_interval = st.selectbox("⏱️ حدد الفاصل (Interval):", options=interval_options, index=6) # الافتراضي 1d
 
-tf_map = {
-    "1m": {"interval": "1m", "period": "7d"}, "5m": {"interval": "5m", "period": "60d"},
-    "15m": {"interval": "15m", "period": "60d"}, "30m": {"interval": "30m", "period": "60d"},
-    "1h": {"interval": "1h", "period": "2y"}, "4h": {"interval": "1h", "period": "2y"},
-    "1D": {"interval": "1d", "period": "max"}, "1W": {"interval": "1wk", "period": "max"},
-    "1M": {"interval": "1mo", "period": "max"},
-}
-current_setting = tf_map[selected_tf]
+with col_bar2:
+    period_options = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
+    selected_period = st.selectbox("📅 حدد الفترة (Period):", options=period_options, index=10) # الافتراضي max
 
 st.markdown("---")
 
@@ -65,7 +60,7 @@ if app_mode == "🧪 Backtesting Lab (مختبر الاختبار الرجعي)"
     if run_backtest:
         with st.spinner(f"Running historical simulation for {backtest_symbol}..."):
             try:
-                df_bt = yf.download(backtest_symbol, period=current_setting["period"], interval=current_setting["interval"], progress=False, auto_adjust=False)
+                df_bt = yf.download(backtest_symbol, period=selected_period, interval=selected_interval, progress=False, auto_adjust=False)
                 if isinstance(df_bt.columns, pd.MultiIndex):
                     df_bt.columns = df_bt.columns.get_level_values(0)
                 
@@ -118,10 +113,10 @@ if app_mode == "🧪 Backtesting Lab (مختبر الاختبار الرجعي)"
 # MODE 2: LIVE MARKET SCANNER
 # ==========================================
 else:
-    scan_mode = st.radio("Scan Method:", ["Single Asset", "Google Sheet (Scan List for Completed Setups)"], horizontal=True)
+    scan_mode = st.radio("Scan Method:", ["سهم فردي (Single Asset)", "مسح كلي لشيت الأصول (Google Sheet Full Scan)"], horizontal=True)
     symbols_to_scan = []
 
-    if scan_mode == "Single Asset":
+    if scan_mode == "سهم فردي (Single Asset)":
         symbol = st.text_input("Market Asset Symbol", value="NZDCAD=X")
         st.session_state.current_symbol = symbol
         symbols_to_scan = [symbol]
@@ -131,7 +126,7 @@ else:
             st.error(err)
         else:
             symbols_to_scan = fetched_symbols
-            st.success(f"Successfully loaded {len(symbols_to_scan)} assets from Google Sheet!")
+            st.success(f"Successfully loaded {len(symbols_to_scan)} assets from Google Sheet for full scan!")
 
     run_scan = st.button("🚀 Start Scan & Analysis", use_container_width=True)
 
@@ -145,7 +140,7 @@ else:
             progress_bar.progress((idx + 1) / len(symbols_to_scan))
 
             try:
-                df = yf.download(sym, period=current_setting["period"], interval=current_setting["interval"], progress=False, auto_adjust=False)
+                df = yf.download(sym, period=selected_period, interval=selected_interval, progress=False, auto_adjust=False)
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
 
@@ -154,7 +149,7 @@ else:
                     signal = result["signal"]
                     pattern = result["pattern"]
 
-                    if signal in ["STRONG BUY", "STRONG SELL"] or scan_mode == "Single Asset":
+                    if signal in ["STRONG BUY", "STRONG SELL"] or scan_mode == "سهم فردي (Single Asset)":
                         valid_signals.append({
                             "symbol": sym,
                             "signal": signal,
@@ -172,16 +167,25 @@ else:
     if st.session_state.scanned_signals:
         valid_signals = st.session_state.scanned_signals
 
-        if scan_mode == "Google Sheet (Scan List for Completed Setups)":
+        if scan_mode == "مسح كلي لشيت الأصول (Google Sheet Full Scan)":
             options = [f"{item['symbol']} | {item['signal']} ({item['pattern']})" for item in valid_signals]
-            selected_option = st.selectbox("👇 Select asset to view analysis, target levels, and chart:", options)
-            selected_index = options.index(selected_option)
-            selected_data = valid_signals[selected_index]
-            active_result = selected_data["result"]
-            active_symbol = selected_data["symbol"]
+            if options:
+                selected_option = st.selectbox("👇 Select asset to view analysis, target levels, and chart:", options)
+                selected_index = options.index(selected_option)
+                selected_data = valid_signals[selected_index]
+                active_result = selected_data["result"]
+                active_symbol = selected_data["symbol"]
+            else:
+                active_result = None
+                active_symbol = ""
+                st.info("No signals found matching the current scan criteria.")
         else:
-            active_result = valid_signals[0]["result"]
-            active_symbol = valid_signals[0]["symbol"]
+            if valid_signals:
+                active_result = valid_signals[0]["result"]
+                active_symbol = valid_signals[0]["symbol"]
+            else:
+                active_result = None
+                active_symbol = ""
 
         if active_result:
             st.session_state.current_symbol = active_symbol
@@ -236,4 +240,4 @@ else:
                 )
 
                 st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True, 'responsive': True})
-                
+                              
