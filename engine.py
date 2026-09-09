@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTESTER (v4.8)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTESTER (v4.9)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -197,7 +197,7 @@ class PatternValidatorPipeline:
         return True, end_idx, end_val
 
 
-def detect_all_head_shoulders(pivots, df):
+def detect_normal_head_shoulders(pivots, df):
     patterns = []
     if len(pivots) < 6:
         return patterns
@@ -346,15 +346,12 @@ def detect_all_inverse_head_shoulders(pivots, df):
     return patterns
 
 
-def _detect_both_head_shoulders(pivots, df):
-    normal_patterns = detect_all_head_shoulders(pivots, df)
+def detect_all_head_shoulders(pivots, df):
+    normal_patterns = detect_normal_head_shoulders(pivots, df)
     inverse_patterns = detect_all_inverse_head_shoulders(pivots, df)
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
-
-
-detect_all_head_shoulders = _detect_both_head_shoulders
 
 
 def run_full_analysis(df):
@@ -406,13 +403,6 @@ def run_full_analysis(df):
     }
 
 
-def _run_full_analysis_both_directions(df):
-    result = run_full_analysis(df) # internal call wrapper
-    return result
-
-# ==========================================================
-# BACKTESTING ENGINE FUNCTION (WITH SL COMPARISON)
-# ==========================================================
 def simulate_trade(df_clean, start_idx, bias, entry, tp, sl):
     for j in range(start_idx, min(len(df_clean), start_idx + 40)):
         future_bar = df_clean.iloc[j]
@@ -457,7 +447,6 @@ def backtest_strategy(df):
             signal_time = sub_df.index[-1]
             pat_name = latest["pattern"]
             
-            # منع تكرار تسجيل نفس الإشارة مرتين
             if any(t["Entry Time"] == signal_time and t["Pattern"] == pat_name for t in trades):
                 continue
 
@@ -506,5 +495,5 @@ def backtest_strategy(df):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Dynamic ATR Swing Scanner & Backtester (v4.8).")
+    print("ENGINE.PY loaded successfully without recursion.")
         
