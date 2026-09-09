@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.7)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.7 Fixed)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -142,10 +142,6 @@ def get_chronological_pivots(df):
 
 
 def simulate_backtest_outcome(pattern, df):
-    """
-    محاكاة ضرب الهدف (TP) أو وقف الخسارة (SL) حتى آخر شمعة تاريخية متاحة للسوق
-    وفق السياسة المتحفظة (تعتبر تداخل الهدف والوقف خسارة).
-    """
     bias = pattern["bias"]
     sl = float(pattern["sl"])
     tp = float(pattern["tp"])
@@ -466,10 +462,6 @@ detect_all_head_shoulders = _detect_both_head_shoulders
 
 
 def backtest_strategy(df):
-    """
-    الدالة المطلوبة خصيصاً من واجهة الاختبار الرجعي (Backtesting Lab)
-    لإرجاع قائمة الصفقات ونتائجها حتى آخر شمعة تاريخية.
-    """
     if df is None or df.empty or len(df) < 30:
         return []
 
@@ -509,17 +501,8 @@ def backtest_strategy(df):
 def run_full_analysis(df):
     if df is None or df.empty:
         return {
-            "df": df,
-            "signal": "WAITING",
-            "pattern": "NO PATTERN DETECTED",
-            "bias": "Neutral",
-            "entry": None,
-            "sl": None,
-            "tp": None,
-            "nodes": [],
-            "neckline_nodes": [],
-            "target_nodes": [],
-            "all_patterns": []
+            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral",
+            "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
     df = df.copy()
@@ -530,23 +513,10 @@ def run_full_analysis(df):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=required)
-
-    if len(df) < z:=30 < len(df) and len(df) < 30: # kept simple
-        pass
-
     if len(df) < 30:
         return {
-            "df": df,
-            "signal": "WAITING",
-            "pattern": "NO PATTERN DETECTED",
-            "bias": "Neutral",
-            "entry": None,
-            "sl": None,
-            "tp": None,
-            "nodes": [],
-            "neckline_nodes": [],
-            "target_nodes": [],
-            "all_patterns": []
+            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral",
+            "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
     df_active = df.tail(200).copy()
@@ -558,17 +528,8 @@ def run_full_analysis(df):
 
     if not all_patterns:
         return {
-            "df": df,
-            "signal": "WAITING",
-            "pattern": "NO PATTERN DETECTED",
-            "bias": "Neutral",
-            "entry": None,
-            "sl": None,
-            "tp": None,
-            "nodes": [],
-            "neckline_nodes": [],
-            "target_nodes": [],
-            "all_patterns": []
+            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral",
+            "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
     latest_pattern = all_patterns[-1]
@@ -608,7 +569,7 @@ def _run_full_analysis_both_directions(df):
     if result.get("pattern") == "Inverse Head and Shoulders":
         result["signal"] = "STRONG BUY"
         result["bias"] = "Bullish"
-    elif result.get("pattern") == "Head and Shoulders":
+    elif result.get("pattern": "Head and Shoulders"):
         result["signal"] = "STRONG SELL"
         result["bias"] = "Bearish"
 
@@ -619,5 +580,5 @@ run_full_analysis = _run_full_analysis_both_directions
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7).")
-                
+    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7 Fixed).")
+                                  
