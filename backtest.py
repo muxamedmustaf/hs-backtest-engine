@@ -7,7 +7,7 @@ from engine import run_full_analysis, backtest_strategy
 try:
     from ffff import get_symbols_from_sheet
 except ImportError:
-    st.error("⚠️ The file ffff.py was not found alongside app.py")
+    st.error("⚠️ The file ffff.py was not found alongside backtest.py")
 
 st.set_page_config(page_title="Smart Market Analyzer & Backtest Lab", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
@@ -31,8 +31,13 @@ st.markdown(f'''
 
 app_mode = st.radio("App Mode:", ["🚀 Live Market Scanner", "🧪 Backtesting Lab (مختبر الاختبار الرجعي)"], horizontal=True)
 
-tf_options = ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M"]
-selected_tf = st.selectbox("Select Timeframe", options=tf_options, index=6)
+st.markdown("---")
+
+# شريط اختيار الفترة الزمنية (Timeframe Bar)
+col_tf1, col_tf2 = st.columns([2, 3])
+with col_tf1:
+    tf_options = ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W", "1M"]
+    selected_tf = st.selectbox("⏱️ حدد الإطار الزمني (Timeframe):", options=tf_options, index=6)
 
 tf_map = {
     "1m": {"interval": "1m", "period": "7d"}, "5m": {"interval": "5m", "period": "60d"},
@@ -42,6 +47,8 @@ tf_map = {
     "1M": {"interval": "1mo", "period": "max"},
 }
 current_setting = tf_map[selected_tf]
+
+st.markdown("---")
 
 # ==========================================
 # MODE 1: BACKTESTING LAB (مختبر الاختبار الرجعي)
@@ -178,75 +185,55 @@ else:
 
         if active_result:
             st.session_state.current_symbol = active_symbol
-            df_res = active_result["df"]
+            df_res = active_result.get("df", None)
             signal, pattern = active_result["signal"], active_result["pattern"]
-            latest_rsi = df_res['RSI'].iloc[-1] if 'RSI' in df_res.columns else 0.0
-            latest_close = df_res['Close'].iloc[-1]
+            
+            if df_res is not None and not df_res.empty:
+                latest_rsi = df_res['RSI'].iloc[-1] if 'RSI' in df_res.columns else 0.0
+                latest_close = df_res['Close'].iloc[-1]
 
-            st.markdown(f"""
-            <div style="margin-top: 14px; margin-bottom: 15px;">
-                <div style="font-size: 42px; font-weight: 650; color: #0B57D0;">{latest_close:.5f}</div>
-                <div style="font-size: 15px; color: #202124;">RSI (14): {latest_rsi:.2f}</div>
-            </div>
-            """, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style="margin-top: 14px; margin-bottom: 15px;">
+                    <div style="font-size: 42px; font-weight: 650; color: #0B57D0;">{latest_close:.5f}</div>
+                    <div style="font-size: 15px; color: #202124;">RSI (14): {latest_rsi:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
             e1, e2, e3 = st.columns(3)
-            e1.metric("🎯 Entry", f"{active_result['entry']}")
-            e2.metric("🛑 Stop Loss", f"{active_result['sl']}")
-            e3.metric("🏆 Target", f"{active_result['tp']}")
+            e1.metric("🎯 Entry", f"{active_result.get('entry', 0)}")
+            e2.metric("🛑 Stop Loss", f"{active_result.get('sl', 0)}")
+            e3.metric("🏆 Target", f"{active_result.get('tp', 0)}")
 
             bias_text = "Bullish" if signal == "STRONG BUY" else "Bearish" if signal == "STRONG SELL" else "Neutral"
             st.info(
                 f"**ANALYSIS REPORT:** A confirmed **{pattern}** pattern has been detected for **{active_symbol}** indicating a **{bias_text}** trend shift.\n"
-                f"**EXECUTION PLAN:** Recommendation is **{signal}** at **{active_result['entry']}** with Stop Loss set at **{active_result['sl']}** and Target at **{active_result['tp']}**."
+                f"**EXECUTION PLAN:** Recommendation is **{signal}** at **{active_result.get('entry', 0)}** with Stop Loss set at **{active_result.get('sl', 0)}** and Target at **{active_result.get('tp', 0)}**."
             )
 
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(
-                x=df_res.index, open=df_res["Open"], high=df_res["High"], low=df_res["Low"], close=df_res["Close"],
-                name="Price", increasing_line_color="#137333", decreasing_line_color="#C5221F"
-            ))
-
-            nodes = active_result.get("nodes", [])
-            if nodes:
-                sorted_nodes = sorted(nodes, key=lambda item: pd.to_datetime(item[0]))
-                x_nodes = [n[0] for n in sorted_nodes]
-                y_nodes = [n[1] for n in sorted_nodes]
-                fig.add_trace(go.Scatter(
-                    x=x_nodes, y=y_nodes,
-                    mode="lines+markers", line=dict(color="#C5221F", width=2.5),
-                    marker=dict(size=7, color="#0B57D0"), name=f"{pattern}"
+            if df_res is not None and not df_res.empty:
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=df_res.index, open=df_res["Open"], high=df_res["High"], low=df_res["Low"], close=df_res["Close"],
+                    name="Price", increasing_line_color="#137333", decreasing_line_color="#C5221F"
                 ))
 
-            neckline_nodes = active_result.get("neckline_nodes", [])
-            if len(neckline_nodes) >= 2:
-                fig.add_trace(go.Scatter(
-                    x=[n[0] for n in neckline_nodes], y=[n[1] for n in neckline_nodes],
-                    mode="lines", line=dict(color="#8E24AA", width=2, dash="dash"),
-                    name="Neckline"
-                ))
+                nodes = active_result.get("nodes", [])
+                if nodes:
+                    sorted_nodes = sorted(nodes, key=lambda item: pd.to_datetime(item[0]))
+                    x_nodes = [n[0] for n in sorted_nodes]
+                    y_nodes = [n[1] for n in sorted_nodes]
+                    fig.add_trace(go.Scatter(
+                        x=x_nodes, y=y_nodes,
+                        mode="lines+markers", line=dict(color="#C5221F", width=2.5),
+                        marker=dict(size=7, color="#0B57D0"), name=f"{pattern}"
+                    ))
 
-            target_nodes = active_result.get("target_nodes", [])
-            if len(target_nodes) >= 2:
-                entry_idx, entry_val = target_nodes[0]
-                tp_idx, tp_val = target_nodes[1]
-                fig.add_trace(go.Scatter(
-                    x=[entry_idx, tp_idx], y=[tp_val, tp_val],
-                    mode="lines", line=dict(color="#0F9D58", width=2, dash="dot"),
-                    name="Target Level"
-                ))
-                fig.add_annotation(
-                    x=tp_idx, y=tp_val, ax=entry_idx, ay=entry_val,
-                    xref="x", yref="y", axref="x", ayref="y",
-                    showarrow=True, arrowhead=3, arrowsize=1.2, arrowwidth=2,
-                    arrowcolor="#0F9D58" if signal == "STRONG BUY" else "#D93025"
+                fig.update_layout(
+                    template="plotly_white", height=520,
+                    xaxis_rangeslider_visible=False,
+                    margin=dict(l=10, r=40, t=10, b=30),
+                    showlegend=False, dragmode='pan'
                 )
 
-            fig.update_layout(
-                template="plotly_white", height=520,
-                xaxis_rangeslider_visible=False,
-                margin=dict(l=10, r=40, t=10, b=30),
-                showlegend=False, dragmode='pan'
-            )
-
-            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True, 'responsive': True})
+                st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True, 'responsive': True})
+                
