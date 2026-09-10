@@ -569,7 +569,7 @@ def _run_full_analysis_both_directions(df):
     if result.get("pattern") == "Inverse Head and Shoulders":
         result["signal"] = "STRONG BUY"
         result["bias"] = "Bullish"
-    elif result.get("pattern": "Head and Shoulders"):
+    elif result.get("pattern") == "Head and Shoulders":
         result["signal"] = "STRONG SELL"
         result["bias"] = "Bearish"
 
@@ -581,4 +581,4 @@ run_full_analysis = _run_full_analysis_both_directions
 
 if __name__ == "__main__":
     print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7 Fixed).")
-                                  
+            
