@@ -24,6 +24,8 @@ if "scanned_signals" not in st.session_state:
     st.session_state.scanned_signals = []
 if "backtest_scanned_signals" not in st.session_state:
     st.session_state.backtest_scanned_signals = []
+if "backtest_dfs" not in st.session_state:
+    st.session_state.backtest_dfs = {}
 
 st.markdown(f'''
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 15px;">
@@ -69,6 +71,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     
     if run_backtest and bt_symbols_to_scan:
         bt_results_list = []
+        bt_dfs_dict = {}
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -89,16 +92,19 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                         "trades_df": trades_df,
                         "total_signals": len(trades_df)
                     })
+                    bt_dfs_dict[sym] = df_bt
             except Exception:
                 continue
 
         status_text.empty()
         progress_bar.empty()
         st.session_state.backtest_scanned_signals = bt_results_list
+        st.session_state.backtest_dfs = bt_dfs_dict
         st.success(f"اكتملت محاكاة الاختبار الرجعي! تم العثور على نتائج لـ {len(bt_results_list)} أصل.")
 
     if st.session_state.backtest_scanned_signals:
         bt_results_list = st.session_state.backtest_scanned_signals
+        bt_dfs_dict = st.session_state.backtest_dfs
 
         if bt_scan_mode == "مسح كلي لشيت الأصول":
             bt_options = [f"{item['symbol']} | عدد الصفقات: {item['total_signals']}" for item in bt_results_list]
@@ -115,11 +121,12 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 active_bt_item = None
 
         if active_bt_item:
-            st.session_state.current_symbol = active_bt_item["symbol"]
+            active_sym = active_bt_item["symbol"]
+            st.session_state.current_symbol = active_sym
             trades_df = active_bt_item["trades_df"]
             total_signals = active_bt_item["total_signals"]
             
-            st.markdown(f"### 📊 إجمالي الإشارات المكتشفة للأصل {active_bt_item['symbol']}: **{total_signals}**")
+            st.markdown(f"### 📊 إجمالي الإشارات المكتشفة للأصل {active_sym}: **{total_signals}**")
             head_wins = len(trades_df[trades_df["Head Result"] == "WIN"]) if "Head Result" in trades_df.columns else 0
             shoulder_wins = len(trades_df[trades_df["Shoulder Result"] == "WIN"]) if "Shoulder Result" in trades_df.columns else 0
             
@@ -128,6 +135,18 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             m2.metric("🎯 نجاح الرأس", head_wins)
             m3.metric("🎯 نجاح الكتف", shoulder_wins)
             
+            # --- إضافة الشارت البصري لمختبر الاختبار الرجعي ---
+            if active_sym in bt_dfs_dict and not bt_dfs_dict[active_sym].empty:
+                df_bt_res = bt_dfs_dict[active_sym]
+                st.markdown("#### 📈 الشارت البياني التاريخي للأصل")
+                fig_bt = go.Figure()
+                fig_bt.add_trace(go.Candlestick(
+                    x=df_bt_res.index, open=df_bt_res["Open"], high=df_bt_res["High"], low=df_bt_res["Low"], close=df_bt_res["Close"],
+                    name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
+                ))
+                fig_bt.update_layout(template="plotly_white", height=450, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
+                st.plotly_chart(fig_bt, use_container_width=True)
+
             st.markdown("---")
             st.dataframe(trades_df, use_container_width=True)
 
@@ -250,4 +269,4 @@ else:
                     ))
                 fig.update_layout(template="plotly_white", height=450, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
                 st.plotly_chart(fig, use_container_width=True)
-            
+    
