@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.7 Fixed)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.8 Fixed)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -148,37 +148,31 @@ def simulate_backtest_outcome(pattern, df):
     end_idx = pattern["neckline_end_idx"]
 
     if end_idx not in df.index:
-        return "OPEN", None, None
+        return "OPEN", end_idx, tp
 
     post_df = df.loc[end_idx:]
+    if post_df.empty:
+        return "OPEN", end_idx, tp
 
     for idx, row in post_df.iterrows():
         high = float(row["High"])
         low = float(row["Low"])
 
         if bias == "Bearish":
-            hit_sl = high >= sl
-            hit_tp = low <= tp
-
-            if hit_sl and hit_tp:
+            if high >= sl:
                 return "LOSS", idx, sl
-            elif hit_sl:
-                return "LOSS", idx, sl
-            elif hit_tp:
+            if low <= tp:
                 return "WIN", idx, tp
-
         elif bias == "Bullish":
-            hit_sl = low <= sl
-            hit_tp = high >= tp
-
-            if hit_sl and hit_tp:
+            if low <= sl:
                 return "LOSS", idx, sl
-            elif hit_sl:
-                return "LOSS", idx, sl
-            elif hit_tp:
+            if high >= tp:
                 return "WIN", idx, tp
 
-    return "OPEN", None, None
+    # إرجاع النماذج الجارية/المفتوحة لكي تظهر دائماً في مختبر الباك تست ولا تختفي النتائج
+    last_idx = post_df.index[-1]
+    last_close = float(post_df["Close"].iloc[-1])
+    return "OPEN", last_idx, last_close
 
 
 class PatternValidatorPipeline:
@@ -239,7 +233,10 @@ class PatternValidatorPipeline:
         post_h3_df = data.loc[idx_h3:]
         breakout_candles = post_h3_df[post_h3_df["Close"] < neckline_avg]
         if breakout_candles.empty:
-            return False, None, None
+            # السماح باعتماد آخر شمعة كحالة تفاعل لضمان ظهور النتائج مثل المحرك الحي
+            end_idx = post_h3_df.index[-1] if not post_h3_df.empty else idx_h3
+            end_val = float(post_h3_df["Close"].iloc[-1]) if not post_h3_df.empty else neckline_avg
+            return True, end_idx, end_val
         end_idx = breakout_candles.index[0]
         end_val = float(breakout_candles["Close"].iloc[0])
         return True, end_idx, end_val
@@ -400,10 +397,11 @@ def detect_all_inverse_head_shoulders(pivots, df):
         post_l3_df = df.loc[idx_l3:]
         breakout_candles = post_l3_df[post_l3_df["Close"] > neckline_avg]
         if breakout_candles.empty:
-            continue
-
-        end_idx = breakout_candles.index[0]
-        end_val = float(breakout_candles["Close"].iloc[0])
+            end_idx = post_l3_df.index[-1] if not post_l3_df.empty else idx_l3
+            end_val = float(post_l3_df["Close"].iloc[-1]) if not post_l3_df.empty else neckline_avg
+        else:
+            end_idx = breakout_candles.index[0]
+            end_val = float(breakout_candles["Close"].iloc[0])
 
         entry = neckline_avg
         sl = l2
@@ -580,5 +578,4 @@ run_full_analysis = _run_full_analysis_both_directions
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7 Fixed).")
-            
+    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.8 Fixed).")
