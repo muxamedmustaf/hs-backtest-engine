@@ -135,10 +135,10 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             m2.metric("🎯 نجاح الرأس", head_wins)
             m3.metric("🎯 نجاح الكتف", shoulder_wins)
             
-            # --- رسم الشارت البياني مع رسم تفاصيل الأنماط والصفقات التاريخية ---
+            # --- رسم الشارت البياني مع رسم تفاصيل الأنماط والترسيم البصري الدقيق ---
             if active_sym in bt_dfs_dict and not bt_dfs_dict[active_sym].empty:
                 df_bt_res = bt_dfs_dict[active_sym]
-                st.markdown("#### 📈 الشارت البياني التاريخي مع رسم الأنماط والصفقات")
+                st.markdown("#### 📈 الرسم الفني للنمط (تخطيط القمم والقيعان والخطوط)")
                 
                 fig_bt = go.Figure()
                 fig_bt.add_trace(go.Candlestick(
@@ -146,23 +146,23 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
                 ))
                 
-                # تتبع وعرض نقاط النمط (Nodes) إن توفرت في الصفقات
+                # استخراج ورسم عقد النمط (Nodes) تماماً كما في صورتك المرفقة
                 if not trades_df.empty and 'nodes' in trades_df.columns:
-                    all_bt_nodes = []
-                    for n_list in trades_df['nodes']:
-                        if isinstance(n_list, list):
-                            all_bt_nodes.extend(n_list)
-                    if all_bt_nodes:
-                        sorted_bt_nodes = sorted(all_bt_nodes, key=lambda item: pd.to_datetime(item[0]))
-                        x_bt_nodes = [n[0] for n in sorted_bt_nodes]
-                        y_bt_nodes = [n[1] for n in sorted_bt_nodes]
-                        fig_bt.add_trace(go.Scatter(
-                            x=x_bt_nodes, y=y_bt_nodes,
-                            mode="lines+markers", line=dict(color="#C5221F", width=2.5),
-                            marker=dict(size=7, color="#0B57D0"), name="النمط الفني المكتشف"
-                        ))
+                    for idx, row in trades_df.iterrows():
+                        nodes = row.get('nodes', [])
+                        if isinstance(nodes, list) and nodes:
+                            sorted_nodes = sorted(nodes, key=lambda item: pd.to_datetime(item[0]))
+                            x_nodes = [n[0] for n in sorted_nodes]
+                            y_nodes = [n[1] for n in sorted_nodes]
+                            fig_bt.add_trace(go.Scatter(
+                                x=x_nodes, y=y_nodes,
+                                mode="lines+markers", 
+                                line=dict(color="#C5221F", width=2.5),
+                                marker=dict(size=8, color="#0B57D0"), 
+                                name=f"النمط #{idx+1}"
+                            ))
 
-                fig_bt.update_layout(template="plotly_white", height=450, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
+                fig_bt.update_layout(template="plotly_white", height=480, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
                 st.plotly_chart(fig_bt, use_container_width=True)
 
             st.markdown("---")
@@ -244,7 +244,7 @@ else:
         else:
             if valid_signals:
                 active_result = valid_signals[0]["result"]
-                active_symbol = valid_signals[0]["symbol"]
+                active_symbol = valid_signals[0]["result"]["symbol"] if "symbol" in valid_signals[0]["result"] else symbols_to_scan[0]
             else:
                 active_result = None
                 active_symbol = ""
@@ -287,4 +287,4 @@ else:
                     ))
                 fig.update_layout(template="plotly_white", height=450, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
                 st.plotly_chart(fig, use_container_width=True)
-    
+        
