@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.9 Fixed)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.0 Strict)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -148,25 +148,38 @@ def simulate_backtest_outcome(pattern, df):
     end_idx = pattern["neckline_end_idx"]
 
     if end_idx not in df.index:
-        return "OPEN", end_idx, tp
+        return "LOSS", end_idx, tp
 
     post_df = df.loc[end_idx:]
-    if post_df.empty:
+    if len(post_df) <= 1:
         return "OPEN", end_idx, tp
 
-    for idx, row in post_df.iterrows():
+    sub_df = post_df.iloc[1:]
+
+    for idx, row in sub_df.iterrows():
         high = float(row["High"])
         low = float(row["Low"])
 
-        if bias == "Bearish":
-            if high >= sl:
+        if bias == "Bullish":
+            hit_sl = low <= sl
+            hit_tp = high >= tp
+
+            if hit_sl and hit_tp:
                 return "LOSS", idx, sl
-            if low <= tp:
+            if hit_sl:
+                return "LOSS", idx, sl
+            if hit_tp:
                 return "WIN", idx, tp
-        elif bias == "Bullish":
-            if low <= sl:
+
+        elif bias == "Bearish":
+            hit_sl = high >= sl
+            hit_tp = low <= tp
+
+            if hit_sl and hit_tp:
                 return "LOSS", idx, sl
-            if high >= tp:
+            if hit_sl:
+                return "LOSS", idx, sl
+            if hit_tp:
                 return "WIN", idx, tp
 
     last_idx = post_df.index[-1]
@@ -477,7 +490,6 @@ def backtest_strategy(df):
     for pat in all_patterns:
         trade_result, exit_idx, exit_price = simulate_backtest_outcome(pat, df_active)
         
-        # تضمين العقد الهندسية وإحداثيات خط العنق لضمان ظهور الرسم في الواجهة مثل الماسح الحي
         trade_record = {
             "Pattern": pat["pattern"],
             "Bias": pat["bias"],
@@ -581,5 +593,5 @@ run_full_analysis = _run_full_analysis_both_directions
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.9 Fixed).")
-            
+    print("ENGINE.PY loaded with Strict Backtest Outcomes (v5.0).")
+        
