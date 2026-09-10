@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.0 Strict)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.1 Strict Breakout)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -243,11 +243,12 @@ class PatternValidatorPipeline:
         l1, l2 = p[2]["val"], p[4]["val"]
         neckline_avg = (l1 + l2) / 2.0
         post_h3_df = data.loc[idx_h3:]
+        
+        # شرط صارم: يجب أن يحدث كسر خط العنق (إغلاق أقل من خط العنق)
         breakout_candles = post_h3_df[post_h3_df["Close"] < neckline_avg]
         if breakout_candles.empty:
-            end_idx = post_h3_df.index[-1] if not post_h3_df.empty else idx_h3
-            end_val = float(post_h3_df["Close"].iloc[-1]) if not post_h3_df.empty else neckline_avg
-            return True, end_idx, end_val
+            return False, None, None  # رفض النمط لعدم حدوث كسر
+            
         end_idx = breakout_candles.index[0]
         end_val = float(breakout_candles["Close"].iloc[0])
         return True, end_idx, end_val
@@ -405,14 +406,14 @@ def detect_all_inverse_head_shoulders(pivots, df):
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         neckline_avg = (h1 + h2) / 2.0
 
+        # شرط صارم للنموذج العكسي: يجب أن يحدث كسر خط العنق صعوداً (إغلاق أعلى من خط العنق)
         post_l3_df = df.loc[idx_l3:]
         breakout_candles = post_l3_df[post_l3_df["Close"] > neckline_avg]
         if breakout_candles.empty:
-            end_idx = post_l3_df.index[-1] if not post_l3_df.empty else idx_l3
-            end_val = float(post_l3_df["Close"].iloc[-1]) if not post_l3_df.empty else neckline_avg
-        else:
-            end_idx = breakout_candles.index[0]
-            end_val = float(breakout_candles["Close"].iloc[0])
+            continue  # رفض النمط لعدم حدوث كسر صعودي
+
+        end_idx = breakout_candles.index[0]
+        end_val = float(breakout_candles["Close"].iloc[0])
 
         entry = neckline_avg
         sl = l2
@@ -593,5 +594,5 @@ run_full_analysis = _run_full_analysis_both_directions
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Strict Backtest Outcomes (v5.0).")
+    print("ENGINE.PY loaded with Strict Breakout Validation (v5.1).")
         
