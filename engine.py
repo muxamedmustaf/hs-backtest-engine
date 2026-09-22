@@ -7,10 +7,9 @@ import numpy as np
 
 MIN_WAVE_CANDLES = 3
 
-# Ø´Ø±ÙˆØ· Ø§Ù„Ù‡ÙŠÙƒÙ„ ÙˆØ§Ù„Ù…ØªØ·Ù„Ø¨Ø§Øª Ø§Ù„Ø¥Ø¶Ø§ÙÙŠØ© Ù„Ù„Ù†Ù…ÙˆØ°Ø¬
 MIN_PRE_TREND_MOVE = 0.01
 MIN_SHOULDER_REACTION = 0.003
-MAX_SHOULDER_DEPTH_DIFF = 0.30  # Ù†Ø³Ø¨Ø© Ø§Ù„ØªÙØ§ÙˆØª Ø§Ù„Ù…Ø³Ù…ÙˆØ­ Ø¨Ù‡Ø§ Ù„ØªÙ‚Ø§Ø±Ø¨ Ø¹Ù…Ù‚ Ø§Ù„ÙƒØªÙÙŠÙ† (30%)
+MAX_SHOULDER_DEPTH_DIFF = 0.30 
 
 
 def calculate_indicators(df):
@@ -28,7 +27,6 @@ def calculate_indicators(df):
     df["RSI"] = 100 - (100 / (1 + rs))
     df["RSI"] = df["RSI"].fillna(50.0)
 
-    # Ø­Ø³Ø§Ø¨ Ø§Ù„Ù…Ø¯Ù‰ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ Ø§Ù„Ù…ØªÙˆØ³Ø· (ATR) Ù„Ø¬Ø¹Ù„ Ø§Ù„ØªØ£Ø±Ø¬Ø­ Ø¯ÙŠÙ†Ø§Ù…ÙŠÙƒÙŠØ§Ù‹
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -36,7 +34,6 @@ def calculate_indicators(df):
     true_range = ranges.max(axis=1)
     df["ATR"] = true_range.rolling(14).mean()
 
-    # Ù†Ø³Ø¨Ø© ØªØ£Ø±Ø¬Ø­ Ø¯ÙŠÙ†Ø§Ù…ÙŠÙƒÙŠØ© ØªØ¹ØªÙ…Ø¯ Ø¹Ù„Ù‰ Ù†Ø³Ø¨Ø© Ø§Ù„Ù€ ATR Ø¥Ù„Ù‰ Ø³Ø¹Ø± Ø§Ù„Ø¥ØºÙ„Ø§Ù‚
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
 
@@ -221,14 +218,11 @@ class PatternValidatorPipeline:
             return False, None, None
 
         if self.pattern_type == "Head and Shoulders":
-            # Ø§Ø´ØªØ±Ø§Ø· RSI ÙÙŠ Ø§Ù„Ù†Ø·Ø§Ù‚ Ø§Ù„Ù…Ø­Ø§ÙŠØ¯ Ø¥Ù„Ù‰ Ø§Ù„ØªØ´Ø¨Ø¹ Ø§Ù„Ø¨ÙŠØ¹ÙŠ Ø§Ù„Ø­Ø°Ø±
             if not (30 <= rsi_val <= 70):
                 return False, None, None
-            # Ø§Ù„ØªØ«Ø¨Øª Ù…Ù† ØªÙˆØ§ÙÙ‚ EMA: Ø¹Ø¯Ù… ÙƒÙˆÙ† Ø§Ù„Ø³Ø¹Ø± Ø£Ø¹Ù„Ù‰ Ù…Ù† EMA50 Ùˆ EMA200 Ø¨ÙØ§Ø±Ù‚ ÙƒØ¨ÙŠØ±
             if close_val > max(ema50, ema200) * 1.01:
                 return False, None, None
         else:
-            # Ù„Ù„Ù†Ù…ÙˆØ°Ø¬ Ø§Ù„Ù…Ø¹ÙƒÙˆØ³
             if not (30 <= rsi_val <= 70):
                 return False, None, None
             if close_val < min(ema50, ema200) * 0.99:
@@ -310,7 +304,6 @@ def detect_all_head_shoulders(pivots, df):
         if h1 <= l0 or l1 <= l0:
             continue
 
-        # Ø­Ø³Ø§Ø¨ Ø±Ø¯Ø© Ø§Ù„ÙØ¹Ù„ Ù„Ù„ÙƒØªÙ Ø§Ù„Ø£ÙŠØ³Ø± ÙˆØ§Ù„Ø£ÙŠÙ…Ù†
         left_reaction_up = (h1 - l0) / max(abs(l0), 1e-9)
         left_reaction_down = (h1 - l1) / max(abs(h1), 1e-9)
 
@@ -327,9 +320,6 @@ def detect_all_head_shoulders(pivots, df):
         if h2 <= h1 or h2 <= h3:
             continue
 
-        # ==========================================================
-        # 1. Ø¥Ø¶Ø§ÙØ© Ø´Ø±Ø· ØªÙ‚Ø§Ø±Ø¨ Ø¹Ù…Ù‚ Ø§Ù„ÙƒØªÙÙŠÙ† (Shoulder Depth Symmetry)
-        # ==========================================================
         left_depth = h1 - l1
         right_depth = h3 - l2
 
@@ -339,7 +329,6 @@ def detect_all_head_shoulders(pivots, df):
         max_depth = max(left_depth, right_depth)
         depth_diff_ratio = abs(left_depth - right_depth) / max_depth
 
-        # Ø§Ø³ØªØ¨Ø¹Ø§Ø¯ Ø§Ù„Ù†Ù…ÙˆØ°Ø¬ Ø¥Ø°Ø§ ÙƒØ§Ù† Ø§Ù„ØªÙØ§ÙˆØª ÙÙŠ Ø¹Ù…Ù‚ Ø§Ù„ÙƒØªÙÙŠÙ† Ø£ÙƒØ¨Ø± Ù…Ù† 30%
         if depth_diff_ratio > MAX_SHOULDER_DEPTH_DIFF:
             continue
 
@@ -359,7 +348,6 @@ def detect_all_head_shoulders(pivots, df):
         if abs(l1 - l2) > (head_height * 0.25):
             continue
 
-        # ØªØ´ØºÙŠÙ„ Ø£Ù†Ø¨ÙˆØ¨ Ø§Ù„ÙØ­Øµ Ù„Ù„ØªØ£ÙƒØ¯ Ù…Ù† Ø´Ø±ÙˆØ· Ø§Ù„Ù…Ø¤Ø´Ø±Ø§Øª Ø§Ù„ÙÙ†ÙŠØ© (RSI, EMA, Breakout)
         passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
@@ -429,9 +417,6 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if l2 >= l1 or l2 >= l3:
             continue
 
-        # ==========================================================
-        # 1. Ø¥Ø¶Ø§ÙØ© Ø´Ø±Ø· ØªÙ‚Ø§Ø±Ø¨ Ø¹Ù…Ù‚ Ø§Ù„ÙƒØªÙÙŠÙ† Ù„Ù„Ù†Ù…ÙˆØ°Ø¬ Ø§Ù„Ù…Ø¹ÙƒÙˆØ³
-        # ==========================================================
         left_depth = h1 - l1
         right_depth = h2 - l3
 
@@ -460,7 +445,6 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if abs(h1 - h2) > (head_depth * 0.25):
             continue
 
-        # ØªØ´ØºÙŠÙ„ Ø§Ù„ÙØ­Øµ ÙˆØ§Ù„ØªØ­Ù‚Ù‚ Ù…Ù† Ø§Ù„Ù…Ø¤Ø´Ø±Ø§Øª Ø§Ù„ÙÙ†ÙŠØ© Ù„Ù„Ù†Ù…ÙˆØ°Ø¬ Ø§Ù„Ù…Ø¹ÙƒÙˆØ³
         passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
@@ -524,6 +508,81 @@ def _detect_both_head_shoulders(pivots, df):
 
 
 detect_all_head_shoulders = _detect_both_head_shoulders
+
+
+def backtest_strategy(df):
+    if df is None or df.empty:
+        return []
+
+    df_calc = df.copy()
+    required = ["Open", "High", "Low", "Close"]
+
+    for col in required:
+        if col not in df_calc.columns:
+            return []
+        df_calc[col] = pd.to_numeric(df_calc[col], errors="coerce")
+
+    df_calc = df_calc.dropna(subset=required)
+
+    if len(df_calc) < 30:
+        return []
+
+    df_calc = calculate_indicators(df_calc)
+    df_calc = calculate_zigzag(df_calc)
+
+    pivots = get_chronological_pivots(df_calc)
+    all_patterns = detect_all_head_shoulders(pivots, df_calc)
+
+    trades = []
+    for pat in all_patterns:
+        nodes = pat.get("nodes", [])
+        entry = pat.get("entry")
+        sl = pat.get("sl")
+        tp = pat.get("tp")
+        bias = pat.get("bias")
+
+        head_result = "LOSS"
+        shoulder_result = "LOSS"
+
+        if nodes:
+            end_idx = nodes[-1][0]
+            if end_idx in df_calc.index:
+                post_df = df_calc.loc[end_idx:]
+                shoulder_tp = entry - (entry - tp) * 0.5 if bias == "Bearish" else entry + (tp - entry) * 0.5
+
+                for _, row in post_df.iterrows():
+                    high = float(row["High"])
+                    low = float(row["Low"])
+
+                    if bias == "Bearish":
+                        if low <= shoulder_tp:
+                            shoulder_result = "WIN"
+                        if low <= tp:
+                            head_result = "WIN"
+                            break
+                        if high >= sl:
+                            break
+                    else:
+                        if high >= shoulder_tp:
+                            shoulder_result = "WIN"
+                        if high >= tp:
+                            head_result = "WIN"
+                            break
+                        if low <= sl:
+                            break
+
+        trades.append({
+            "Pattern": pat.get("pattern"),
+            "Bias": bias,
+            "Entry": entry,
+            "SL": sl,
+            "TP": tp,
+            "Head Result": head_result,
+            "Shoulder Result": shoulder_result,
+            "nodes": nodes
+        })
+
+    return trades
 
 
 def run_full_analysis(df):
@@ -610,6 +669,5 @@ def run_full_analysis(df):
 
 
 if __name__ == "__main__":
-
     print("ENGINE.PY loaded with Enhanced Shoulder Symmetry & Indicator Pipeline (v4.7).")
             
