@@ -2,16 +2,15 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST (STRICT TREND)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
 
-MIN_PRE_TREND_MOVE = 0.01
+MIN_PRE_TREND_MOVE = 0.015  # شرط حركة اتجاهية سابقة لا تقل عن 1.5%
 MIN_SHOULDER_REACTION = 0.003
 MAX_SHOULDER_DEPTH_DIFF = 0.20
 MAX_SHOULDER_LEVEL_DIFF = 0.05
-MAX_PATTERN_RECENCY = 20
 
 
 def calculate_indicators(df):
@@ -164,28 +163,52 @@ class PatternValidatorPipeline:
         return True, None, None
 
     def trend_filter(self, p, data):
-        idx_l0 = p[0]["idx"]
-        pre_l0_df = data.loc[:idx_l0]
-        if len(pre_l0_df) > 10:
-            if self.pattern_type == "Head and Shoulders":
-                past_min = pre_l0_df["Low"].iloc[-10:].min()
-                if past_min > p[0]["val"]:
-                    return False, None, None
-                pre_trend_move = (p[1]["val"] - past_min) / max(abs(past_min), 1e-9)
-                if pre_trend_move < MIN_PRE_TREND_MOVE:
-                    return False, None, None
-            else:
-                past_max = pre_l0_df["High"].iloc[-10:].max()
-                if past_max < p[0]["val"]:
-                    return False, None, None
+        """
+        شرط اتجاه صارم:
+        - للرأس والكتفين الهابط: يجب أن يتشكل بعد اتجاه صاعد مؤكد (EMA50 >= EMA200 وحركة صاعدة لا تقل عن 1.5%)
+        - للرأس والكتفين الصاعد (المعكوس): يجب أن يتشكل بعد اتجاه هابط مؤكد (EMA50 <= EMA200 وحركة هابطة لا تقل عن 1.5%)
+        """
+        idx_start = p[0]["idx"]
+        pos_start = data.index.get_loc(idx_start)
+
+        lookback = 20
+        if pos_start < lookback:
+            return False, None, None
+
+        pre_pattern_df = data.iloc[pos_start - lookback : pos_start]
+        
+        ema50_pre = pre_pattern_df["EMA50"].dropna()
+        ema200_pre = pre_pattern_df["EMA200"].dropna()
+
+        if ema50_pre.empty or ema200_pre.empty:
+            return False, None, None
+
+        last_ema50 = ema50_pre.iloc[-1]
+        last_ema200 = ema200_pre.iloc[-1]
+
+        if self.pattern_type == "Head and Shoulders":
+            start_price = pre_pattern_df["Low"].min()
+            h1_price = p[1]["val"]
+            upward_move = (h1_price - start_price) / max(abs(start_price), 1e-9)
+
+            if upward_move < MIN_PRE_TREND_MOVE or last_ema50 < last_ema200:
+                return False, None, None
+
+        else:
+            start_price = pre_pattern_df["High"].max()
+            l1_price = p[1]["val"]
+            downward_move = (start_price - l1_price) / max(abs(start_price), 1e-9)
+
+            if downward_move < MIN_PRE_TREND_MOVE or last_ema50 > last_ema200:
+                return False, None, None
+
         return True, None, None
 
     def invalidation_filter(self, p, data):
         h2 = p[3]["val"]
         idx_h2 = p[3]["idx"]
         idx_h3 = p[5]["idx"]
-        
-        # تصحيح النطاق: الفحص فقط بين تشكل الرأس والكتف الأيمن
+
         post_head_df = data.loc[idx_h2:idx_h3]
         if len(post_head_df) > 1:
             if self.pattern_type == "Head and Shoulders":
@@ -218,7 +241,6 @@ class PatternValidatorPipeline:
     def breakout_filter(self, p, data):
         idx_h3 = p[5]["idx"]
         pos_h3 = data.index.get_loc(idx_h3)
-        # البحث عن الكسر في نافذة 40 شمعة بعد الكتف الأيمن
         search_window = data.iloc[pos_h3 : pos_h3 + 40]
 
         if self.pattern_type == "Head and Shoulders":
@@ -228,7 +250,6 @@ class PatternValidatorPipeline:
 
             for idx, row in search_window.iterrows():
                 close = float(row["Close"])
-                # إذا تجاوز السعر قمة الرأس قبل الكسر يتم الإلغاء
                 if float(row["High"]) > h2:
                     return False, None, None
                 if close < neckline_avg:
@@ -533,4 +554,3 @@ def backtest_strategy(df):
         })
 
     return trades
-        
