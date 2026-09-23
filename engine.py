@@ -2,13 +2,10 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER (v4.6)
+# ENGINE.PY - DYNAMIC SWING & STRICT TREND SCANNER (v5.0)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
-
-# Additional structural requirements for a clear pre-pattern trend
-# and clear shoulder formation.
 MIN_PRE_TREND_MOVE = 0.01
 MIN_SHOULDER_REACTION = 0.003
 
@@ -28,7 +25,7 @@ def calculate_indicators(df):
     df["RSI"] = 100 - (100 / (1 + rs))
     df["RSI"] = df["RSI"].fillna(50.0)
 
-    # حساب المدى الحقيقي المتوسط (ATR) لجعل التأرجح ديناميكياً
+    # حساب ATR للتأرجح الديناميكي
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -36,7 +33,6 @@ def calculate_indicators(df):
     true_range = ranges.max(axis=1)
     df["ATR"] = true_range.rolling(14).mean()
 
-    # نسبة تأرجح ديناميكية تعتمد على نسبة الـ ATR إلى سعر الإغلاق
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
 
@@ -173,6 +169,7 @@ class PatternValidatorPipeline:
         return True, None, None
 
     def trend_filter(self, p, data):
+        """تصفية صارمة للاتجاه السابق للنمط"""
         idx_l0 = p[0]["idx"]
         pre_l0_df = data.loc[:idx_l0]
 
@@ -182,9 +179,7 @@ class PatternValidatorPipeline:
             if past_min > p[0]["val"]:
                 return False, None, None
 
-            pre_trend_move = (
-                p[1]["val"] - past_min
-            ) / max(abs(past_min), 1e-9)
+            pre_trend_move = (p[1]["val"] - past_min) / max(abs(past_min), 1e-9)
 
             if pre_trend_move < MIN_PRE_TREND_MOVE:
                 return False, None, None
@@ -207,6 +202,7 @@ class PatternValidatorPipeline:
         return True, None, None
 
     def indicator_confirmation_filter(self, p, data):
+        """تأكيد المؤشرات للاتجاه الصارم"""
         idx_h3 = p[5]["idx"]
         rsi_val = data.loc[idx_h3, "RSI"]
 
@@ -287,10 +283,7 @@ def detect_all_head_shoulders(pivots, df):
         left_reaction_up = (h1 - l0) / max(abs(l0), 1e-9)
         left_reaction_down = (h1 - l1) / max(abs(h1), 1e-9)
 
-        if left_reaction_up < MIN_SHOULDER_REACTION:
-            continue
-
-        if left_reaction_down < MIN_SHOULDER_REACTION:
+        if left_reaction_up < MIN_SHOULDER_REACTION or left_reaction_down < MIN_SHOULDER_REACTION:
             continue
 
         if abs(l1 - l0) / max(abs(l0), 1e-9) > 0.02:
@@ -305,7 +298,7 @@ def detect_all_head_shoulders(pivots, df):
             continue
 
         # ==========================================================
-        # التعديل الجديد: الشروط الخاصة بالنسبة المئوية 5%
+        # شروط النسبة المئوية 5% الصارمة للرأس والكتفين
         # ==========================================================
         max_shoulder = max(h1, h3)
 
@@ -399,7 +392,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
             continue
 
         # ==========================================================
-        # التعديل الجديد للنمط المقلوب: الشروط الخاصة بالنسبة 5%
+        # شروط النسبة المئوية 5% الصارمة للنمط المقلوب
         # ==========================================================
         min_shoulder = min(l1, l3)
         max_shoulder = max(l1, l3)
@@ -424,19 +417,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
 
         positions = [x["pos"] for x in p]
 
-        if (positions[1] - positions[0]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[2] - positions[1]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[3] - positions[2]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[4] - positions[3]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[5] - positions[4]) < MIN_WAVE_CANDLES:
+        if any((positions[j+1] - positions[j]) < MIN_WAVE_CANDLES for j in range(5)):
             continue
 
         idx_h0 = p[0]["idx"]
@@ -619,10 +600,10 @@ def run_full_analysis(df):
         }
 
     latest_pattern = all_patterns[-1]
-    signal = "STRONG SELL"
+    signal = "STRONG SELL" if latest_pattern["bias"] == "Bearish" else "STRONG BUY"
 
     return {
-        "df": df,
+        "df": df_active,
         "signal": signal,
         "pattern": latest_pattern["pattern"],
         "bias": latest_pattern["bias"],
@@ -639,28 +620,77 @@ def run_full_analysis(df):
     }
 
 
-_original_run_full_analysis = run_full_analysis
+def backtest_strategy(df):
+    """دالة الاختيار الرجعي الشاملة المستوردة بواسطة ملف المختبر backtest.py"""
+    trades = []
+    if df is None or len(df) < 50:
+        return trades
 
+    df = df.copy()
+    window_size = 150
+    step = 4
+    last_detected_key = None
 
-def _run_full_analysis_both_directions(df):
-    result = _original_run_full_analysis(df)
+    for end_i in range(window_size, len(df), step):
+        sub_df = df.iloc[:end_i]
+        res = run_full_analysis(sub_df)
 
-    if result is None:
-        return result
+        signal = res.get("signal")
+        if signal in ["STRONG BUY", "STRONG SELL"]:
+            nodes = res.get("nodes", [])
+            pattern_key = nodes[-1][0] if nodes else sub_df.index[-1]
 
-    if result.get("pattern") == "Inverse Head and Shoulders":
-        result["signal"] = "STRONG BUY"
-        result["bias"] = "Bullish"
-    elif result.get("pattern") == "Head and Shoulders":
-        result["signal"] = "STRONG SELL"
-        result["bias"] = "Bearish"
+            if pattern_key == last_detected_key:
+                continue
 
-    return result
+            last_detected_key = pattern_key
+            entry = res.get("entry")
+            sl = res.get("sl")
+            tp = res.get("tp")
 
+            # محاكاة الصفحات في الشموع القادمة لقياس النتيجة
+            future_df = df.iloc[end_i:]
+            head_result = "WIN"
+            shoulder_result = "WIN"
 
-run_full_analysis = _run_full_analysis_both_directions
+            for _, row in future_df.iterrows():
+                high = row["High"]
+                low = row["Low"]
+
+                if signal == "STRONG BUY":
+                    if low <= sl:
+                        head_result = "LOSS"
+                        shoulder_result = "LOSS"
+                        break
+                    if high >= tp:
+                        head_result = "WIN"
+                        shoulder_result = "WIN"
+                        break
+                elif signal == "STRONG SELL":
+                    if high >= sl:
+                        head_result = "LOSS"
+                        shoulder_result = "LOSS"
+                        break
+                    if low <= tp:
+                        head_result = "WIN"
+                        shoulder_result = "WIN"
+                        break
+
+            trades.append({
+                "Date": str(sub_df.index[-1]),
+                "Pattern": res.get("pattern"),
+                "Signal": signal,
+                "Entry": entry,
+                "SL": sl,
+                "TP": tp,
+                "nodes": nodes,
+                "Head Result": head_result,
+                "Shoulder Result": shoulder_result
+            })
+
+    return trades
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Dynamic ATR Swing Scanner (v4.6).")
-            
+    print("ENGINE.PY loaded with Dynamic ATR Swing Scanner & Backtest Suite (v5.0).")
+        
