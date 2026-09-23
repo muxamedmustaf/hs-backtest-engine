@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - STRICT SHOULDER & 15% HEAD PROMINENCE SCANNER
+# ENGINE.PY - STRICT SHOULDER (20%) & HEAD PROMINENCE (15%) SCANNER
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -11,9 +11,9 @@ MAX_WAVE_CANDLES = 40       # منع التباعد الزمني المفرط ب
 MIN_PRE_TREND_MOVE = 0.015  # شرط حركة اتجاهية سابقة لا تقل عن 1.5%
 MIN_SHOULDER_REACTION = 0.003
 
-# تعديل التباين المقبول بين قمتي/قاعي الكتفين وعمقهما ليصبح 10% كحد أقصى
-MAX_SHOULDER_LEVEL_DIFF = 0.10  # 10% تباين أقصى بين القمم/القيعان
-MAX_SHOULDER_DEPTH_DIFF = 0.10  # 10% تباين أقصى في العمق والارتفاع
+# تعديل التباين المقبول بين قمتي/قاعي الكتفين وعمقهما ليصبح 20% كحد أقصى
+MAX_SHOULDER_LEVEL_DIFF = 0.20  # 20% تباين أقصى بين القمم/القيعان
+MAX_SHOULDER_DEPTH_DIFF = 0.20  # 20% تباين أقصى في العمق والارتفاع
 
 # شرط أن يكون بروز الرأس أعلى من أعلى كتف (أو أدنى من أدنى كتف) بنسبة لا تقل عن 15%
 MIN_HEAD_PROMINENCE_RATIO = 0.15
@@ -314,12 +314,12 @@ def detect_all_head_shoulders(pivots, df):
         if left_reaction_up < MIN_SHOULDER_REACTION or left_reaction_down < MIN_SHOULDER_REACTION or right_reaction_up < MIN_SHOULDER_REACTION:
             continue
 
-        # شرط تماثل قمة الكتف الأيمن بقمة الكتف الأيسر (10% تباين كحد أقصى)
+        # شرط تماثل قمة الكتف الأيمن بقمة الكتف الأيسر (20% تباين كحد أقصى)
         shoulder_level_diff = abs(h1 - h3) / max(abs(h1), 1e-9)
         if shoulder_level_diff > MAX_SHOULDER_LEVEL_DIFF:
             continue
 
-        # شرط تماثل عمق الكتفين (10% تباين كحد أقصى)
+        # شرط تماثل عمق الكتفين (20% تباين كحد أقصى)
         left_depth = h1 - l1
         right_depth = h3 - l2
         if left_depth <= 0 or right_depth <= 0:
@@ -384,12 +384,12 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if l2 >= l1 or l2 >= l3:
             continue
 
-        # شرط تماثل قاع الكتف الأيمن بقاع الكتف الأيسر (10% تباين كحد أقصى)
+        # شرط تماثل قاع الكتف الأيمن بقاع الكتف الأيسر (20% تباين كحد أقصى)
         shoulder_level_diff = abs(l1 - l3) / max(abs(l1), 1e-9)
         if shoulder_level_diff > MAX_SHOULDER_LEVEL_DIFF:
             continue
 
-        # شرط تماثل عمق الكتفين (10% تباين كحد أقصى)
+        # شرط تماثل عمق الكتفين (20% تباين كحد أقصى)
         left_depth = h1 - l1
         right_depth = h2 - l3
         if left_depth <= 0 or right_depth <= 0:
@@ -582,4 +582,4 @@ def backtest_strategy(df):
         })
 
     return trades
-                
+        
