@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST (STRICT TREND)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST (WITH MOMENTUM BREAKOUT FILTER)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -163,11 +163,6 @@ class PatternValidatorPipeline:
         return True, None, None
 
     def trend_filter(self, p, data):
-        """
-        شرط اتجاه صارم:
-        - للرأس والكتفين الهابط: يجب أن يتشكل بعد اتجاه صاعد مؤكد (EMA50 >= EMA200 وحركة صاعدة لا تقل عن 1.5%)
-        - للرأس والكتفين الصاعد (المعكوس): يجب أن يتشكل بعد اتجاه هابط مؤكد (EMA50 <= EMA200 وحركة هابطة لا تقل عن 1.5%)
-        """
         idx_start = p[0]["idx"]
         pos_start = data.index.get_loc(idx_start)
 
@@ -239,6 +234,9 @@ class PatternValidatorPipeline:
         return True, None, None
 
     def breakout_filter(self, p, data):
+        """
+        تتضمن إضافة فلتر الزخم أثناء الكسر لحماية الصفقة من الكسر الوهمي
+        """
         idx_h3 = p[5]["idx"]
         pos_h3 = data.index.get_loc(idx_h3)
         search_window = data.iloc[pos_h3 : pos_h3 + 40]
@@ -250,9 +248,13 @@ class PatternValidatorPipeline:
 
             for idx, row in search_window.iterrows():
                 close = float(row["Close"])
+                rsi = float(row.get("RSI", 50))
+                
                 if float(row["High"]) > h2:
                     return False, None, None
-                if close < neckline_avg:
+                
+                # إغلاق أسفل خط العنق + فلتر زخم بيعي (RSI < 50)
+                if close < neckline_avg and rsi < 50:
                     return True, idx, close
         else:
             h1, h2_neck = p[2]["val"], p[4]["val"]
@@ -261,9 +263,13 @@ class PatternValidatorPipeline:
 
             for idx, row in search_window.iterrows():
                 close = float(row["Close"])
+                rsi = float(row.get("RSI", 50))
+                
                 if float(row["Low"]) < l2_head:
                     return False, None, None
-                if close > neckline_avg:
+                
+                # إغلاق أعلى خط العنق + فلتر زخم شرائي (RSI > 50)
+                if close > neckline_avg and rsi > 50:
                     return True, idx, close
 
         return False, None, None
