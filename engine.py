@@ -2,15 +2,18 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST (WITH MOMENTUM BREAKOUT FILTER)
+# ENGINE.PY - STRICT SHOULDER SYMMETRY & DYNAMIC SCANNER
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
+MAX_WAVE_CANDLES = 40       # منع التباعد الزمني المفرط بين نقاط النموذج
 
 MIN_PRE_TREND_MOVE = 0.015  # شرط حركة اتجاهية سابقة لا تقل عن 1.5%
 MIN_SHOULDER_REACTION = 0.003
-MAX_SHOULDER_DEPTH_DIFF = 0.20
-MAX_SHOULDER_LEVEL_DIFF = 0.05
+
+# تعديل التباين المقبول بين قمتي/قاعي الكتفين وعمقهما ليصبح 10% كحد أقصى
+MAX_SHOULDER_LEVEL_DIFF = 0.10  # 10% تباين أقصى بين القمم/القيعان
+MAX_SHOULDER_DEPTH_DIFF = 0.10  # 10% تباين أقصى في العمق والارتفاع
 
 
 def calculate_indicators(df):
@@ -151,15 +154,23 @@ class PatternValidatorPipeline:
         ]
 
     def time_filter(self, p, data):
+        """
+        التحقق من توازن الزمن وعدم التباعد المفرط بين الشموع لمنع التشويه
+        """
         i_l0, i_h1, i_l1, i_h2, i_l2, i_h3 = [x["pos"] for x in p]
-        if (
-            (i_h1 - i_l0 < MIN_WAVE_CANDLES) or
-            (i_l1 - i_h1 < MIN_WAVE_CANDLES) or
-            (i_h2 - i_l1 < MIN_WAVE_CANDLES) or
-            (i_l2 - i_h2 < MIN_WAVE_CANDLES) or
-            (i_h3 - i_l2 < MIN_WAVE_CANDLES)
-        ):
-            return False, None, None
+        
+        diffs = [
+            i_h1 - i_l0,
+            i_l1 - i_h1,
+            i_h2 - i_l1,
+            i_l2 - i_h2,
+            i_h3 - i_l2
+        ]
+
+        for d in diffs:
+            if d < MIN_WAVE_CANDLES or d > MAX_WAVE_CANDLES:
+                return False, None, None
+
         return True, None, None
 
     def trend_filter(self, p, data):
@@ -234,9 +245,6 @@ class PatternValidatorPipeline:
         return True, None, None
 
     def breakout_filter(self, p, data):
-        """
-        تتضمن إضافة فلتر الزخم أثناء الكسر لحماية الصفقة من الكسر الوهمي
-        """
         idx_h3 = p[5]["idx"]
         pos_h3 = data.index.get_loc(idx_h3)
         search_window = data.iloc[pos_h3 : pos_h3 + 40]
@@ -253,7 +261,6 @@ class PatternValidatorPipeline:
                 if float(row["High"]) > h2:
                     return False, None, None
                 
-                # إغلاق أسفل خط العنق + فلتر زخم بيعي (RSI < 50)
                 if close < neckline_avg and rsi < 50:
                     return True, idx, close
         else:
@@ -268,7 +275,6 @@ class PatternValidatorPipeline:
                 if float(row["Low"]) < l2_head:
                     return False, None, None
                 
-                # إغلاق أعلى خط العنق + فلتر زخم شرائي (RSI > 50)
                 if close > neckline_avg and rsi > 50:
                     return True, idx, close
 
@@ -308,10 +314,12 @@ def detect_all_head_shoulders(pivots, df):
         if left_reaction_up < MIN_SHOULDER_REACTION or left_reaction_down < MIN_SHOULDER_REACTION or right_reaction_up < MIN_SHOULDER_REACTION:
             continue
 
+        # شرط تماثل قمة الكتف الأيمن بقمة الكتف الأيسر (10% تباين كحد أقصى)
         shoulder_level_diff = abs(h1 - h3) / max(abs(h1), 1e-9)
         if shoulder_level_diff > MAX_SHOULDER_LEVEL_DIFF:
             continue
 
+        # شرط تماثل عمق الكتفين (10% تباين كحد أقصى)
         left_depth = h1 - l1
         right_depth = h3 - l2
         if left_depth <= 0 or right_depth <= 0:
@@ -370,10 +378,12 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if l2 >= l1 or l2 >= l3:
             continue
 
+        # شرط تماثل قاع الكتف الأيمن بقاع الكتف الأيسر (10% تباين كحد أقصى)
         shoulder_level_diff = abs(l1 - l3) / max(abs(l1), 1e-9)
         if shoulder_level_diff > MAX_SHOULDER_LEVEL_DIFF:
             continue
 
+        # شرط تماثل عمق الكتفين (10% تباين كحد أقصى)
         left_depth = h1 - l1
         right_depth = h2 - l3
         if left_depth <= 0 or right_depth <= 0:
