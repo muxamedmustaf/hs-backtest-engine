@@ -7,7 +7,6 @@ import numpy as np
 
 MIN_WAVE_CANDLES = 3
 
-# الشروط والهيكل كما هي في منطق إستراتيجيتك
 MIN_PRE_TREND_MOVE = 0.01
 MIN_SHOULDER_REACTION = 0.003
 MAX_SHOULDER_DEPTH_DIFF = 0.20
@@ -184,13 +183,16 @@ class PatternValidatorPipeline:
     def invalidation_filter(self, p, data):
         h2 = p[3]["val"]
         idx_h2 = p[3]["idx"]
-        post_head_df = data.loc[idx_h2:]
-        if not post_head_df.empty:
+        idx_h3 = p[5]["idx"]
+        
+        # تصحيح النطاق: الفحص فقط بين تشكل الرأس والكتف الأيمن
+        post_head_df = data.loc[idx_h2:idx_h3]
+        if len(post_head_df) > 1:
             if self.pattern_type == "Head and Shoulders":
-                if post_head_df["High"].max() > h2:
+                if post_head_df["High"].iloc[1:].max() > h2:
                     return False, None, None
             else:
-                if post_head_df["Low"].min() < h2:
+                if post_head_df["Low"].iloc[1:].min() < h2:
                     return False, None, None
         return True, None, None
 
@@ -215,18 +217,19 @@ class PatternValidatorPipeline:
 
     def breakout_filter(self, p, data):
         idx_h3 = p[5]["idx"]
-        post_h3_df = data.loc[idx_h3:]
+        pos_h3 = data.index.get_loc(idx_h3)
+        # البحث عن الكسر في نافذة 40 شمعة بعد الكتف الأيمن
+        search_window = data.iloc[pos_h3 : pos_h3 + 40]
 
         if self.pattern_type == "Head and Shoulders":
             l1, l2 = p[2]["val"], p[4]["val"]
             h2 = p[3]["val"]
             neckline_avg = (l1 + l2) / 2.0
-            head_length = h2 - neckline_avg
-            tp_level = neckline_avg - head_length
 
-            for idx, row in post_h3_df.iterrows():
+            for idx, row in search_window.iterrows():
                 close = float(row["Close"])
-                if close <= tp_level:
+                # إذا تجاوز السعر قمة الرأس قبل الكسر يتم الإلغاء
+                if float(row["High"]) > h2:
                     return False, None, None
                 if close < neckline_avg:
                     return True, idx, close
@@ -234,12 +237,10 @@ class PatternValidatorPipeline:
             h1, h2_neck = p[2]["val"], p[4]["val"]
             l2_head = p[3]["val"]
             neckline_avg = (h1 + h2_neck) / 2.0
-            head_length = neckline_avg - l2_head
-            tp_level = neckline_avg + head_length
 
-            for idx, row in post_h3_df.iterrows():
+            for idx, row in search_window.iterrows():
                 close = float(row["Close"])
-                if close >= tp_level:
+                if float(row["Low"]) < l2_head:
                     return False, None, None
                 if close > neckline_avg:
                     return True, idx, close
@@ -459,9 +460,6 @@ def run_full_analysis(df):
     }
 
 
-# ==========================================================
-# دالة الاختبار الرجعي الشاملة (تعتمد 100% على منطق إستراتيجيتك)
-# ==========================================================
 def backtest_strategy(df):
     if df is None or df.empty or len(df) < 30:
         return []
@@ -489,7 +487,6 @@ def backtest_strategy(df):
         sl_price = pat["sl"]
         head_tp = pat["tp"]
 
-        # حساب هدف الكتف (50% من هدف الرأس)
         if pat["bias"] == "Bearish":
             shoulder_tp = entry_price - (abs(entry_price - head_tp) * 0.5)
         else:
@@ -536,8 +533,4 @@ def backtest_strategy(df):
         })
 
     return trades
-
-
-if __name__ == "__main__":
-    print("ENGINE.PY - Fully synchronized with backtest.py using exact original strategy logic.")
-
+        
