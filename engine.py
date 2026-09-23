@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - STRICT SHOULDER SYMMETRY & DYNAMIC SCANNER
+# ENGINE.PY - STRICT SHOULDER & 15% HEAD PROMINENCE SCANNER
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -14,6 +14,9 @@ MIN_SHOULDER_REACTION = 0.003
 # تعديل التباين المقبول بين قمتي/قاعي الكتفين وعمقهما ليصبح 10% كحد أقصى
 MAX_SHOULDER_LEVEL_DIFF = 0.10  # 10% تباين أقصى بين القمم/القيعان
 MAX_SHOULDER_DEPTH_DIFF = 0.10  # 10% تباين أقصى في العمق والارتفاع
+
+# شرط أن يكون بروز الرأس أعلى من أعلى كتف (أو أدنى من أدنى كتف) بنسبة لا تقل عن 15%
+MIN_HEAD_PROMINENCE_RATIO = 0.15
 
 
 def calculate_indicators(df):
@@ -154,9 +157,6 @@ class PatternValidatorPipeline:
         ]
 
     def time_filter(self, p, data):
-        """
-        التحقق من توازن الزمن وعدم التباعد المفرط بين الشموع لمنع التشويه
-        """
         i_l0, i_h1, i_l1, i_h2, i_l2, i_h3 = [x["pos"] for x in p]
         
         diffs = [
@@ -328,12 +328,18 @@ def detect_all_head_shoulders(pivots, df):
         if abs(left_depth - right_depth) / max(left_depth, right_depth) > MAX_SHOULDER_DEPTH_DIFF:
             continue
 
+        # شرط أن ترتفع قمة الرأس عن أعلى قمة للكتفين بنسبة لا تقل عن 15%
+        highest_shoulder_peak = max(h1, h3)
+        head_prominence = (h2 - highest_shoulder_peak) / max(abs(highest_shoulder_peak), 1e-9)
+        if head_prominence < MIN_HEAD_PROMINENCE_RATIO:
+            continue
+
         passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
 
-        l1_idx = p[2]["idx"]
         neckline_avg = (l1 + l2) / 2.0
+        l1_idx = p[2]["idx"]
         actual_head_length = h2 - neckline_avg
 
         entry = neckline_avg
@@ -392,12 +398,18 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if abs(left_depth - right_depth) / max(left_depth, right_depth) > MAX_SHOULDER_DEPTH_DIFF:
             continue
 
+        # شرط أن ينخفض قاع الرأس عن أدنى قاع للكتفين بنسبة لا تقل عن 15%
+        lowest_shoulder_trough = min(l1, l3)
+        head_prominence = (lowest_shoulder_trough - l2) / max(abs(lowest_shoulder_trough), 1e-9)
+        if head_prominence < MIN_HEAD_PROMINENCE_RATIO:
+            continue
+
         passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
 
-        h1_idx = p[2]["idx"]
         neckline_avg = (h1 + h2) / 2.0
+        h1_idx = p[2]["idx"]
         actual_head_length = neckline_avg - l2
 
         entry = neckline_avg
@@ -570,3 +582,4 @@ def backtest_strategy(df):
         })
 
     return trades
+                
