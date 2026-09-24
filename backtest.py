@@ -126,19 +126,40 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             trades_df = active_bt_item["trades_df"]
             total_signals = active_bt_item["total_signals"]
             
-            st.markdown(f"### 📊 إجمالي الإشارات المكتشفة للأصل {active_sym}: **{total_signals}**")
+            # --- حسابات التقرير الإجمالي التفصيلي ---
             head_wins = len(trades_df[trades_df["Head Result"] == "WIN"]) if "Head Result" in trades_df.columns else 0
+            head_losses = total_signals - head_wins
+            head_win_rate = (head_wins / total_signals * 100) if total_signals > 0 else 0.0
+
             shoulder_wins = len(trades_df[trades_df["Shoulder Result"] == "WIN"]) if "Shoulder Result" in trades_df.columns else 0
+            shoulder_losses = total_signals - shoulder_wins
+            shoulder_win_rate = (shoulder_wins / total_signals * 100) if total_signals > 0 else 0.0
+
+            # --- عرض التقرير الإجمالي لصفقات الباك تست ---
+            st.markdown(f"### 📊 التقرير الإجمالي للأصل: **{active_sym}**")
             
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("📊 إجمالي الصفقات", total_signals)
-            m2.metric("🎯 نجاح الرأس", head_wins)
-            m3.metric("🎯 نجاح الكتف", shoulder_wins)
+            m2.metric("🎯 نجاح الرأس", f"{head_wins} ({head_win_rate:.1f}%)")
+            m3.metric("❌ خسائر الرأس", head_losses)
+            m4.metric("🎯 نجاح الكتف", f"{shoulder_wins} ({shoulder_win_rate:.1f}%)")
+            m5.metric("❌ خسائر الكتف", shoulder_losses)
+
+            st.markdown(f"""
+            <div style="background-color: #F8F9FA; border: 1px solid #DADCE0; border-radius: 12px; padding: 14px; margin-top: 10px; margin-bottom: 20px;">
+                <h4 style="margin-top:0; color: #0B57D0;">📋 ملخص تقرير الأداء والتفاصيل:</h4>
+                <ul style="line-height: 1.8; margin-bottom: 0;">
+                    <li><b>إجمالي الإشارات المكتشفة:</b> {total_signals} صفقة</li>
+                    <li><b>هدف الرأس (Head Target):</b> <span style="color: #137333; font-weight: bold;">{head_wins} صفقات ناجحة</span> | <span style="color: #C5221F; font-weight: bold;">{head_losses} صفقات خاسرة</span> (نسبة النجاح: <b>{head_win_rate:.2f}%</b>)</li>
+                    <li><b>هدف الكتف (Shoulder Target):</b> <span style="color: #137333; font-weight: bold;">{shoulder_wins} صفقات ناجحة</span> | <span style="color: #C5221F; font-weight: bold;">{shoulder_losses} صفقات خاسرة</span> (نسبة النجاح: <b>{shoulder_win_rate:.2f}%</b>)</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # --- رسم الشارت البياني مع رسم تفاصيل الأنماط والترسيم البصري الدقيق ---
+            # --- رسم الشارت البياني مع رسم تفاصيل الأنماط وخطوط العنق والأهداف ---
             if active_sym in bt_dfs_dict and not bt_dfs_dict[active_sym].empty:
                 df_bt_res = bt_dfs_dict[active_sym]
-                st.markdown("#### 📈 الرسم الفني للنمط (تخطيط القمم والقيعان والخطوط)")
+                st.markdown("#### 📈 الرسم الفني المطور (هيكل النمط + خطوط العنق والأهداف)")
                 
                 fig_bt = go.Figure()
                 fig_bt.add_trace(go.Candlestick(
@@ -146,7 +167,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
                 ))
                 
-                # استخراج ورسم عقد النمط (Nodes) تماماً كما في صورتك المرفقة
+                # استخراج ورسم عقد النمط (Nodes)
                 if not trades_df.empty and 'nodes' in trades_df.columns:
                     for idx, row in trades_df.iterrows():
                         nodes = row.get('nodes', [])
@@ -154,15 +175,28 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                             sorted_nodes = sorted(nodes, key=lambda item: pd.to_datetime(item[0]))
                             x_nodes = [n[0] for n in sorted_nodes]
                             y_nodes = [n[1] for n in sorted_nodes]
+                            
+                            # رسم هيكل النمط
                             fig_bt.add_trace(go.Scatter(
                                 x=x_nodes, y=y_nodes,
                                 mode="lines+markers", 
                                 line=dict(color="#C5221F", width=2.5),
-                                marker=dict(size=8, color="#0B57D0"), 
+                                marker=dict(size=7, color="#0B57D0"), 
                                 name=f"النمط #{idx+1}"
                             ))
 
-                fig_bt.update_layout(template="plotly_white", height=480, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
+                            # استغلال خط العنق (Neckline) للباك تست من العقد المتاحة
+                            if len(sorted_nodes) >= 5:
+                                n1_x, n1_y = sorted_nodes[2][0], sorted_nodes[2][1]
+                                n2_x, n2_y = sorted_nodes[4][0], sorted_nodes[4][1]
+                                fig_bt.add_trace(go.Scatter(
+                                    x=[n1_x, n2_x], y=[n1_y, n2_y],
+                                    mode="lines",
+                                    line=dict(color="#FF9800", width=2, dash="dot"),
+                                    name=f"خط العنق #{idx+1}"
+                                ))
+
+                fig_bt.update_layout(template="plotly_white", height=500, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
                 st.plotly_chart(fig_bt, use_container_width=True)
 
             st.markdown("---")
@@ -265,9 +299,13 @@ else:
                 """, unsafe_allow_html=True)
 
             e1, e2, e3 = st.columns(3)
-            e1.metric("🎯 سعر الدخول (Entry)", f"{active_result.get('entry', 0)}")
-            e2.metric("🛑 وقف الخسارة (Stop Loss)", f"{active_result.get('sl', 0)}")
-            e3.metric("🏆 الهدف (Target)", f"{active_result.get('tp', 0)}")
+            entry_val = active_result.get('entry', 0)
+            sl_val = active_result.get('sl', 0)
+            tp_val = active_result.get('tp', 0)
+
+            e1.metric("🎯 سعر الدخول (Entry)", f"{entry_val}")
+            e2.metric("🛑 وقف الخسارة (Stop Loss)", f"{sl_val}")
+            e3.metric("🏆 الهدف (Target)", f"{tp_val}")
 
             if df_res is not None and not df_res.empty:
                 fig = go.Figure()
@@ -275,6 +313,8 @@ else:
                     x=df_res.index, open=df_res["Open"], high=df_res["High"], low=df_res["Low"], close=df_res["Close"],
                     name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
                 ))
+
+                # 1. رسم هيكل النمط (Nodes)
                 nodes = active_result.get("nodes", [])
                 if nodes:
                     sorted_nodes = sorted(nodes, key=lambda item: pd.to_datetime(item[0]))
@@ -285,6 +325,27 @@ else:
                         mode="lines+markers", line=dict(color="#C5221F", width=2.5),
                         marker=dict(size=7, color="#0B57D0"), name=f"{pattern}"
                     ))
-                fig.update_layout(template="plotly_white", height=450, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
+
+                # 2. استغلال واسثمار `neckline_nodes` لرسم خط العنق المائل
+                neckline_nodes = active_result.get("neckline_nodes", [])
+                if neckline_nodes and len(neckline_nodes) >= 2:
+                    x_neck = [n[0] for n in neckline_nodes]
+                    y_neck = [n[1] for n in neckline_nodes]
+                    fig.add_trace(go.Scatter(
+                        x=x_neck, y=y_neck,
+                        mode="lines",
+                        line=dict(color="#FF9800", width=2, dash="dash"),
+                        name="خط العنق (Neckline)"
+                    ))
+
+                # 3. استغلال واستثمار مستويات الدخول والهدف والستوب على الرسم البياني
+                if entry_val:
+                    fig.add_hline(y=entry_val, line_dash="dash", line_color="#2196F3", annotation_text="دخول (Entry)", annotation_position="top right")
+                if sl_val:
+                    fig.add_hline(y=sl_val, line_dash="dash", line_color="#F44336", annotation_text="وقف (SL)", annotation_position="bottom right")
+                if tp_val:
+                    fig.add_hline(y=tp_val, line_dash="dash", line_color="#4CAF50", annotation_text="هدف (TP)", annotation_position="top right")
+
+                fig.update_layout(template="plotly_white", height=480, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
                 st.plotly_chart(fig, use_container_width=True)
-        
+            
