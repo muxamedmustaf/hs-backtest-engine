@@ -63,8 +63,11 @@ def find_pivots(df: pd.DataFrame, window: int = 3):
 def detect_head_and_shoulders(df: pd.DataFrame, pivots_high, pivots_low, 
                               shoulder_tolerance: float = 0.15, 
                               head_prominence: float = 0.01):
-    """خوارزمية التعرف الهيكلي المتقدمة المطبقة بكافة شروط البروز والتماثل"""
+    """
+    خوارزمية صارمة للتعرف على النمط بشرط الإغلاق المؤكد فوق/تحت خط العنق
+    """
     patterns = []
+    closes = df['Close'].values
     
     # 1. الرأس والكتفين الهبوطي (Head & Shoulders)
     for i in range(len(pivots_high) - 2):
@@ -82,26 +85,44 @@ def detect_head_and_shoulders(df: pd.DataFrame, pivots_high, pivots_low,
                     n1 = min(lows_between_1, key=lambda x: x[1])
                     n2 = min(lows_between_2, key=lambda x: x[1])
                     
-                    nodes = [(l_shoulder[0], l_shoulder[1]), (n1[0], n1[1]), (head[0], head[1]), (n2[0], n2[1]), (r_shoulder[0], r_shoulder[1])]
-                    neckline_nodes = [(n1[0], n1[1]), (n2[0], n2[1])]
+                    x1, y1 = n1[2], n1[1]
+                    x2, y2 = n2[2], n2[1]
+                    m = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
                     
-                    entry = round(float(n2[1]), 5)
-                    sl = round(float(r_shoulder[1]), 5)
-                    pattern_height = head[1] - ((n1[1] + n2[1]) / 2)
-                    tp_head = round(float(entry - pattern_height), 5)
-                    tp_shoulder = round(float(entry - (r_shoulder[1] - n2[1])), 5)
+                    # فحص صرامة الكسر: البحث عن شمعة تغلق تحت خط العنق بعد الكتف الأيمن
+                    breakout_idx = None
+                    breakout_price = None
                     
-                    patterns.append({
-                        "type": "Head and Shoulders",
-                        "signal": "STRONG SELL",
-                        "end_idx": r_shoulder[2],
-                        "nodes": nodes,
-                        "neckline_nodes": neckline_nodes,
-                        "entry": entry,
-                        "sl": sl,
-                        "tp_head": tp_head,
-                        "tp_shoulder": tp_shoulder
-                    })
+                    for k in range(r_shoulder[2], len(df)):
+                        neckline_val_at_k = y1 + m * (k - x1)
+                        if closes[k] < neckline_val_at_k:  # إغلاق مؤكد أسفل خط العنق
+                            breakout_idx = k
+                            breakout_price = closes[k]
+                            break
+                    
+                    # اعتماد النمط فقط عند الكسر الفعلي
+                    if breakout_idx is not None:
+                        nodes = [(l_shoulder[0], l_shoulder[1]), (n1[0], n1[1]), (head[0], head[1]), (n2[0], n2[1]), (r_shoulder[0], r_shoulder[1])]
+                        neckline_nodes = [(n1[0], n1[1]), (n2[0], n2[1])]
+                        
+                        entry = round(float(breakout_price), 5)
+                        sl = round(float(r_shoulder[1]), 5)
+                        neckline_at_break = y1 + m * (breakout_idx - x1)
+                        pattern_height = head[1] - neckline_at_break
+                        tp_head = round(float(entry - pattern_height), 5)
+                        tp_shoulder = round(float(entry - (r_shoulder[1] - neckline_at_break)), 5)
+                        
+                        patterns.append({
+                            "type": "Head and Shoulders",
+                            "signal": "STRONG SELL",
+                            "end_idx": breakout_idx,  # محاكاة التداول تبدأ فور الكسر
+                            "nodes": nodes,
+                            "neckline_nodes": neckline_nodes,
+                            "entry": entry,
+                            "sl": sl,
+                            "tp_head": tp_head,
+                            "tp_shoulder": tp_shoulder
+                        })
 
     # 2. الرأس والكتفين الصعودي المعكوس (Inverse Head & Shoulders)
     for i in range(len(pivots_low) - 2):
@@ -119,31 +140,49 @@ def detect_head_and_shoulders(df: pd.DataFrame, pivots_high, pivots_low,
                     n1 = max(highs_between_1, key=lambda x: x[1])
                     n2 = max(highs_between_2, key=lambda x: x[1])
                     
-                    nodes = [(l_shoulder[0], l_shoulder[1]), (n1[0], n1[1]), (head[0], head[1]), (n2[0], n2[1]), (r_shoulder[0], r_shoulder[1])]
-                    neckline_nodes = [(n1[0], n1[1]), (n2[0], n2[1])]
+                    x1, y1 = n1[2], n1[1]
+                    x2, y2 = n2[2], n2[1]
+                    m = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
                     
-                    entry = round(float(n2[1]), 5)
-                    sl = round(float(r_shoulder[1]), 5)
-                    pattern_height = ((n1[1] + n2[1]) / 2) - head[1]
-                    tp_head = round(float(entry + pattern_height), 5)
-                    tp_shoulder = round(float(entry + (n2[1] - r_shoulder[1])), 5)
+                    # فحص صرامة الكسر: البحث عن شمعة تغلق فوق خط العنق بعد الكتف الأيمن
+                    breakout_idx = None
+                    breakout_price = None
                     
-                    patterns.append({
-                        "type": "Inverse Head and Shoulders",
-                        "signal": "STRONG BUY",
-                        "end_idx": r_shoulder[2],
-                        "nodes": nodes,
-                        "neckline_nodes": neckline_nodes,
-                        "entry": entry,
-                        "sl": sl,
-                        "tp_head": tp_head,
-                        "tp_shoulder": tp_shoulder
-                    })
+                    for k in range(r_shoulder[2], len(df)):
+                        neckline_val_at_k = y1 + m * (k - x1)
+                        if closes[k] > neckline_val_at_k:  # إغلاق مؤكد أعلا خط العنق
+                            breakout_idx = k
+                            breakout_price = closes[k]
+                            break
+                    
+                    # اعتماد النمط فقط عند الكسر الفعلي
+                    if breakout_idx is not None:
+                        nodes = [(l_shoulder[0], l_shoulder[1]), (n1[0], n1[1]), (head[0], head[1]), (n2[0], n2[1]), (r_shoulder[0], r_shoulder[1])]
+                        neckline_nodes = [(n1[0], n1[1]), (n2[0], n2[1])]
+                        
+                        entry = round(float(breakout_price), 5)
+                        sl = round(float(r_shoulder[1]), 5)
+                        neckline_at_break = y1 + m * (breakout_idx - x1)
+                        pattern_height = neckline_at_break - head[1]
+                        tp_head = round(float(entry + pattern_height), 5)
+                        tp_shoulder = round(float(entry + (neckline_at_break - r_shoulder[1])), 5)
+                        
+                        patterns.append({
+                            "type": "Inverse Head and Shoulders",
+                            "signal": "STRONG BUY",
+                            "end_idx": breakout_idx,  # محاكاة التداول تبدأ فور الكسر
+                            "nodes": nodes,
+                            "neckline_nodes": neckline_nodes,
+                            "entry": entry,
+                            "sl": sl,
+                            "tp_head": tp_head,
+                            "tp_shoulder": tp_shoulder
+                        })
 
     return patterns
 
 def run_full_analysis(df: pd.DataFrame, interval: str = "1d", window: int = 3, shoulder_tolerance: float = 0.15, head_prominence: float = 0.01) -> dict:
-    """تغذية الواجهة بالتحليل المباشر"""
+    """تغذية الواجهة بالتحليل المباشر بناءً على الشروط الصارمة"""
     if df.empty or len(df) < 20:
         return {
             "signal": "NEUTRAL", "pattern": "None", "entry": 0.0, "sl": 0.0, "tp": 0.0,
@@ -170,13 +209,13 @@ def run_full_analysis(df: pd.DataFrame, interval: str = "1d", window: int = 3, s
         
     return {
         "signal": "NEUTRAL",
-        "pattern": "No Pattern Detected",
+        "pattern": "No Confirmed Breakout Pattern",
         "entry": round(float(df_calc['Close'].iloc[-1]), 5),
         "sl": 0.0, "tp": 0.0, "nodes": [], "neckline_nodes": [], "df": df_calc
     }
 
 def backtest_strategy(df: pd.DataFrame, interval: str = "1d", window: int = 3, shoulder_tolerance: float = 0.15, head_prominence: float = 0.01) -> list:
-    """محاكاة الاختبار الرجعي بالأهداف المزدوجة وتقييم الأداء"""
+    """محاكاة الاختبار الرجعي بناءً على إشارات الكسر المؤكدة فقط"""
     if df.empty or len(df) < 30:
         return []
         
@@ -194,7 +233,7 @@ def backtest_strategy(df: pd.DataFrame, interval: str = "1d", window: int = 3, s
         tp_head = pat["tp_head"]
         tp_shoulder = pat["tp_shoulder"]
         
-        future_df = df_calc.iloc[start_idx:]
+        future_df = df_calc.iloc[start_idx + 1:]
         head_result = "LOSS"
         shoulder_result = "LOSS"
         
@@ -233,4 +272,3 @@ def backtest_strategy(df: pd.DataFrame, interval: str = "1d", window: int = 3, s
         })
         
     return trades
-        
