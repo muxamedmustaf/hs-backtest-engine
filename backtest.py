@@ -1,351 +1,236 @@
 # -*- coding: utf-8 -*-
-import streamlit as st
-import yfinance as yf
-import plotly.graph_objects as go
 import pandas as pd
-from engine import run_full_analysis, backtest_strategy
+import numpy as np
 
-try:
-    from ffff import get_symbols_from_sheet
-except ImportError:
-    st.error("⚠️ تنبيه: لم يتم العثور على ملف ffff.py بجانب ملف الواجهة")
-
-st.set_page_config(page_title="Smart Market Analyzer & Backtest Lab", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
-
-SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
-DEFAULT_SHEET_NAME = "GOLD"
-DEFAULT_COL_NAME = "TOKENS"
-
-if "current_symbol" not in st.session_state:
-    st.session_state.current_symbol = "NZDCAD=X"
-if "status_summary" not in st.session_state:
-    st.session_state.status_summary = "⚡ Live Scan & Backtest Lab • جاهز"
-if "scanned_signals" not in st.session_state:
-    st.session_state.scanned_signals = []
-if "backtest_scanned_signals" not in st.session_state:
-    st.session_state.backtest_scanned_signals = []
-if "backtest_dfs" not in st.session_state:
-    st.session_state.backtest_dfs = {}
-
-st.markdown(f'''
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 15px;">
-    <div style="border: 1px solid #DADCE0; background: #FFFFFF; border-radius: 16px; padding: 8px 14px; font-weight: 700; color: #0B57D0; font-size: 14px;">📈 {st.session_state.current_symbol}</div>
-    <div style="border: 1px solid #DADCE0; background: #FFFFFF; border-radius: 30px; padding: 8px 14px; font-weight: 700; color: #0B57D0; font-size: 13px;">{st.session_state.status_summary}</div>
-</div>
-''', unsafe_allow_html=True)
-
-app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي للأسواق", "🧪 مختبر الاختبار الرجعي (Backtest)"], horizontal=True)
-
-st.markdown("---")
-
-# ==========================================
-# MODE 1: BACKTESTING LAB (مختبر الاختبار الرجعي)
-# ==========================================
-if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
-    st.markdown("### 🧪 مختبر تحليل الأداء التاريخي")
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """حساب المؤشرات الفنية الأساسية (RSI و EMAs)"""
+    df = df.copy()
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / (loss + 1e-10)
+    df['RSI'] = 100 - (100 / (1 + rs))
     
-    bt_scan_mode = st.radio("طريقة فحص الاختبار الرجعي:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True, key="bt_scan_mode_radio")
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+    return df
+
+def prepare_timeframe_data(df: pd.DataFrame, target_interval: str) -> pd.DataFrame:
+    """تحويل وتجميع بيانات الشموع (OHLCV Resampling) لدعم كافة الأطر الزمانية العالمية"""
+    if df.empty:
+        return df
+        
+    resample_map = {
+        "1m": "1min", "2m": "2min", "3m": "3min", "4m": "4min", "5m": "5min",
+        "10m": "10min", "15m": "15min", "30m": "30min", "45m": "45min",
+        "1h": "1h", "2h": "2h", "3h": "3h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
+        "1d": "1D", "2d": "2D", "3d": "3D", "1wk": "1W", "1mo": "1ME", "3mo": "3ME", "1y": "1YE"
+    }
     
-    bt_symbols_to_scan = []
-    if bt_scan_mode == "سهم فردي":
-        backtest_symbol = st.text_input("رمز الأصل للاختبار الرجعي", value="EURUSD=X")
-        st.session_state.current_symbol = backtest_symbol
-        bt_symbols_to_scan = [backtest_symbol]
-    else:
-        fetched_symbols, err = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)
-        if err:
-            st.error(err)
-        else:
-            bt_symbols_to_scan = fetched_symbols
-            st.success(f"تم تحميل {len(bt_symbols_to_scan)} أصل بنجاح من جدول بيانات جوجل!")
+    rule = resample_map.get(target_interval)
+    if not rule or target_interval in ["1m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"]:
+        return df
+        
+    try:
+        resampled_df = df.resample(rule).agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum' if 'Volume' in df.columns else 'first'
+        }).dropna()
+        return resampled_df
+    except Exception:
+        return df
 
-    col_bar1, col_bar2 = st.columns(2)
-    with col_bar1:
-        interval_options = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
-        selected_interval = st.selectbox("⏱️ الإطار الزمني:", options=interval_options, index=6, key="bt_interval")
-    with col_bar2:
-        period_options = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
-        selected_period = st.selectbox("📅 فترة البيانات:", options=period_options, index=5, key="bt_period")
-
-    run_backtest = st.button("📊 بدء محاكاة الاختبار الرجعي", use_container_width=True, key="run_bt_btn")
+def find_pivots(df: pd.DataFrame, window: int = 3):
+    """استخراج القمم والقيعان المحلية"""
+    pivots_high, pivots_low = [], []
+    highs, lows, dates = df['High'].values, df['Low'].values, df.index
     
-    if run_backtest and bt_symbols_to_scan:
-        bt_results_list = []
-        bt_dfs_dict = {}
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    for i in range(window, len(df) - window):
+        if all(highs[i] > highs[i - j] for j in range(1, window + 1)) and \
+           all(highs[i] > highs[i + j] for j in range(1, window + 1)):
+            pivots_high.append((dates[i], highs[i], i))
+            
+        if all(lows[i] < lows[i - j] for j in range(1, window + 1)) and \
+           all(lows[i] < lows[i + j] for j in range(1, window + 1)):
+            pivots_low.append((dates[i], lows[i], i))
+            
+    return pivots_high, pivots_low
 
-        for idx, sym in enumerate(bt_symbols_to_scan):
-            status_text.text(f"جاري محاكاة الأصل ({idx+1}/{len(bt_symbols_to_scan)}): {sym}...")
-            progress_bar.progress((idx + 1) / len(bt_symbols_to_scan))
-
-            try:
-                df_bt = yf.download(sym, period=selected_period, interval=selected_interval, progress=False, auto_adjust=False)
-                if isinstance(df_bt.columns, pd.MultiIndex):
-                    df_bt.columns = df_bt.columns.get_level_values(0)
+def detect_head_and_shoulders(df: pd.DataFrame, pivots_high, pivots_low, 
+                              shoulder_tolerance: float = 0.15, 
+                              head_prominence: float = 0.01):
+    """خوارزمية التعرف الهيكلي المتقدمة المطبقة بكافة شروط البروز والتماثل"""
+    patterns = []
+    
+    # 1. الرأس والكتفين الهبوطي (Head & Shoulders)
+    for i in range(len(pivots_high) - 2):
+        l_shoulder, head, r_shoulder = pivots_high[i], pivots_high[i+1], pivots_high[i+2]
+        
+        # شرط البروز
+        if head[1] > l_shoulder[1] * (1 + head_prominence) and head[1] > r_shoulder[1] * (1 + head_prominence):
+            # شرط التماثل
+            shoulder_diff = abs(l_shoulder[1] - r_shoulder[1]) / max(l_shoulder[1], r_shoulder[1])
+            if shoulder_diff <= shoulder_tolerance:
+                lows_between_1 = [p for p in pivots_low if l_shoulder[2] < p[2] < head[2]]
+                lows_between_2 = [p for p in pivots_low if head[2] < p[2] < r_shoulder[2]]
                 
-                trades = backtest_strategy(df_bt)
-                if trades:
-                    trades_df = pd.DataFrame(trades)
-                    bt_results_list.append({
-                        "symbol": sym,
-                        "trades_df": trades_df,
-                        "total_signals": len(trades_df)
+                if lows_between_1 and lows_between_2:
+                    n1 = min(lows_between_1, key=lambda x: x[1])
+                    n2 = min(lows_between_2, key=lambda x: x[1])
+                    
+                    nodes = [(l_shoulder[0], l_shoulder[1]), (n1[0], n1[1]), (head[0], head[1]), (n2[0], n2[1]), (r_shoulder[0], r_shoulder[1])]
+                    neckline_nodes = [(n1[0], n1[1]), (n2[0], n2[1])]
+                    
+                    entry = round(float(n2[1]), 5)
+                    sl = round(float(r_shoulder[1]), 5)
+                    pattern_height = head[1] - ((n1[1] + n2[1]) / 2)
+                    tp_head = round(float(entry - pattern_height), 5)
+                    tp_shoulder = round(float(entry - (r_shoulder[1] - n2[1])), 5)
+                    
+                    patterns.append({
+                        "type": "Head and Shoulders",
+                        "signal": "STRONG SELL",
+                        "end_idx": r_shoulder[2],
+                        "nodes": nodes,
+                        "neckline_nodes": neckline_nodes,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp_head": tp_head,
+                        "tp_shoulder": tp_shoulder
                     })
-                    bt_dfs_dict[sym] = df_bt
-            except Exception:
-                continue
 
-        status_text.empty()
-        progress_bar.empty()
-        st.session_state.backtest_scanned_signals = bt_results_list
-        st.session_state.backtest_dfs = bt_dfs_dict
-        st.success(f"اكتملت محاكاة الاختبار الرجعي! تم العثور على نتائج لـ {len(bt_results_list)} أصل.")
-
-    if st.session_state.backtest_scanned_signals:
-        bt_results_list = st.session_state.backtest_scanned_signals
-        bt_dfs_dict = st.session_state.backtest_dfs
-
-        if bt_scan_mode == "مسح كلي لشيت الأصول":
-            bt_options = [f"{item['symbol']} | عدد الصفقات: {item['total_signals']}" for item in bt_results_list]
-            if bt_options:
-                selected_bt_option = st.selectbox("👇 اختر الأصل المعروض للباك تست:", bt_options, key="bt_sheet_select")
-                selected_bt_index = bt_options.index(selected_bt_option)
-                active_bt_item = bt_results_list[selected_bt_index]
-            else:
-                active_bt_item = None
-        else:
-            if bt_results_list:
-                active_bt_item = bt_results_list[0]
-            else:
-                active_bt_item = None
-
-        if active_bt_item:
-            active_sym = active_bt_item["symbol"]
-            st.session_state.current_symbol = active_sym
-            trades_df = active_bt_item["trades_df"]
-            total_signals = active_bt_item["total_signals"]
-            
-            # --- حسابات التقرير الإجمالي التفصيلي ---
-            head_wins = len(trades_df[trades_df["Head Result"] == "WIN"]) if "Head Result" in trades_df.columns else 0
-            head_losses = total_signals - head_wins
-            head_win_rate = (head_wins / total_signals * 100) if total_signals > 0 else 0.0
-
-            shoulder_wins = len(trades_df[trades_df["Shoulder Result"] == "WIN"]) if "Shoulder Result" in trades_df.columns else 0
-            shoulder_losses = total_signals - shoulder_wins
-            shoulder_win_rate = (shoulder_wins / total_signals * 100) if total_signals > 0 else 0.0
-
-            # --- عرض التقرير الإجمالي لصفقات الباك تست ---
-            st.markdown(f"### 📊 التقرير الإجمالي للأصل: **{active_sym}**")
-            
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("📊 إجمالي الصفقات", total_signals)
-            m2.metric("🎯 نجاح الرأس", f"{head_wins} ({head_win_rate:.1f}%)")
-            m3.metric("❌ خسائر الرأس", head_losses)
-            m4.metric("🎯 نجاح الكتف", f"{shoulder_wins} ({shoulder_win_rate:.1f}%)")
-            m5.metric("❌ خسائر الكتف", shoulder_losses)
-
-            st.markdown(f"""
-            <div style="background-color: #F8F9FA; border: 1px solid #DADCE0; border-radius: 12px; padding: 14px; margin-top: 10px; margin-bottom: 20px;">
-                <h4 style="margin-top:0; color: #0B57D0;">📋 ملخص تقرير الأداء والتفاصيل:</h4>
-                <ul style="line-height: 1.8; margin-bottom: 0;">
-                    <li><b>إجمالي الإشارات المكتشفة:</b> {total_signals} صفقة</li>
-                    <li><b>هدف الرأس (Head Target):</b> <span style="color: #137333; font-weight: bold;">{head_wins} صفقات ناجحة</span> | <span style="color: #C5221F; font-weight: bold;">{head_losses} صفقات خاسرة</span> (نسبة النجاح: <b>{head_win_rate:.2f}%</b>)</li>
-                    <li><b>هدف الكتف (Shoulder Target):</b> <span style="color: #137333; font-weight: bold;">{shoulder_wins} صفقات ناجحة</span> | <span style="color: #C5221F; font-weight: bold;">{shoulder_losses} صفقات خاسرة</span> (نسبة النجاح: <b>{shoulder_win_rate:.2f}%</b>)</li>
-                </ul>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # --- رسم الشارت البياني مع رسم تفاصيل الأنماط وخطوط العنق والأهداف ---
-            if active_sym in bt_dfs_dict and not bt_dfs_dict[active_sym].empty:
-                df_bt_res = bt_dfs_dict[active_sym]
-                st.markdown("#### 📈 الرسم الفني المطور (هيكل النمط + خطوط العنق والأهداف)")
+    # 2. الرأس والكتفين الصعودي المعكوس (Inverse Head & Shoulders)
+    for i in range(len(pivots_low) - 2):
+        l_shoulder, head, r_shoulder = pivots_low[i], pivots_low[i+1], pivots_low[i+2]
+        
+        # شرط البروز للمنعكس
+        if head[1] < l_shoulder[1] * (1 - head_prominence) and head[1] < r_shoulder[1] * (1 - head_prominence):
+            # شرط التماثل
+            shoulder_diff = abs(l_shoulder[1] - r_shoulder[1]) / max(l_shoulder[1], r_shoulder[1])
+            if shoulder_diff <= shoulder_tolerance:
+                highs_between_1 = [p for p in pivots_high if l_shoulder[2] < p[2] < head[2]]
+                highs_between_2 = [p for p in pivots_high if head[2] < p[2] < r_shoulder[2]]
                 
-                fig_bt = go.Figure()
-                fig_bt.add_trace(go.Candlestick(
-                    x=df_bt_res.index, open=df_bt_res["Open"], high=df_bt_res["High"], low=df_bt_res["Low"], close=df_bt_res["Close"],
-                    name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
-                ))
-                
-                # استخراج ورسم عقد النمط (Nodes)
-                if not trades_df.empty and 'nodes' in trades_df.columns:
-                    for idx, row in trades_df.iterrows():
-                        nodes = row.get('nodes', [])
-                        if isinstance(nodes, list) and nodes:
-                            sorted_nodes = sorted(nodes, key=lambda item: pd.to_datetime(item[0]))
-                            x_nodes = [n[0] for n in sorted_nodes]
-                            y_nodes = [n[1] for n in sorted_nodes]
-                            
-                            # رسم هيكل النمط
-                            fig_bt.add_trace(go.Scatter(
-                                x=x_nodes, y=y_nodes,
-                                mode="lines+markers", 
-                                line=dict(color="#C5221F", width=2.5),
-                                marker=dict(size=7, color="#0B57D0"), 
-                                name=f"النمط #{idx+1}"
-                            ))
+                if highs_between_1 and highs_between_2:
+                    n1 = max(highs_between_1, key=lambda x: x[1])
+                    n2 = max(highs_between_2, key=lambda x: x[1])
+                    
+                    nodes = [(l_shoulder[0], l_shoulder[1]), (n1[0], n1[1]), (head[0], head[1]), (n2[0], n2[1]), (r_shoulder[0], r_shoulder[1])]
+                    neckline_nodes = [(n1[0], n1[1]), (n2[0], n2[1])]
+                    
+                    entry = round(float(n2[1]), 5)
+                    sl = round(float(r_shoulder[1]), 5)
+                    pattern_height = ((n1[1] + n2[1]) / 2) - head[1]
+                    tp_head = round(float(entry + pattern_height), 5)
+                    tp_shoulder = round(float(entry + (n2[1] - r_shoulder[1])), 5)
+                    
+                    patterns.append({
+                        "type": "Inverse Head and Shoulders",
+                        "signal": "STRONG BUY",
+                        "end_idx": r_shoulder[2],
+                        "nodes": nodes,
+                        "neckline_nodes": neckline_nodes,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp_head": tp_head,
+                        "tp_shoulder": tp_shoulder
+                    })
 
-                            # استغلال خط العنق (Neckline) للباك تست من العقد المتاحة
-                            if len(sorted_nodes) >= 5:
-                                n1_x, n1_y = sorted_nodes[2][0], sorted_nodes[2][1]
-                                n2_x, n2_y = sorted_nodes[4][0], sorted_nodes[4][1]
-                                fig_bt.add_trace(go.Scatter(
-                                    x=[n1_x, n2_x], y=[n1_y, n2_y],
-                                    mode="lines",
-                                    line=dict(color="#FF9800", width=2, dash="dot"),
-                                    name=f"خط العنق #{idx+1}"
-                                ))
+    return patterns
 
-                fig_bt.update_layout(template="plotly_white", height=500, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
-                st.plotly_chart(fig_bt, use_container_width=True)
-
-            st.markdown("---")
-            st.dataframe(trades_df, use_container_width=True)
-
-# ==========================================
-# MODE 2: LIVE MARKET SCANNER
-# ==========================================
-else:
-    scan_mode = st.radio("طريقة الفحص:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True, key="live_scan_mode_radio")
+def run_full_analysis(df: pd.DataFrame, interval: str = "1d", window: int = 3, shoulder_tolerance: float = 0.15, head_prominence: float = 0.01) -> dict:
+    """تغذية الواجهة بالتحليل المباشر"""
+    if df.empty or len(df) < 20:
+        return {
+            "signal": "NEUTRAL", "pattern": "None", "entry": 0.0, "sl": 0.0, "tp": 0.0,
+            "nodes": [], "neckline_nodes": [], "df": df
+        }
+        
+    df_prep = prepare_timeframe_data(df, interval)
+    df_calc = calculate_indicators(df_prep)
+    pivots_high, pivots_low = find_pivots(df_calc, window=window)
+    patterns = detect_head_and_shoulders(df_calc, pivots_high, pivots_low, shoulder_tolerance=shoulder_tolerance, head_prominence=head_prominence)
     
-    symbols_to_scan = []
-    if scan_mode == "سهم فردي":
-        symbol = st.text_input("رمز أصل السوق", value="NZDCAD=X", key="live_single_symbol")
-        st.session_state.current_symbol = symbol
-        symbols_to_scan = [symbol]
-    else:
-        fetched_symbols, err = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)
-        if err:
-            st.error(err)
-        else:
-            symbols_to_scan = fetched_symbols
-            st.success(f"تم تحميل {len(symbols_to_scan)} أصل بنجاح من جدول بيانات جوجل!")
+    if patterns:
+        latest = patterns[-1]
+        return {
+            "signal": latest["signal"],
+            "pattern": latest["type"],
+            "entry": latest["entry"],
+            "sl": latest["sl"],
+            "tp": latest["tp_head"],
+            "nodes": latest["nodes"],
+            "neckline_nodes": latest["neckline_nodes"],
+            "df": df_calc
+        }
+        
+    return {
+        "signal": "NEUTRAL",
+        "pattern": "No Pattern Detected",
+        "entry": round(float(df_calc['Close'].iloc[-1]), 5),
+        "sl": 0.0, "tp": 0.0, "nodes": [], "neckline_nodes": [], "df": df_calc
+    }
 
-    col_bar1, col_bar2 = st.columns(2)
-    with col_bar1:
-        interval_options = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
-        selected_interval = st.selectbox("⏱️ الإطار الزمني للفحص:", options=interval_options, index=6, key="live_interval")
-    with col_bar2:
-        period_options = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
-        selected_period = st.selectbox("📅 نطاق البيانات:", options=period_options, index=10, key="live_period")
-
-    run_scan = st.button("🚀 بدء المسح والتحليل الفوري", use_container_width=True, key="run_live_btn")
-
-    if run_scan and symbols_to_scan:
-        valid_signals = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        for idx, sym in enumerate(symbols_to_scan):
-            status_text.text(f"جاري الفحص ({idx+1}/{len(symbols_to_scan)}): {sym}...")
-            progress_bar.progress((idx + 1) / len(symbols_to_scan))
-
-            try:
-                df = yf.download(sym, period=selected_period, interval=selected_interval, progress=False, auto_adjust=False)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-
-                if not df.empty and len(df) >= 20:
-                    result = run_full_analysis(df)
-                    signal = result["signal"]
-                    pattern = result["pattern"]
-
-                    if signal in ["STRONG BUY", "STRONG SELL"] or scan_mode == "سهم فردي":
-                        valid_signals.append({
-                            "symbol": sym, "signal": signal, "pattern": pattern, "result": result
-                        })
-            except Exception:
-                continue
-
-        status_text.empty()
-        progress_bar.empty()
-        st.session_state.scanned_signals = valid_signals
-        st.success(f"اكتمل المسح! تم رصد: {len(valid_signals)} إشارة.")
-
-    if st.session_state.scanned_signals:
-        valid_signals = st.session_state.scanned_signals
-
-        if scan_mode == "مسح كلي لشيت الأصول":
-            options = [f"{item['symbol']} | {item['signal']} ({item['pattern']})" for item in valid_signals]
-            if options:
-                selected_option = st.selectbox("👇 اختر الأصل المعروض:", options, key="live_sheet_select")
-                selected_index = options.index(selected_option)
-                active_result = valid_signals[selected_index]["result"]
-                active_symbol = valid_signals[selected_index]["symbol"]
-            else:
-                active_result = None
-                active_symbol = ""
-        else:
-            if valid_signals:
-                active_result = valid_signals[0]["result"]
-                active_symbol = valid_signals[0]["result"]["symbol"] if "symbol" in valid_signals[0]["result"] else symbols_to_scan[0]
-            else:
-                active_result = None
-                active_symbol = ""
-
-        if active_result:
-            st.session_state.current_symbol = active_symbol
-            df_res = active_result.get("df", None)
-            signal, pattern = active_result["signal"], active_result["pattern"]
+def backtest_strategy(df: pd.DataFrame, interval: str = "1d", window: int = 3, shoulder_tolerance: float = 0.15, head_prominence: float = 0.01) -> list:
+    """محاكاة الاختبار الرجعي بالأهداف المزدوجة وتقييم الأداء"""
+    if df.empty or len(df) < 30:
+        return []
+        
+    df_prep = prepare_timeframe_data(df, interval)
+    df_calc = calculate_indicators(df_prep)
+    pivots_high, pivots_low = find_pivots(df_calc, window=window)
+    patterns = detect_head_and_shoulders(df_calc, pivots_high, pivots_low, shoulder_tolerance=shoulder_tolerance, head_prominence=head_prominence)
+    
+    trades = []
+    for pat in patterns:
+        start_idx = pat["end_idx"]
+        signal = pat["signal"]
+        entry = pat["entry"]
+        sl = pat["sl"]
+        tp_head = pat["tp_head"]
+        tp_shoulder = pat["tp_shoulder"]
+        
+        future_df = df_calc.iloc[start_idx:]
+        head_result = "LOSS"
+        shoulder_result = "LOSS"
+        
+        for _, row in future_df.iterrows():
+            high, low = row['High'], row['Low']
             
-            if df_res is not None and not df_res.empty:
-                latest_rsi = df_res['RSI'].iloc[-1] if 'RSI' in df_res.columns else 0.0
-                latest_close = df_res['Close'].iloc[-1]
-                st.markdown(f"""
-                <div style="margin-top: 10px; margin-bottom: 10px;">
-                    <div style="font-size: 36px; font-weight: 650; color: #0B57D0;">{latest_close:.5f}</div>
-                    <div style="font-size: 14px; color: #202124;">مؤشر القوة النسبية RSI (14): {latest_rsi:.2f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            e1, e2, e3 = st.columns(3)
-            entry_val = active_result.get('entry', 0)
-            sl_val = active_result.get('sl', 0)
-            tp_val = active_result.get('tp', 0)
-
-            e1.metric("🎯 سعر الدخول (Entry)", f"{entry_val}")
-            e2.metric("🛑 وقف الخسارة (Stop Loss)", f"{sl_val}")
-            e3.metric("🏆 الهدف (Target)", f"{tp_val}")
-
-            if df_res is not None and not df_res.empty:
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(
-                    x=df_res.index, open=df_res["Open"], high=df_res["High"], low=df_res["Low"], close=df_res["Close"],
-                    name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
-                ))
-
-                # 1. رسم هيكل النمط (Nodes)
-                nodes = active_result.get("nodes", [])
-                if nodes:
-                    sorted_nodes = sorted(nodes, key=lambda item: pd.to_datetime(item[0]))
-                    x_nodes = [n[0] for n in sorted_nodes]
-                    y_nodes = [n[1] for n in sorted_nodes]
-                    fig.add_trace(go.Scatter(
-                        x=x_nodes, y=y_nodes,
-                        mode="lines+markers", line=dict(color="#C5221F", width=2.5),
-                        marker=dict(size=7, color="#0B57D0"), name=f"{pattern}"
-                    ))
-
-                # 2. استغلال واسثمار `neckline_nodes` لرسم خط العنق المائل
-                neckline_nodes = active_result.get("neckline_nodes", [])
-                if neckline_nodes and len(neckline_nodes) >= 2:
-                    x_neck = [n[0] for n in neckline_nodes]
-                    y_neck = [n[1] for n in neckline_nodes]
-                    fig.add_trace(go.Scatter(
-                        x=x_neck, y=y_neck,
-                        mode="lines",
-                        line=dict(color="#FF9800", width=2, dash="dash"),
-                        name="خط العنق (Neckline)"
-                    ))
-
-                # 3. استغلال واستثمار مستويات الدخول والهدف والستوب على الرسم البياني
-                if entry_val:
-                    fig.add_hline(y=entry_val, line_dash="dash", line_color="#2196F3", annotation_text="دخول (Entry)", annotation_position="top right")
-                if sl_val:
-                    fig.add_hline(y=sl_val, line_dash="dash", line_color="#F44336", annotation_text="وقف (SL)", annotation_position="bottom right")
-                if tp_val:
-                    fig.add_hline(y=tp_val, line_dash="dash", line_color="#4CAF50", annotation_text="هدف (TP)", annotation_position="top right")
-
-                fig.update_layout(template="plotly_white", height=480, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20))
-                st.plotly_chart(fig, use_container_width=True)
-            
+            if signal == "STRONG SELL":
+                if low <= tp_head and head_result != "WIN":
+                    head_result = "WIN"
+                if low <= tp_shoulder and shoulder_result != "WIN":
+                    shoulder_result = "WIN"
+                if high >= sl:
+                    break
+                    
+            elif signal == "STRONG BUY":
+                if high >= tp_head and head_result != "WIN":
+                    head_result = "WIN"
+                if high >= tp_shoulder and shoulder_result != "WIN":
+                    shoulder_result = "WIN"
+                if low <= sl:
+                    break
+                    
+        trade_date = pat["nodes"][-1][0] if pat["nodes"] else df_calc.index[start_idx]
+        
+        trades.append({
+            "Date": str(trade_date),
+            "Pattern": pat["type"],
+            "Signal": signal,
+            "Entry": entry,
+            "SL": sl,
+            "TP": tp_head,
+            "Head Result": head_result,
+            "Shoulder Result": shoulder_result,
+            "nodes": pat["nodes"],
+            "neckline_nodes": pat["neckline_nodes"]
+        })
+        
+    return trades
+        
