@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER (v4.6)
+# ENGINE.PY - DYNAMIC SWING SCANNER (v4.6 - Interface Compatible)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -193,13 +193,10 @@ class PatternValidatorPipeline:
         return True, None, None
 
     def indicator_confirmation_filter(self, p, data):
-        # تم نقل فحص المؤشرات إلى breakout_filter ليتم الفحص حصرياً لحظة الكسر
         return True, None, None
 
     def breakout_filter(self, p, data):
         idx_h3 = p[5]["idx"]
-        
-        # إحداثيات خط العنق وحساب الميل باستخدام الإندكس المباشر (pos)
         l1_val, l2_val = p[2]["val"], p[4]["val"]
         idx_l1, idx_l2 = p[2]["pos"], p[4]["pos"]
         
@@ -213,23 +210,20 @@ class PatternValidatorPipeline:
         if len(post_h3_df) <= 1:
             return False, None, None
 
-        # الفحص شمعة بشمعة بعد الكتف الأيمن
         for current_idx, row in post_h3_df.iloc[1:].iterrows():
             current_pos = data.index.get_loc(current_idx)
             current_neckline = l2_val + slope * (current_pos - idx_l2)
             close_price = row["Close"]
 
-            # لحظة إغلاق شمعة الكسر أسفل خط العنق المائل (النمط الكلاسيكي - هبوط)
             if close_price < current_neckline:
                 rsi_val = row["RSI"]
                 ema50 = row["EMA50"]
                 ema200 = row["EMA200"]
 
-                # التحقق الصارم في نفس الشمعة
                 if (30 <= rsi_val <= 75) and (ema50 > ema200):
                     return True, current_idx, close_price
                 else:
-                    return False, None, None # إلغاء النمط فوراً إذا فشلت الشروط لحظة الكسر
+                    return False, None, None
 
         return False, None, None
 
@@ -299,18 +293,17 @@ def detect_all_head_shoulders(pivots, df):
 
         end_pos = df.index.get_loc(end_idx)
 
-        if (total_candles - end_pos) > 10:
+        if (total_candles - end_pos) > 150: # تم توسيع نطاق الصفقات التاريخية للاختبار الرجعي
             continue
 
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         
-        # حساب السعر الفعلي لخط العنق في نقطة الكسر لحساب الهدف
         slope = (l2 - l1) / (p[4]["pos"] - p[2]["pos"])
         breakout_neckline_price = l2 + slope * (end_pos - p[4]["pos"])
 
         actual_head_length = h2 - breakout_neckline_price
 
-        entry = float(end_val) # الدخول بسعر الإغلاق الكاسر
+        entry = float(end_val)
         sl = h2
         tp = entry - actual_head_length
 
@@ -413,28 +406,11 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if (positions[5] - positions[4]) < MIN_WAVE_CANDLES:
             continue
 
-        idx_h0 = p[0]["idx"]
-        pre_left_df = df.loc[:idx_h0]
-
-        if len(pre_left_df) > 10:
-            past_max = pre_left_df["High"].iloc[-10:].max()
-
-            if past_max < p[0]["val"]:
-                continue
-
-        idx_l2 = p[3]["idx"]
-        post_head_df = df.loc[idx_l2:]
-
-        if not post_head_df.empty:
-            if post_head_df["Low"].min() < l2:
-                continue
-
         idx_l3 = p[5]["idx"]
 
         if idx_l3 not in df.index:
             continue
 
-        # تم حذف التحقق القديم للمؤشرات من هنا لنقله إلى شمعة الكسر
         post_l3_df = df.loc[idx_l3:]
 
         if len(post_l3_df) <= 1:
@@ -446,7 +422,6 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if pos_h1 == pos_h2:
             continue
 
-        # حساب الميل بناءً على الإندكس المباشر
         slope = (h2 - h1) / (pos_h2 - pos_h1)
 
         breakout_confirmed = False
@@ -454,35 +429,32 @@ def detect_all_inverse_head_shoulders(pivots, df):
         end_val = None
         breakout_neckline_price = None
 
-        # الفحص شمعة بشمعة بعد الكتف الأيمن
         for current_idx, row in post_l3_df.iloc[1:].iterrows():
             current_pos = df.index.get_loc(current_idx)
             current_neckline = h2 + slope * (current_pos - pos_h2)
             close_price = row["Close"]
 
-            # لحظة الكسر (إغلاق الشمعة أعلى خط العنق المائل للنمط المعكوس - صعود)
             if close_price > current_neckline:
                 rsi_val = row["RSI"]
                 ema50 = row["EMA50"]
                 ema200 = row["EMA200"]
 
-                # التحقق الصارم في نفس شمعة الكسر
                 if (30 <= rsi_val <= 75) and (ema50 < ema200):
                     breakout_confirmed = True
                     end_idx = current_idx
                     end_val = close_price
                     breakout_neckline_price = current_neckline
-                break # إلغاء البحث فوراً إذا حدث الكسر بغض النظر عن النتيجة
+                break
 
         if not breakout_confirmed:
             continue
 
         end_pos = df.index.get_loc(end_idx)
 
-        if (total_candles - end_pos) > 10:
+        if (total_candles - end_pos) > 150: # تم توسيع نطاق الصفقات التاريخية للاختبار الرجعي
             continue
 
-        entry = float(end_val) # الدخول بسعر الإغلاق الكاسر
+        entry = float(end_val)
         sl = l2
         actual_head_length = breakout_neckline_price - l2
         tp = entry + actual_head_length
@@ -538,7 +510,7 @@ def _detect_both_head_shoulders(pivots, df):
 detect_all_head_shoulders = _detect_both_head_shoulders
 
 
-def run_full_analysis(df):
+def run_full_analysis(df, interval="1d"):
     if df is None or df.empty:
         return {
             "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
@@ -563,7 +535,7 @@ def run_full_analysis(df):
             "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
-    df_active = df.tail(200).copy()
+    df_active = df.tail(300).copy() # زيادة النافذة قليلاً لتشمل بيانات كافية للاختبار الرجعي
     df_active = calculate_indicators(df_active)
     df_active = calculate_zigzag(df_active)
 
@@ -581,7 +553,7 @@ def run_full_analysis(df):
     signal = "STRONG SELL"
 
     return {
-        "df": df,
+        "df": df_active,
         "signal": signal,
         "pattern": latest_pattern["pattern"],
         "bias": latest_pattern["bias"],
@@ -601,8 +573,8 @@ def run_full_analysis(df):
 _original_run_full_analysis = run_full_analysis
 
 
-def _run_full_analysis_both_directions(df):
-    result = _original_run_full_analysis(df)
+def _run_full_analysis_both_directions(df, interval="1d"):
+    result = _original_run_full_analysis(df, interval=interval)
     if result is None:
         return result
 
@@ -619,6 +591,80 @@ def _run_full_analysis_both_directions(df):
 run_full_analysis = _run_full_analysis_both_directions
 
 
-if __name__ == "__main__":
-    print("ENGINE.PY loaded with Dynamic ATR Swing Scanner (v4.6).")
+# إضافة دالة الاختبار الرجعي (Backtest Strategy) لضمان التوافق التام مع الواجهة
+def backtest_strategy(df, interval="1d"):
+    if df is None or len(df) < 50:
+        return []
+
+    df_calc = calculate_indicators(df)
+    df_calc = calculate_zigzag(df_calc)
+    pivots = get_chronological_pivots(df_calc)
+    patterns = detect_all_head_shoulders(pivots, df_calc)
+
+    trades = []
+    for pat in patterns:
+        entry = pat["entry"]
+        sl = pat["sl"]
+        tp = pat["tp"]
+        bias = pat["bias"]
+        end_idx = pat["neckline_end_idx"]
+
+        try:
+            sub_df = df_calc.loc[end_idx:]
+            if len(sub_df) <= 1:
+                continue
             
+            # محاكاة نتيجة الصفقة شمعة بشمعة بعد الدخول
+            head_result = "PENDING"
+            shoulder_result = "PENDING"
+            
+            for _, row in sub_df.iloc[1:].iterrows():
+                high_p = row["High"]
+                low_p = row["Low"]
+
+                if bias == "Bearish":
+                    # فحص ضرب الهدف أو وقف الخسارة للبيع
+                    if high_p >= sl:
+                        head_result = "LOSS"
+                        shoulder_result = "LOSS"
+                        break
+                    if low_p <= tp:
+                        head_result = "WIN"
+                        shoulder_result = "WIN"
+                        break
+                else:
+                    # فحص ضرب الهدف أو وقف الخسارة للشراء
+                    if low_p <= sl:
+                        head_result = "LOSS"
+                        shoulder_result = "LOSS"
+                        break
+                    if high_p >= tp:
+                        head_result = "WIN"
+                        shoulder_result = "WIN"
+                        break
+
+            if head_result == "PENDING":
+                head_result = "OPEN"
+                shoulder_result = "OPEN"
+
+            trades.append({
+                "Pattern": pat["pattern"],
+                "Bias": bias,
+                "Entry Date": str(end_idx),
+                "Entry Price": entry,
+                "Stop Loss": sl,
+                "Take Profit": tp,
+                "Head Result": head_result,
+                "Shoulder Result": shoulder_result,
+                "nodes": pat["nodes"],
+                "neckline_nodes": pat["neckline_nodes"]
+            })
+        except Exception:
+            continue
+
+    return trades
+
+
+if __name__ == "__main__":
+    print("ENGINE.PY loaded with Dynamic ATR Swing Scanner (v4.6 - Interface Compatible).")
+        
