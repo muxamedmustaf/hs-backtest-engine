@@ -5,27 +5,20 @@ import plotly.graph_objects as go
 import importlib
 import engine
 
-# 1. إعداد الصفحة
 st.set_page_config(
     page_title="Pattern Backtest",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
-# 2. حقن CSS لإجبار عناصر SVG وحاوية Plotly على أخذ 100% من عرض الشاشة
+# CSS لتوسيع الشارت أفقياً ليغطي كامل عرض الشاشة دون الانحصار في اليسار
 st.markdown("""
     <style>
-        /* توسيع الحاوية الرئيسية لتغطي كامل عرض الشاشة */
         .main .block-container {
-            max-width: 100vw !important;
-            width: 100vw !important;
-            padding-left: 0.2rem !important;
-            padding-right: 0.2rem !important;
-            padding-top: 0.5rem !important;
+            max-width: 100% !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
         }
-
-        /* حل مشكلة انحصار Plotly في الجانب الأيسر: إجبار كل الطبقات الداخلية على الامتداد 100% */
         div[data-testid="stPlotlyChart"],
         div[data-testid="stPlotlyChart"] > div,
         .js-plotly-plot,
@@ -41,7 +34,7 @@ st.markdown("""
 st.title("📊 Pattern Backtest")
 st.caption("هذا الملف ثابت ويقرأ نمط الاختبار من engine.py في كل تشغيل.")
 
-# إعادة تحميل engine
+# إعادة تحميل engine حتى يقرأ آخر نسخة محفوظة منه
 engine = importlib.reload(engine)
 
 st.sidebar.header("إعدادات الاختبار")
@@ -59,6 +52,7 @@ period = st.sidebar.selectbox(
     index=1
 )
 
+# 4H في Yahoo Finance: نجلب 1h ثم نعيد التجميع
 yf_interval = "1h" if interval == "4h" else interval
 
 run = st.sidebar.button("🚀 تشغيل الاختبار", use_container_width=True)
@@ -100,6 +94,11 @@ if run:
                 st.error(f"البيانات غير كافية: {len(df)} شمعة فقط.")
                 st.stop()
 
+            # --------------------------------------------------
+            # الاختبار الحقيقي:
+            # كل نقطة زمنية تستخدم البيانات السابقة فقط.
+            # engine.py هو الذي يحتوي منطق النمط.
+            # --------------------------------------------------
             detections = []
 
             for end in range(60, len(df)):
@@ -119,6 +118,8 @@ if run:
                     or ""
                 )
 
+                # لا نعتمد على signal فقط؛ نبحث عن اسم النمط
+                # الذي يكتشفه engine.py.
                 if "head" in pattern.lower() and "shoulder" in pattern.lower():
                     detections.append({
                         "pos": end - 1,
@@ -164,6 +165,9 @@ if "bt_df" in st.session_state:
         )
         st.stop()
 
+    # --------------------------------------------------
+    # رسم آخر ظهور مكتشف
+    # --------------------------------------------------
     selected = st.selectbox(
         "اختر ظهوراً لعرضه على الشارت",
         range(len(detections)),
@@ -174,7 +178,7 @@ if "bt_df" in st.session_state:
 
     d = detections[selected]
 
-    # الإبقاء على نفس نطاق الشموع الخاص بك
+    # نعرض منطقة حول النمط
     start = max(0, d["pos"] - 45)
     end = min(len(df), d["pos"] + 15)
     chart_df = df.iloc[start:end]
@@ -218,18 +222,13 @@ if "bt_df" in st.session_state:
             )
 
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         height=600,
         xaxis_rangeslider_visible=False,
-        margin=dict(l=5, r=5, t=25, b=20),
-        autosize=True
+        margin=dict(l=10, r=10, t=20, b=20)
     )
 
-    st.plotly_chart(
-        fig, 
-        use_container_width=True,
-        config={'responsive': True}
-    )
+    st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("كل مرات ظهور النمط")
 
@@ -252,10 +251,13 @@ if "bt_df" in st.session_state:
     )
 
     st.info(
-        "ملاحظة: هذا الاختبار يقيس مرات اكتشاف النمط بواسطة engine.py."
+        "ملاحظة: هذا الاختبار يقيس مرات اكتشاف النمط بواسطة engine.py. "
+        "ولا يعتبر النجاح ربحاً إلا إذا أضفنا لاحقاً قاعدة واضحة لقياس "
+        "هل وصل السعر إلى TP قبل SL."
     )
 else:
     st.info(
-        "ضع هذا الملف باسم backtest.py بجانب engine.py ثم شغله."
+        "ضع هذا الملف باسم backtest.py بجانب engine.py، "
+        "ثم شغله. عند تغيير engine.py لا تحتاج إلى تغيير backtest.py."
     )
     
