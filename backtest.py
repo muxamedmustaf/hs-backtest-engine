@@ -11,14 +11,16 @@ st.set_page_config(
     layout="wide"
 )
 
-# CSS لتوسيع الشارت أفقياً ليغطي كامل عرض الشاشة دون الانحصار في اليسار
+# إضافة CSS فقط لتوسيع نافذة الشارت والحاوية لملء الشاشة بالكامل عرضاً وطولاً
 st.markdown("""
     <style>
+        /* إغلاق الهوامش الجانبية لتوسيع الشاشة بالكامل */
         .main .block-container {
             max-width: 100% !important;
             padding-left: 0.5rem !important;
             padding-right: 0.5rem !important;
         }
+        /* إجبار إطار الشارت على الامتداد 100% بعرض الشاشة بالكامل */
         div[data-testid="stPlotlyChart"],
         div[data-testid="stPlotlyChart"] > div,
         .js-plotly-plot,
@@ -225,10 +227,15 @@ if "bt_df" in st.session_state:
         template="plotly_white",
         height=600,
         xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=20, b=20)
+        margin=dict(l=10, r=10, t=20, b=20),
+        autosize=True
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={'responsive': True}
+    )
 
     st.subheader("كل مرات ظهور النمط")
 
