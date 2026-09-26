@@ -160,7 +160,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             total_signals = active_bt_item["total_signals"]
             
             # ==================================================
-            # 2. حساب النتائج المطلوبة (أ، ب، ج، د)
+            # حساب النتائج المطلوبة (أ، ب، ج، د)
             # ==================================================
             
             # أ & ب. الإشارات الناجحة والخاسرة
@@ -400,4 +400,4 @@ else:
                 if sl_val:
                     fig.add_hline(y=sl_val, line_dash="dash", line_color="#F44336", annotation_text="وقف (SL)", annotation_position="bottom right")
                 if tp_val:
-                    fig.add_hline(y=tp_val, line_dash="dash", line_color="#4CAF
+                    fig.add_hline(y=tp_val, line_dash="dash", line_color="#4CAF50"
