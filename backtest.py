@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import calendar, datetime
 import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
 from engine import run_full_analysis, backtest_strategy
 try: from ffff import get_symbols_from_sheet
@@ -29,9 +30,24 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     bt_scan_mode = st.radio("طريقة فحص الاختبار الرجعي:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True)
     bt_symbols = [st.text_input("رمز الأصل", value="EURUSD=X")] if bt_scan_mode == "سهم فردي" else get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]
 
-    c1, c2 = st.columns(2)
-    selected_interval = c1.selectbox("⏱️ الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=17)
-    selected_period = c2.selectbox("📅 فترة البيانات:", ["1d","5d","1mo","3mo","6mo","1y","2y","5y","10y","ytd","max"], index=5)
+    # قائمة السنوات والشهور للـ 24 شهراً الماضية
+    now = datetime.datetime.now()
+    available_years = [now.year, now.year - 1, now.year - 2]
+    months_dict = {
+        1: "01 - يناير", 2: "02 - فبراير", 3: "03 - مارس", 4: "04 - إبريل",
+        5: "05 - مايو", 6: "06 - يونيو", 7: "07 - يوليو", 8: "08 - أغسطس",
+        9: "09 - سبتمبر", 10: "10 - أكتوبر", 11: "11 - نوفمبر", 12: "12 - ديسمبر"
+    }
+
+    c_yr, c_mo, c_tf = st.columns(3)
+    selected_year = c_yr.selectbox("📅 السنة:", available_years, index=0)
+    selected_month = c_mo.selectbox("🗓️ الشهر:", list(months_dict.keys()), format_func=lambda x: months_dict[x], index=now.month - 1)
+    selected_interval = c_tf.selectbox("⏱️ الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=17)
+
+    # حساب تاريخ بداية ونهاية الشهر المختار تلقائياً
+    _, last_day = calendar.monthrange(selected_year, selected_month)
+    start_date = f"{selected_year}-{selected_month:02d}-01"
+    end_date = f"{selected_year}-{selected_month:02d}-{last_day:02d}"
 
     if st.button("📊 بدء محاكاة الاختبار الرجعي", use_container_width=True) and bt_symbols:
         results, dfs = [], {}
@@ -41,7 +57,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             s_txt.text(f"محاكاة ({idx+1}/{len(bt_symbols)}): {sym}...")
             p_bar.progress((idx + 1) / len(bt_symbols))
             try:
-                df = yf.download(sym, period=selected_period, interval=dl_int, progress=False, auto_adjust=False)
+                # تنزيل البيانات عبر تواريخ start و end للشهر المحدد
+                df = yf.download(sym, start=start_date, end=end_date, interval=dl_int, progress=False, auto_adjust=False)
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
                 trades = backtest_strategy(df, interval=selected_interval)
                 if trades:
@@ -80,7 +97,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         conds = trades_df.get("Entry Conditions", trades_df.get("Pattern", trades_df.get("pattern", pd.Series()))).dropna().unique().tolist()
         cond_str = " | ".join(map(str, conds)) if conds else "اختراق خط العنق + اكتمال هيكل النمط"
 
-        st.markdown(f"### 📊 نتائج الاختبار: **{active_sym}**")
+        st.markdown(f"### 📊 نتائج الاختبار لشهر {selected_month}/{selected_year}: **{active_sym}**")
         m1, m2, m3 = st.columns(3)
         m1.metric("✅ أ. الإشارات الناجحة", wins)
         m2.metric("❌ ب. الإشارات الخاسرة", losses)
