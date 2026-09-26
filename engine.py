@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER (v4.6 - Interface Compatible)
+# ENGINE.PY - DYNAMIC SWING SCANNER & TRUE BACKTEST LAB (v4.7)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -242,7 +243,7 @@ class PatternValidatorPipeline:
         return True, end_idx, end_val
 
 
-def detect_all_head_shoulders(pivots, df):
+def _detect_all_head_shoulders_base(pivots, df, max_candles_ago=None):
     patterns = []
 
     if len(pivots) < 6:
@@ -254,14 +255,10 @@ def detect_all_head_shoulders(pivots, df):
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
 
-        if [x["type"] for x in p] != [
-            "L", "H", "L", "H", "L", "H"
-        ]:
+        if [x["type"] for x in p] != ["L", "H", "L", "H", "L", "H"]:
             continue
 
-        l0, h1, l1, h2, l2, h3 = [
-            x["val"] for x in p
-        ]
+        l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
 
         if h1 <= l0 or l1 <= l0:
             continue
@@ -293,11 +290,11 @@ def detect_all_head_shoulders(pivots, df):
 
         end_pos = df.index.get_loc(end_idx)
 
-        if (total_candles - end_pos) > 150: # تم توسيع نطاق الصفقات التاريخية للاختبار الرجعي
+        # عدم تقييد الأنماط عند الاختبار الرجعي
+        if max_candles_ago is not None and (total_candles - end_pos) > max_candles_ago:
             continue
 
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
-        
         slope = (l2 - l1) / (p[4]["pos"] - p[2]["pos"])
         breakout_neckline_price = l2 + slope * (end_pos - p[4]["pos"])
 
@@ -307,19 +304,10 @@ def detect_all_head_shoulders(pivots, df):
         sl = h2
         tp = entry - actual_head_length
 
-        nodes = [
-            (x["idx"], x["val"])
-            for x in p
-        ]
+        nodes = [(x["idx"], x["val"]) for x in p]
+        nodes.append((end_idx, float(end_val)))
 
-        nodes.append(
-            (end_idx, float(end_val))
-        )
-
-        neckline_nodes = [
-            (l1_idx, l1),
-            (l2_idx, l2)
-        ]
+        neckline_nodes = [(l1_idx, l1), (l2_idx, l2)]
 
         target_nodes = [
             (end_idx, float(round(entry, 5))),
@@ -346,7 +334,7 @@ def detect_all_head_shoulders(pivots, df):
     return patterns
 
 
-def detect_all_inverse_head_shoulders(pivots, df):
+def detect_all_inverse_head_shoulders(pivots, df, max_candles_ago=None):
     patterns = []
 
     if len(pivots) < 6:
@@ -357,19 +345,12 @@ def detect_all_inverse_head_shoulders(pivots, df):
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
 
-        if [x["type"] for x in p] != [
-            "H", "L", "H", "L", "H", "L"
-        ]:
+        if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
             continue
 
-        h0, l1, h1, l2, h2, l3 = [
-            x["val"] for x in p
-        ]
+        h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
 
-        if l2 >= l1:
-            continue
-
-        if l2 >= l3:
+        if l2 >= l1 or l2 >= l3:
             continue
 
         neckline_max = max(h1, h2)
@@ -391,19 +372,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
 
         positions = [x["pos"] for x in p]
 
-        if (positions[1] - positions[0]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[2] - positions[1]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[3] - positions[2]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[4] - positions[3]) < MIN_WAVE_CANDLES:
-            continue
-
-        if (positions[5] - positions[4]) < MIN_WAVE_CANDLES:
+        if any((positions[j] - positions[j-1]) < MIN_WAVE_CANDLES for j in range(1, 6)):
             continue
 
         idx_l3 = p[5]["idx"]
@@ -451,7 +420,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
 
         end_pos = df.index.get_loc(end_idx)
 
-        if (total_candles - end_pos) > 150: # تم توسيع نطاق الصفقات التاريخية للاختبار الرجعي
+        if max_candles_ago is not None and (total_candles - end_pos) > max_candles_ago:
             continue
 
         entry = float(end_val)
@@ -459,16 +428,10 @@ def detect_all_inverse_head_shoulders(pivots, df):
         actual_head_length = breakout_neckline_price - l2
         tp = entry + actual_head_length
 
-        nodes = [
-            (x["idx"], x["val"])
-            for x in p
-        ]
+        nodes = [(x["idx"], x["val"]) for x in p]
         nodes.append((end_idx, end_val))
 
-        neckline_nodes = [
-            (h1_idx, h1),
-            (h2_idx, h2)
-        ]
+        neckline_nodes = [(h1_idx, h1), (h2_idx, h2)]
 
         target_nodes = [
             (end_idx, float(round(entry, 5))),
@@ -495,19 +458,13 @@ def detect_all_inverse_head_shoulders(pivots, df):
     return patterns
 
 
-_original_detect_all_head_shoulders = detect_all_head_shoulders
-
-
-def _detect_both_head_shoulders(pivots, df):
-    normal_patterns = _original_detect_all_head_shoulders(pivots, df)
-    inverse_patterns = detect_all_inverse_head_shoulders(pivots, df)
+def detect_all_head_shoulders(pivots, df, max_candles_ago=None):
+    normal_patterns = _detect_all_head_shoulders_base(pivots, df, max_candles_ago=max_candles_ago)
+    inverse_patterns = detect_all_inverse_head_shoulders(pivots, df, max_candles_ago=max_candles_ago)
 
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
-
-
-detect_all_head_shoulders = _detect_both_head_shoulders
 
 
 def run_full_analysis(df, interval="1d"):
@@ -535,22 +492,23 @@ def run_full_analysis(df, interval="1d"):
             "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
-    df_active = df.tail(300).copy() # زيادة النافذة قليلاً لتشمل بيانات كافية للاختبار الرجعي
+    # للماسح الحي: نأخذ أحدث 300 شمعة
+    df_active = df.tail(300).copy()
     df_active = calculate_indicators(df_active)
     df_active = calculate_zigzag(df_active)
 
     pivots = get_chronological_pivots(df_active)
-    all_patterns = detect_all_head_shoulders(pivots, df_active)
+    all_patterns = detect_all_head_shoulders(pivots, df_active, max_candles_ago=150)
 
     if not all_patterns:
         return {
-            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+            "df": df_active, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
             "bias": "Neutral", "entry": None, "sl": None, "tp": None,
             "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
     latest_pattern = all_patterns[-1]
-    signal = "STRONG SELL"
+    signal = "STRONG BUY" if latest_pattern["bias"] == "Bullish" else "STRONG SELL"
 
     return {
         "df": df_active,
@@ -570,36 +528,18 @@ def run_full_analysis(df, interval="1d"):
     }
 
 
-_original_run_full_analysis = run_full_analysis
-
-
-def _run_full_analysis_both_directions(df, interval="1d"):
-    result = _original_run_full_analysis(df, interval=interval)
-    if result is None:
-        return result
-
-    if result.get("pattern") == "Inverse Head and Shoulders":
-        result["signal"] = "STRONG BUY"
-        result["bias"] = "Bullish"
-    elif result.get("pattern") == "Head and Shoulders":
-        result["signal"] = "STRONG SELL"
-        result["bias"] = "Bearish"
-
-    return result
-
-
-run_full_analysis = _run_full_analysis_both_directions
-
-
-# إضافة دالة الاختبار الرجعي (Backtest Strategy) لضمان التوافق التام مع الواجهة
+# دالة الاختبار الرجعي الشاملة والتاريخية الحقيقية (True Backtest)
 def backtest_strategy(df, interval="1d"):
     if df is None or len(df) < 50:
         return []
 
+    # معالجة كامل السلسلة الزمنية التاريخية
     df_calc = calculate_indicators(df)
     df_calc = calculate_zigzag(df_calc)
     pivots = get_chronological_pivots(df_calc)
-    patterns = detect_all_head_shoulders(pivots, df_calc)
+    
+    # جلب كافة الأنماط التاريخية بدون تقييد زمني
+    patterns = detect_all_head_shoulders(pivots, df_calc, max_candles_ago=None)
 
     trades = []
     for pat in patterns:
@@ -614,48 +554,58 @@ def backtest_strategy(df, interval="1d"):
             if len(sub_df) <= 1:
                 continue
             
-            # محاكاة نتيجة الصفقة شمعة بشمعة بعد الدخول
             head_result = "PENDING"
-            shoulder_result = "PENDING"
-            
-            for _, row in sub_df.iloc[1:].iterrows():
+            exit_date = None
+            exit_price = None
+
+            # محاكاة حركة السعر شمعة بشمعة بعد الاختراق
+            for current_idx, row in sub_df.iloc[1:].iterrows():
                 high_p = row["High"]
                 low_p = row["Low"]
 
-                if bias == "Bearish":
-                    # فحص ضرب الهدف أو وقف الخسارة للبيع
+                if bias == "Bearish": # صفقة بيع (Head and Shoulders)
                     if high_p >= sl:
                         head_result = "LOSS"
-                        shoulder_result = "LOSS"
+                        exit_date = current_idx
+                        exit_price = sl
                         break
-                    if low_p <= tp:
+                    elif low_p <= tp:
                         head_result = "WIN"
-                        shoulder_result = "WIN"
+                        exit_date = current_idx
+                        exit_price = tp
                         break
-                else:
-                    # فحص ضرب الهدف أو وقف الخسارة للشراء
+                else: # صفقة شراء (Inverse Head and Shoulders)
                     if low_p <= sl:
                         head_result = "LOSS"
-                        shoulder_result = "LOSS"
+                        exit_date = current_idx
+                        exit_price = sl
                         break
-                    if high_p >= tp:
+                    elif high_p >= tp:
                         head_result = "WIN"
-                        shoulder_result = "WIN"
+                        exit_date = current_idx
+                        exit_price = tp
                         break
 
             if head_result == "PENDING":
                 head_result = "OPEN"
-                shoulder_result = "OPEN"
+                exit_date = sub_df.index[-1]
+                exit_price = sub_df["Close"].iloc[-1]
+
+            entry_cond = f"{pat['pattern']} ({'كسر هبوطي' if bias == 'Bearish' else 'اختراق صعودي'}) + تأكيد EMA/RSI"
 
             trades.append({
                 "Pattern": pat["pattern"],
                 "Bias": bias,
                 "Entry Date": str(end_idx),
+                "Exit Date": str(exit_date),
                 "Entry Price": entry,
+                "Exit Price": float(round(exit_price, 5)) if exit_price else entry,
                 "Stop Loss": sl,
                 "Take Profit": tp,
+                "Result": head_result,
                 "Head Result": head_result,
-                "Shoulder Result": shoulder_result,
+                "Shoulder Result": head_result,
+                "Entry Conditions": entry_cond,
                 "nodes": pat["nodes"],
                 "neckline_nodes": pat["neckline_nodes"]
             })
@@ -666,5 +616,5 @@ def backtest_strategy(df, interval="1d"):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Dynamic ATR Swing Scanner (v4.6 - Interface Compatible).")
+    print("ENGINE.PY loaded with True Backtest Lab & Live Scanner (v4.7).")
         
