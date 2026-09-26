@@ -159,10 +159,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             trades_df = active_bt_item["trades_df"]
             total_signals = active_bt_item["total_signals"]
             
-            # ==================================================
-            # حساب النتائج المطلوبة (أ، ب، ج، د)
-            # ==================================================
-            
             # أ & ب. الإشارات الناجحة والخاسرة
             if "Result" in trades_df.columns:
                 wins_count = len(trades_df[trades_df["Result"].astype(str).str.upper().str.contains("WIN")])
@@ -202,13 +198,11 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
             st.markdown(f"### 📊 النتائج التفصيلية للأصل: **{active_sym}**")
             
-            # عرض بطاقات النتائج بالأرقام المطلوبة
             m1, m2, m3 = st.columns(3)
             m1.metric("✅ أ. الإشارات الناجحة", wins_count)
             m2.metric("❌ ب. الإشارات الخاسرة", losses_count)
             m3.metric("⏱️ ج. الأيام بين الدخول والإغلاق", duration_str)
 
-            # عرض التقرير الشامل
             st.markdown(f"""
             <div style="background-color: #F8F9FA; border: 1px solid #DADCE0; border-radius: 12px; padding: 16px; margin-top: 10px; margin-bottom: 20px;">
                 <h4 style="margin-top:0; color: #0B57D0;">📋 ملخص نتائج المحاكاة والشروط المتحققة:</h4>
@@ -221,15 +215,20 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             </div>
             """, unsafe_allow_html=True)
             
-            # --- رسم الشارت البياني بعرض 100% كامل الواجهة ---
             if active_sym in bt_dfs_dict and not bt_dfs_dict[active_sym].empty:
                 df_bt_res = bt_dfs_dict[active_sym]
                 st.markdown("#### 📈 الرسم الفني المطور (هيكل النمط + خط العنق)")
                 
                 fig_bt = go.Figure()
                 fig_bt.add_trace(go.Candlestick(
-                    x=df_bt_res.index, open=df_bt_res["Open"], high=df_bt_res["High"], low=df_bt_res["Low"], close=df_bt_res["Close"],
-                    name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
+                    x=df_bt_res.index, 
+                    open=df_bt_res["Open"], 
+                    high=df_bt_res["High"], 
+                    low=df_bt_res["Low"], 
+                    close=df_bt_res["Close"],
+                    name="السعر", 
+                    increasing_line_color="#137333", 
+                    decreasing_line_color="#C5221F"
                 ))
                 
                 if not trades_df.empty and 'nodes' in trades_df.columns:
@@ -241,9 +240,12 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                             y_nodes = [n[1] for n in sorted_nodes]
                             
                             fig_bt.add_trace(go.Scatter(
-                                x=x_nodes, y=y_nodes, mode="lines+markers", 
+                                x=x_nodes, 
+                                y=y_nodes, 
+                                mode="lines+markers", 
                                 line=dict(color="#C5221F", width=2.5),
-                                marker=dict(size=7, color="#0B57D0"), name=f"النمط #{idx+1}"
+                                marker=dict(size=7, color="#0B57D0"), 
+                                name=f"النمط #{idx+1}"
                             ))
 
                             neck_nodes = row.get('neckline_nodes', [])
@@ -251,11 +253,18 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                                 fig_bt.add_trace(go.Scatter(
                                     x=[neck_nodes[0][0], neck_nodes[1][0]], 
                                     y=[neck_nodes[0][1], neck_nodes[1][1]],
-                                    mode="lines", line=dict(color="#FF9800", width=2, dash="dot"),
+                                    mode="lines", 
+                                    line=dict(color="#FF9800", width=2, dash="dot"),
                                     name=f"خط العنق #{idx+1}"
                                 ))
 
-                fig_bt.update_layout(template="plotly_white", height=550, xaxis_rangeslider_visible=False, margin=dict(l=10, r=20, t=10, b=20), autosize=True)
+                fig_bt.update_layout(
+                    template="plotly_white", 
+                    height=550, 
+                    xaxis_rangeslider_visible=False, 
+                    margin=dict(l=10, r=20, t=10, b=20), 
+                    autosize=True
+                )
                 st.plotly_chart(fig_bt, use_container_width=True)
 
             st.markdown("---")
@@ -370,8 +379,14 @@ else:
             if df_res is not None and not df_res.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(
-                    x=df_res.index, open=df_res["Open"], high=df_res["High"], low=df_res["Low"], close=df_res["Close"],
-                    name="السعر", increasing_line_color="#137333", decreasing_line_color="#C5221F"
+                    x=df_res.index, 
+                    open=df_res["Open"], 
+                    high=df_res["High"], 
+                    low=df_res["Low"], 
+                    close=df_res["Close"],
+                    name="السعر", 
+                    increasing_line_color="#137333", 
+                    decreasing_line_color="#C5221F"
                 ))
 
                 nodes = active_result.get("nodes", [])
@@ -380,9 +395,12 @@ else:
                     x_nodes = [n[0] for n in sorted_nodes]
                     y_nodes = [n[1] for n in sorted_nodes]
                     fig.add_trace(go.Scatter(
-                        x=x_nodes, y=y_nodes, mode="lines+markers",
+                        x=x_nodes, 
+                        y=y_nodes, 
+                        mode="lines+markers",
                         line=dict(color="#C5221F", width=2.5),
-                        marker=dict(size=7, color="#0B57D0"), name=f"{pattern}"
+                        marker=dict(size=7, color="#0B57D0"), 
+                        name=f"{pattern}"
                     ))
 
                 neckline_nodes = active_result.get("neckline_nodes", [])
@@ -390,14 +408,44 @@ else:
                     x_neck = [n[0] for n in neckline_nodes]
                     y_neck = [n[1] for n in neckline_nodes]
                     fig.add_trace(go.Scatter(
-                        x=x_neck, y=y_neck, mode="lines",
+                        x=x_neck, 
+                        y=y_neck, 
+                        mode="lines",
                         line=dict(color="#FF9800", width=2, dash="dash"),
                         name="خط العنق (Neckline)"
                     ))
 
-                if entry_val:
-                    fig.add_hline(y=entry_val, line_dash="dash", line_color="#2196F3", annotation_text="دخول (Entry)", annotation_position="top right")
-                if sl_val:
-                    fig.add_hline(y=sl_val, line_dash="dash", line_color="#F44336", annotation_text="وقف (SL)", annotation_position="bottom right")
-                if tp_val:
-                    fig.add_hline(y=tp_val, line_dash="dash", line_color="#4CAF50"
+                            if entry_val:
+                fig.add_hline(
+                    y=entry_val, 
+                    line_dash="dash", 
+                    line_color="#2196F3", 
+                    annotation_text="دخول (Entry)", 
+                    annotation_position="top right"
+                )
+            if sl_val:
+                fig.add_hline(
+                    y=sl_val, 
+                    line_dash="dash", 
+                    line_color="#F44336", 
+                    annotation_text="وقف (SL)", 
+                    annotation_position="bottom right"
+                )
+            if tp_val:
+                fig.add_hline(
+                    y=tp_val, 
+                    line_dash="dash", 
+                    line_color="#4CAF50", 
+                    annotation_text="هدف (TP)", 
+                    annotation_position="top right"
+                )
+
+            fig.update_layout(
+                template="plotly_white", 
+                height=550, 
+                xaxis_rangeslider_visible=False, 
+                margin=dict(l=10, r=20, t=10, b=20), 
+                autosize=True
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
