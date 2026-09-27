@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.9)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.0 Fixed)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -471,7 +471,7 @@ def detect_all_head_shoulders(pivots, df):
     return all_patterns
 
 
-def backtest_strategy(df):
+def backtest_strategy(df, interval=None, **kwargs):
     if df is None or df.empty or len(df) < 30:
         return []
 
@@ -504,6 +504,7 @@ def backtest_strategy(df):
             "Shoulder Result": trade_result,
             "Exit Index": exit_idx,
             "Exit Price": exit_price,
+            "nodes": pat.get("nodes", []),
             "trade_result": trade_result
         }
         trades.append(trade_record)
@@ -511,7 +512,7 @@ def backtest_strategy(df):
     return trades
 
 
-def run_full_analysis(df):
+def run_full_analysis(df, interval=None, **kwargs):
     if df is None or df.empty:
         return {
             "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
@@ -536,8 +537,7 @@ def run_full_analysis(df):
             "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
-    df_active = df.tail(300).copy()
-    df_active = calculate_indicators(df_active)
+    df_active = calculate_indicators(df)
     df_active = calculate_zigzag(df_active)
 
     pivots = get_chronological_pivots(df_active)
@@ -577,4 +577,4 @@ def run_full_analysis(df):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with v4.7 Pattern Recognition Logic.")
+    print("ENGINE.PY loaded with v5.0 Fixed for Backtest Lab compatibility.")
