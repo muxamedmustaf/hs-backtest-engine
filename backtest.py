@@ -87,6 +87,33 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     if st.session_state.backtest_scanned_signals:
         res_list, dfs_dict = st.session_state.backtest_scanned_signals, st.session_state.backtest_dfs
         
+        # ================= Ku-darida Cusub: Xisaabinta Boqolleyda Guud ee Dhamaan Lacagaha =================
+        all_dfs = [i["trades_df"] for i in res_list if "trades_df" in i and not i["trades_df"].empty]
+        if all_dfs:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            g_res_col = "Result" if "Result" in combined_df.columns else ("Head Result" if "Head Result" in combined_df.columns else None)
+            if g_res_col:
+                g_series = combined_df[g_res_col].astype(str).str.upper()
+                g_wins = len(combined_df[g_series.str.contains("WIN")])
+                g_losses = len(combined_df[g_series.str.contains("LOSS")])
+                g_opens = len(combined_df[g_series.str.contains("OPEN")])
+            else:
+                g_wins = g_losses = g_opens = 0
+            
+            g_closed = g_wins + g_losses
+            g_win_rate = round((g_wins / g_closed) * 100, 1) if g_closed > 0 else 0.0
+            g_loss_rate = round((g_losses / g_closed) * 100, 1) if g_closed > 0 else 0.0
+            g_total = len(combined_df)
+
+            st.markdown("#### 🌍 الملخص الإجمالي الشامل لجميع الأصول (Global Scan Results)")
+            gm1, gm2, gm3, gm4 = st.columns(4)
+            gm1.metric("📊 إجمالي الصفقات الكلي", g_total)
+            gm2.metric("✅ إجمالي الصفقات الناجحة", g_wins, delta=f"{g_win_rate}% Win Rate")
+            gm3.metric("❌ إجمالي الصفقات الخاسرة", g_losses, delta=f"{g_loss_rate}% Loss Rate", delta_color="inverse")
+            gm4.metric("⏳ إجمالي الصفقات المفتوحة", g_opens)
+            st.markdown("---")
+        # =================================================================================================
+
         if bt_scan_mode == "مسح كلي لشيت الأصول":
             opts = [f"{i['symbol']} | الصفقات: {i['total_signals']}" for i in res_list]
             active_item = res_list[opts.index(st.selectbox("👇 اختر الأصل:", opts))]
@@ -231,4 +258,4 @@ else:
                 if val: fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
             fig.update_layout(template="plotly_white", height=500, margin=dict(l=5, r=5, t=10, b=10), xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
-    
+            
