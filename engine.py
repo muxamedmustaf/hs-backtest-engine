@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.1 Fixed & Extended)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.1 Fixed)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 5
@@ -147,12 +147,6 @@ def get_chronological_pivots(df):
 
 
 def simulate_backtest_outcome(pattern, df):
-    """
-    Kala saarida natiijada maamulka:
-    - WIN: Gaarista TP (Target) marka hore.
-    - LOSS: Gaarista SL (Stop Loss) marka hore.
-    - OPEN: Haddii qiimuhu uusan taaban TP ama SL inta ka dhiman xogta.
-    """
     bias = pattern["bias"]
     sl = float(pattern["sl"])
     shoulder_sl = float(pattern.get("shoulder_sl", sl))
@@ -189,7 +183,6 @@ def simulate_backtest_outcome(pattern, df):
         high = float(row["High"])
         low = float(row["Low"])
 
-        # 1. Dhaqaaqa Tooska ah ee TP
         if not tp_move_found and total_tp_dist > 0:
             if bias == "Bearish":
                 if low <= (entry - 0.2 * total_tp_dist):
@@ -200,7 +193,6 @@ def simulate_backtest_outcome(pattern, df):
                     candles_to_tp_move = candle_count
                     tp_move_found = True
 
-        # 2. Xisaabinta Head SL / TP
         if not head_done:
             if bias == "Bearish":
                 hit_sl = high >= sl
@@ -240,7 +232,6 @@ def simulate_backtest_outcome(pattern, df):
                     candles_to_exit = candle_count
                     head_done = True
 
-        # 3. Xisaabinta Shoulder SL / TP
         if not shoulder_done:
             if bias == "Bearish":
                 hit_ssl = high >= shoulder_sl
@@ -390,7 +381,6 @@ def detect_all_head_shoulders_base(pivots, df):
         if head_height <= 0:
             continue
 
-        # Labada garab waxay kala fogaan karaan ilaa 15% height-ka madaxa
         if abs(h1 - h3) > (head_height * 0.15):
             continue
 
@@ -437,7 +427,7 @@ def detect_all_head_shoulders_base(pivots, df):
             "target_nodes": target_nodes,
             "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
-            "Shoulder SL": float(round(shoulder_sl, 5)),
+            "Shoulder SL": float(round(shoulder_sl, 5))
         }
 
         trade_result, exit_idx, exit_price, extra_stats = simulate_backtest_outcome(pattern_dict, df)
@@ -474,7 +464,6 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if head_depth <= 0:
             continue
 
-        # Labada garab waxay kala fogaan karaan ilaa 65% depth-ka madaxa
         if abs(l1 - l3) > (head_depth * 0.65):
             continue
 
@@ -556,7 +545,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
             "target_nodes": target_nodes,
             "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
-            "Shoulder SL": float(round(shoulder_sl, 5)),
+            "Shoulder SL": float(round(shoulder_sl, 5))
         }
 
         trade_result, exit_idx, exit_price, extra_stats = simulate_backtest_outcome(pattern_dict, df)
@@ -625,4 +614,12 @@ def backtest_strategy(df, interval=None, **kwargs):
         trades.append(trade_record)
 
     return trades
-    
+
+
+def run_full_analysis(df, interval=None, **kwargs):
+    if df is None or df.empty:
+        return {
+            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
+ 
