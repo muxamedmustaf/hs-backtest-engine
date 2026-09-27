@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.0 Strict)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.7 Fixed)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -148,43 +148,37 @@ def simulate_backtest_outcome(pattern, df):
     end_idx = pattern["neckline_end_idx"]
 
     if end_idx not in df.index:
-        return "LOSS", end_idx, tp
+        return "OPEN", None, None
 
     post_df = df.loc[end_idx:]
-    if len(post_df) <= 1:
-        return "OPEN", end_idx, tp
 
-    sub_df = post_df.iloc[1:]
-
-    for idx, row in sub_df.iterrows():
+    for idx, row in post_df.iterrows():
         high = float(row["High"])
         low = float(row["Low"])
 
-        if bias == "Bullish":
-            hit_sl = low <= sl
-            hit_tp = high >= tp
-
-            if hit_sl and hit_tp:
-                return "LOSS", idx, sl
-            if hit_sl:
-                return "LOSS", idx, sl
-            if hit_tp:
-                return "WIN", idx, tp
-
-        elif bias == "Bearish":
+        if bias == "Bearish":
             hit_sl = high >= sl
             hit_tp = low <= tp
 
             if hit_sl and hit_tp:
                 return "LOSS", idx, sl
-            if hit_sl:
+            elif hit_sl:
                 return "LOSS", idx, sl
-            if hit_tp:
+            elif hit_tp:
                 return "WIN", idx, tp
 
-    last_idx = post_df.index[-1]
-    last_close = float(post_df["Close"].iloc[-1])
-    return "OPEN", last_idx, last_close
+        elif bias == "Bullish":
+            hit_sl = low <= sl
+            hit_tp = high >= tp
+
+            if hit_sl and hit_tp:
+                return "LOSS", idx, sl
+            elif hit_sl:
+                return "LOSS", idx, sl
+            elif hit_tp:
+                return "WIN", idx, tp
+
+    return "OPEN", None, None
 
 
 class PatternValidatorPipeline:
@@ -245,9 +239,7 @@ class PatternValidatorPipeline:
         post_h3_df = data.loc[idx_h3:]
         breakout_candles = post_h3_df[post_h3_df["Close"] < neckline_avg]
         if breakout_candles.empty:
-            end_idx = post_h3_df.index[-1] if not post_h3_df.empty else idx_h3
-            end_val = float(post_h3_df["Close"].iloc[-1]) if not post_h3_df.empty else neckline_avg
-            return True, end_idx, end_val
+            return False, None, None
         end_idx = breakout_candles.index[0]
         end_val = float(breakout_candles["Close"].iloc[0])
         return True, end_idx, end_val
@@ -408,11 +400,10 @@ def detect_all_inverse_head_shoulders(pivots, df):
         post_l3_df = df.loc[idx_l3:]
         breakout_candles = post_l3_df[post_l3_df["Close"] > neckline_avg]
         if breakout_candles.empty:
-            end_idx = post_l3_df.index[-1] if not post_l3_df.empty else idx_l3
-            end_val = float(post_l3_df["Close"].iloc[-1]) if not post_l3_df.empty else neckline_avg
-        else:
-            end_idx = breakout_candles.index[0]
-            end_val = float(breakout_candles["Close"].iloc[0])
+            continue
+
+        end_idx = breakout_candles.index[0]
+        end_val = float(breakout_candles["Close"].iloc[0])
 
         entry = neckline_avg
         sl = l2
@@ -489,7 +480,6 @@ def backtest_strategy(df):
     trades = []
     for pat in all_patterns:
         trade_result, exit_idx, exit_price = simulate_backtest_outcome(pat, df_active)
-        
         trade_record = {
             "Pattern": pat["pattern"],
             "Bias": pat["bias"],
@@ -501,10 +491,7 @@ def backtest_strategy(df):
             "Shoulder Result": trade_result,
             "Exit Index": exit_idx,
             "Exit Price": exit_price,
-            "trade_result": trade_result,
-            "nodes": pat.get("nodes", []),
-            "neckline_nodes": pat.get("neckline_nodes", []),
-            "target_nodes": pat.get("target_nodes", [])
+            "trade_result": trade_result
         }
         trades.append(trade_record)
 
@@ -582,7 +569,7 @@ def _run_full_analysis_both_directions(df):
     if result.get("pattern") == "Inverse Head and Shoulders":
         result["signal"] = "STRONG BUY"
         result["bias"] = "Bullish"
-    elif result.get("pattern") == "Head and Shoulders":
+    elif result.get("pattern": "Head and Shoulders"):
         result["signal"] = "STRONG SELL"
         result["bias"] = "Bearish"
 
@@ -593,5 +580,5 @@ run_full_analysis = _run_full_analysis_both_directions
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Strict Backtest Outcomes (v5.0).")
-        
+    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7 Fixed).")
+                                  
