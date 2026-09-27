@@ -6,7 +6,7 @@ import numpy as np
 # ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.0 Fixed)
 # ==========================================================
 
-MIN_WAVE_CANDLES = 3
+MIN_WAVE_CANDLES = 5
 
 
 def calculate_indicators(df):
