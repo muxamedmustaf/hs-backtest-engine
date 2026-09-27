@@ -616,4 +616,12 @@ def backtest_strategy(df, interval=None, **kwargs):
             "Candles to Exit (Cabdale)": extra_stats["candles_to_exit"],
             "Candles to TP Move": extra_stats["candles_to_tp_move"],
             "Hit Shoulder SL": extra_stats["shoulder_result"] == "LOSS",
-            "Hit Head SL": extra_s
+            "Hit Head SL": extra_stats["head_result"] == "LOSS",
+            "Exit Index": exit_idx,
+            "Exit Price": exit_price,
+            "nodes": pat.get("nodes", []),
+            "trade_result": trade_result
+        }
+        trades.append(trade_record)
+
+    return trades
