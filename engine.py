@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.1 Fixed)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.0 Fixed)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -146,17 +146,16 @@ def get_chronological_pivots(df):
     return final_clean
 
 
-def simulate_backtest_outcome(pattern, df, max_bars=60, max_retest_ratio=1.2):
+def simulate_backtest_outcome(pattern, df):
     """
-    Kala saarida natiijada maamulka inta lagu jiro backtest:
-    - WIN: Gaarista TP marka hore.
-    - LOSS: Taabashada SL ama Tasxiix xad-dhaaf ah oo baabi'iya pattern-ka.
-    - OPEN: Weli furan ilaa max_bars ama tasxiix caadi ah dhexdeeda.
+    Kala saarida natiijada maamulka:
+    - WIN: Gaarista TP (Target) marka hore.
+    - LOSS: Gaarista SL (Stop Loss) marka hore.
+    - OPEN: Haddii qiimuhu uusan taaban TP ama SL inta ka dhiman xogta.
     """
     bias = pattern["bias"]
     sl = float(pattern["sl"])
     tp = float(pattern["tp"])
-    entry = float(pattern["entry"])
     end_idx = pattern["neckline_end_idx"]
 
     if end_idx not in df.index:
@@ -164,36 +163,23 @@ def simulate_backtest_outcome(pattern, df, max_bars=60, max_retest_ratio=1.2):
 
     post_df = df.loc[end_idx:]
 
-    # Xaddididda tirada shandadaha ka dib breakout-ka
-    eval_df = post_df.iloc[1:max_bars]
-
-    risk_distance = abs(sl - entry)
-
-    for idx, row in eval_df.iterrows():
+    for idx, row in post_df.iloc[1:].iterrows():
         high = float(row["High"])
         low = float(row["Low"])
 
         if bias == "Bearish":
             hit_sl = high >= sl
             hit_tp = low <= tp
-
-            # 1. Haddii SL ama TP lagu taabto shandada dhexdeeda
             if hit_sl and hit_tp:
                 return "LOSS", idx, sl
             elif hit_sl:
                 return "LOSS", idx, sl
             elif hit_tp:
                 return "WIN", idx, tp
-
-            # 2. Sharuudda Tasxiixda Xad-dhaafka ah (Pattern Invalidation)
-            if high > (entry + risk_distance * max_retest_ratio):
-                return "LOSS", idx, sl
 
         elif bias == "Bullish":
             hit_sl = low <= sl
             hit_tp = high >= tp
-
-            # 1. Haddii SL ama TP lagu taabto shandada dhexdeeda
             if hit_sl and hit_tp:
                 return "LOSS", idx, sl
             elif hit_sl:
@@ -201,11 +187,6 @@ def simulate_backtest_outcome(pattern, df, max_bars=60, max_retest_ratio=1.2):
             elif hit_tp:
                 return "WIN", idx, tp
 
-            # 2. Sharuudda Tasxiixda Xad-dhaafka ah (Pattern Invalidation)
-            if low < (entry - risk_distance * max_retest_ratio):
-                return "LOSS", idx, sl
-
-    # 3. Haddii uusan gaarin TP/SL laguna jiro xadka shandadaha la ogolyahay
     return "OPEN", None, None
 
 
@@ -314,7 +295,8 @@ def detect_all_head_shoulders_base(pivots, df):
         if head_height <= 0:
             continue
 
-        if abs(h1 - h3) > (head_height * 0.35):
+        # Labada garab waxay kala fogaan karaan ilaa 65% height-ka madaxa
+        if abs(h1 - h3) > (head_height * 0.65):
             continue
 
         max_shoulder = max(h1, h3)
@@ -393,7 +375,8 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if head_depth <= 0:
             continue
 
-        if abs(l1 - l3) > (head_depth * 0.35):
+        # Labada garab waxay kala fogaan karaan ilaa 65% depth-ka madaxa
+        if abs(l1 - l3) > (head_depth * 0.65):
             continue
 
         min_shoulder = min(l1, l3)
@@ -602,5 +585,5 @@ def run_full_analysis(df, interval=None, **kwargs):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with v5.1 Fixed for Outcome Conditions.")
-        
+    print("ENGINE.PY loaded with v5.0 Fixed for Exact Trade Outcomes.")
+                
