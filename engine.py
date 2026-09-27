@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.0 Fixed)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.1 Fixed & Extended)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 5
@@ -154,40 +154,135 @@ def simulate_backtest_outcome(pattern, df):
     - OPEN: Haddii qiimuhu uusan taaban TP ama SL inta ka dhiman xogta.
     """
     bias = pattern["bias"]
-    sl = float(pattern["sl"])
+    sl = float(pattern["sl"])                       # Head SL
+    shoulder_sl = float(pattern.get("shoulder_sl", sl)) # Shoulder SL
     tp = float(pattern["tp"])
+    entry = float(pattern.get("entry", 0.0))
     end_idx = pattern["neckline_end_idx"]
 
+    extra_stats = {
+        "candles_to_exit": 0,
+        "head_result": "OPEN",
+        "shoulder_result": "OPEN",
+        "candles_to_tp_move": 0
+    }
+
     if end_idx not in df.index:
-        return "OPEN", None, None
+        return "OPEN", None, None, extra_stats
 
     post_df = df.loc[end_idx:]
 
-    for idx, row in post_df.iloc[1:].iterrows():
+    head_result = "OPEN"
+    shoulder_result = "OPEN"
+    exit_idx = None
+    exit_price = None
+    candles_to_exit = 0
+    candles_to_tp_move = 0
+
+    head_done = False
+    shoulder_done = False
+    tp_move_found = False
+
+    total_tp_dist = abs(tp - entry) if entry > 0 else abs(tp - sl)
+
+    for candle_count, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
         high = float(row["High"])
         low = float(row["Low"])
 
-        if bias == "Bearish":
-            hit_sl = high >= sl
-            hit_tp = low <= tp
-            if hit_sl and hit_tp:
-                return "LOSS", idx, sl
-            elif hit_sl:
-                return "LOSS", idx, sl
-            elif hit_tp:
-                return "WIN", idx, tp
+        # 1. Dhaqaaqa Tooska ah ee TP (Impulse move detection - 20% progress towards TP)
+        if not tp_move_found and total_tp_dist > 0:
+            if bias == "Bearish":
+                if low <= (entry - 0.2 * total_tp_dist):
+                    candles_to_tp_move = candle_count
+                    tp_move_found = True
+            elif bias == "Bullish":
+                if high >= (entry + 0.2 * total_tp_dist):
+                    candles_to_tp_move = candle_count
+                    tp_move_found = True
 
-        elif bias == "Bullish":
-            hit_sl = low <= sl
-            hit_tp = high >= tp
-            if hit_sl and hit_tp:
-                return "LOSS", idx, sl
-            elif hit_sl:
-                return "LOSS", idx, sl
-            elif hit_tp:
-                return "WIN", idx, tp
+        # 2. Xisaabinta Head SL / TP
+        if not head_done:
+            if bias == "Bearish":
+                hit_sl = high >= sl
+                hit_tp = low <= tp
+                if hit_sl and hit_tp:
+                    head_result = "LOSS"
+                    exit_idx, exit_price = idx, sl
+                    candles_to_exit = candle_count
+                    head_done = True
+                elif hit_sl:
+                    head_result = "LOSS"
+                    exit_idx, exit_price = idx, sl
+                    candles_to_exit = candle_count
+                    head_done = True
+                elif hit_tp:
+                    head_result = "WIN"
+                    exit_idx, exit_price = idx, tp
+                    candles_to_exit = candle_count
+                    head_done = True
 
-    return "OPEN", None, None
+            elif bias == "Bullish":
+                hit_sl = low <= sl
+                hit_tp = high >= tp
+                if hit_sl and hit_tp:
+                    head_result = "LOSS"
+                    exit_idx, exit_price = idx, sl
+                    candles_to_exit = candle_count
+                    head_done = True
+                elif hit_sl:
+                    head_result = "LOSS"
+                    exit_idx, exit_price = idx, sl
+                    candles_to_exit = candle_count
+                    head_done = True
+                elif hit_tp:
+                    head_result = "WIN"
+                    exit_idx, exit_price = idx, tp
+                    candles_to_exit = candle_count
+                    head_done = True
+
+        # 3. Xisaabinta Shoulder SL / TP
+        if not shoulder_done:
+            if bias == "Bearish":
+                hit_ssl = high >= shoulder_sl
+                hit_tp = low <= tp
+                if hit_ssl and hit_tp:
+                    shoulder_result = "LOSS"
+                    shoulder_done = True
+                elif hit_ssl:
+                    shoulder_result = "LOSS"
+                    shoulder_done = True
+                elif hit_tp:
+                    shoulder_result = "WIN"
+                    shoulder_done = True
+
+            elif bias == "Bullish":
+                hit_ssl = low <= shoulder_sl
+                hit_tp = high >= tp
+                if hit_ssl and hit_tp:
+                    shoulder_result = "LOSS"
+                    shoulder_done = True
+                elif hit_ssl:
+                    shoulder_result = "LOSS"
+                    shoulder_done = True
+                elif hit_tp:
+                    shoulder_result = "WIN"
+                    shoulder_done = True
+
+        if head_done and shoulder_done:
+            break
+
+    if not head_done:
+        candles_to_exit = len(post_df) - 1
+
+    if not tp_move_found:
+        candles_to_tp_move = candles_to_exit
+
+    extra_stats["candles_to_exit"] = candles_to_exit
+    extra_stats["head_result"] = head_result
+    extra_stats["shoulder_result"] = shoulder_result
+    extra_stats["candles_to_tp_move"] = candles_to_tp_move
+
+    return head_result, exit_idx, exit_price, extra_stats
 
 
 class PatternValidatorPipeline:
@@ -316,6 +411,7 @@ def detect_all_head_shoulders_base(pivots, df):
 
         entry = neckline_avg
         sl = h2
+        shoulder_sl = max(h1, h3)
         tp = entry - actual_head_length
 
         nodes = [(x["idx"], x["val"]) for x in p]
@@ -333,6 +429,7 @@ def detect_all_head_shoulders_base(pivots, df):
             "entry": float(round(entry, 5)),
             "entry_trigger": float(round(entry, 5)),
             "sl": float(round(sl, 5)),
+            "shoulder_sl": float(round(shoulder_sl, 5)),
             "tp": float(round(tp, 5)),
             "neckline_start_idx": l1_idx,
             "neckline_end_idx": end_idx,
@@ -340,13 +437,15 @@ def detect_all_head_shoulders_base(pivots, df):
             "target_nodes": target_nodes,
             "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
-            "Shoulder SL": float(round(sl, 5)),
+            "Shoulder SL": float(round(shoulder_sl, 5)),
         }
 
-        trade_result, exit_idx, exit_price = simulate_backtest_outcome(pattern_dict, df)
+        trade_result, exit_idx, exit_price, extra_stats = simulate_backtest_outcome(pattern_dict, df)
         pattern_dict["trade_result"] = trade_result
-        pattern_dict["Head Result"] = trade_result
-        pattern_dict["Shoulder Result"] = trade_result
+        pattern_dict["Head Result"] = extra_stats["head_result"]
+        pattern_dict["Shoulder Result"] = extra_stats["shoulder_result"]
+        pattern_dict["Candles to Exit (Cabdale)"] = extra_stats["candles_to_exit"]
+        pattern_dict["Candles to TP Move"] = extra_stats["candles_to_tp_move"]
         pattern_dict["exit_idx"] = exit_idx
         pattern_dict["exit_price"] = exit_price
 
@@ -430,6 +529,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
 
         entry = neckline_avg
         sl = l2
+        shoulder_sl = min(l1, l3)
         actual_head_length = neckline_avg - l2
         tp = entry + actual_head_length
 
@@ -448,6 +548,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
             "entry": float(round(entry, 5)),
             "entry_trigger": float(round(entry, 5)),
             "sl": float(round(sl, 5)),
+            "shoulder_sl": float(round(shoulder_sl, 5)),
             "tp": float(round(tp, 5)),
             "neckline_start_idx": h1_idx,
             "neckline_end_idx": end_idx,
@@ -455,13 +556,15 @@ def detect_all_inverse_head_shoulders(pivots, df):
             "target_nodes": target_nodes,
             "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
-            "Shoulder SL": float(round(sl, 5)),
+            "Shoulder SL": float(round(shoulder_sl, 5)),
         }
 
-        trade_result, exit_idx, exit_price = simulate_backtest_outcome(pattern_dict, df)
+        trade_result, exit_idx, exit_price, extra_stats = simulate_backtest_outcome(pattern_dict, df)
         pattern_dict["trade_result"] = trade_result
-        pattern_dict["Head Result"] = trade_result
-        pattern_dict["Shoulder Result"] = trade_result
+        pattern_dict["Head Result"] = extra_stats["head_result"]
+        pattern_dict["Shoulder Result"] = extra_stats["shoulder_result"]
+        pattern_dict["Candles to Exit (Cabdale)"] = extra_stats["candles_to_exit"]
+        pattern_dict["Candles to TP Move"] = extra_stats["candles_to_tp_move"]
         pattern_dict["exit_idx"] = exit_idx
         pattern_dict["exit_price"] = exit_price
 
@@ -500,90 +603,17 @@ def backtest_strategy(df, interval=None, **kwargs):
 
     trades = []
     for pat in all_patterns:
-        trade_result, exit_idx, exit_price = simulate_backtest_outcome(pat, df_active)
+        trade_result, exit_idx, exit_price, extra_stats = simulate_backtest_outcome(pat, df_active)
         trade_record = {
             "Pattern": pat["pattern"],
             "Bias": pat["bias"],
             "Entry": pat["entry"],
             "SL": pat["sl"],
+            "Shoulder SL": pat.get("shoulder_sl", pat["sl"]),
             "TP": pat["tp"],
-            "Shoulder SL": pat["sl"],
-            "Head Result": trade_result,
-            "Shoulder Result": trade_result,
-            "Exit Index": exit_idx,
-            "Exit Price": exit_price,
-            "nodes": pat.get("nodes", []),
-            "trade_result": trade_result
-        }
-        trades.append(trade_record)
-
-    return trades
-
-
-def run_full_analysis(df, interval=None, **kwargs):
-    if df is None or df.empty:
-        return {
-            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
-            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
-            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
-        }
-
-    df = df.copy()
-    required = ["Open", "High", "Low", "Close"]
-
-    for col in required:
-        if col not in df.columns:
-            raise ValueError(f"Missing required column: {col}")
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=required)
-
-    if len(df) < 30:
-        return {
-            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
-            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
-            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
-        }
-
-    df_active = calculate_indicators(df)
-    df_active = calculate_zigzag(df_active)
-
-    pivots = get_chronological_pivots(df_active)
-    all_patterns = detect_all_head_shoulders(pivots, df_active)
-
-    if not all_patterns:
-        return {
-            "df": df_active, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
-            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
-            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
-        }
-
-    latest_pattern = all_patterns[-1]
-    signal = "STRONG SELL" if latest_pattern["bias"] == "Bearish" else "STRONG BUY"
-
-    return {
-        "df": df_active,
-        "signal": signal,
-        "pattern": latest_pattern["pattern"],
-        "bias": latest_pattern["bias"],
-        "entry": latest_pattern["entry"],
-        "entry_trigger": latest_pattern["entry_trigger"],
-        "sl": latest_pattern["sl"],
-        "tp": latest_pattern["tp"],
-        "nodes": latest_pattern["nodes"],
-        "match": latest_pattern["match"],
-        "neckline_start_idx": latest_pattern["neckline_start_idx"],
-        "neckline_nodes": latest_pattern.get("neckline_nodes", []),
-        "target_nodes": latest_pattern.get("target_nodes", []),
-        "all_patterns": all_patterns,
-        "trade_result": latest_pattern.get("trade_result", "OPEN"),
-        "SL": latest_pattern.get("SL"),
-        "Shoulder SL": latest_pattern.get("Shoulder SL"),
-        "Head Result": latest_pattern.get("Head Result", "OPEN"),
-        "Shoulder Result": latest_pattern.get("Shoulder Result", "OPEN")
-    }
-
-
-if __name__ == "__main__":
-    print("ENGINE.PY loaded with v5.0 Fixed for Exact Trade Outcomes.")
-                
+            "Head Result": extra_stats["head_result"],
+            "Shoulder Result": extra_stats["shoulder_result"],
+            "Candles to Exit (Cabdale)": extra_stats["candles_to_exit"],
+            "Candles to TP Move": extra_stats["candles_to_tp_move"],
+            "Hit Shoulder SL": extra_stats["shoulder_result"] == "LOSS",
+            "Hit Head SL": extra_s
