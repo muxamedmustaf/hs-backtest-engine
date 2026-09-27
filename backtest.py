@@ -87,7 +87,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     if st.session_state.backtest_scanned_signals:
         res_list, dfs_dict = st.session_state.backtest_scanned_signals, st.session_state.backtest_dfs
         
-        # ================= Ku-darida Cusub: Xisaabinta Boqolleyda Guud ee Dhamaan Lacagaha =================
+        # ================= Xisaabinta Boqolleyda Guud ee Dhamaan Lacagaha =================
         all_dfs = [i["trades_df"] for i in res_list if "trades_df" in i and not i["trades_df"].empty]
         if all_dfs:
             combined_df = pd.concat(all_dfs, ignore_index=True)
@@ -254,8 +254,22 @@ else:
             fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA50'], line=dict(color='orange', width=1.2), name="EMA 50"))
             fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA200'], line=dict(color='blue', width=1.2), name="EMA 200"))
 
+            # ================= Ku-darida Cusub: Sawirida Nidaamka Pattern-ka ee Live Scan-ka =================
+            live_nodes = active_res.get("nodes") or active_res.get("pattern_nodes")
+            if isinstance(live_nodes, list) and live_nodes:
+                sn = sorted(live_nodes, key=lambda x: pd.to_datetime(x[0]))
+                fig.add_trace(go.Scatter(
+                    x=[n[0] for n in sn], 
+                    y=[n[1] for n in sn], 
+                    mode="lines+markers", 
+                    name="النمط المكتشف (Live Pattern)",
+                    line=dict(color="#9C27B0", width=2),
+                    marker=dict(size=8)
+                ))
+            # ===============================================================================================
+
             for val, col, txt in [(active_res.get('entry'), "#2196F3", "دخول"), (active_res.get('sl'), "#F44336", "وقف"), (active_res.get('tp'), "#4CAF50", "هدف")]:
                 if val: fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
             fig.update_layout(template="plotly_white", height=500, margin=dict(l=5, r=5, t=10, b=10), xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
-            
+        
