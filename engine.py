@@ -609,7 +609,7 @@ def backtest_strategy(df, interval=None, **kwargs):
             "Bias": pat["bias"],
             "Entry": pat["entry"],
             "SL": pat["sl"],
-            "            "Shoulder SL": pat.get("shoulder_sl", pat["sl"]),
+            "Shoulder SL": pat.get("shoulder_sl", pat["sl"]),
             "TP": pat["tp"],
             "Head Result": extra_stats["head_result"],
             "Shoulder Result": extra_stats["shoulder_result"],
@@ -625,3 +625,4 @@ def backtest_strategy(df, interval=None, **kwargs):
         trades.append(trade_record)
 
     return trades
+    
