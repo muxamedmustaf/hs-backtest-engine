@@ -154,8 +154,8 @@ def simulate_backtest_outcome(pattern, df):
     - OPEN: Haddii qiimuhu uusan taaban TP ama SL inta ka dhiman xogta.
     """
     bias = pattern["bias"]
-    sl = float(pattern["sl"])                       # Head SL
-    shoulder_sl = float(pattern.get("shoulder_sl", sl)) # Shoulder SL
+    sl = float(pattern["sl"])
+    shoulder_sl = float(pattern.get("shoulder_sl", sl))
     tp = float(pattern["tp"])
     entry = float(pattern.get("entry", 0.0))
     end_idx = pattern["neckline_end_idx"]
@@ -189,7 +189,7 @@ def simulate_backtest_outcome(pattern, df):
         high = float(row["High"])
         low = float(row["Low"])
 
-        # 1. Dhaqaaqa Tooska ah ee TP (Impulse move detection - 20% progress towards TP)
+        # 1. Dhaqaaqa Tooska ah ee TP
         if not tp_move_found and total_tp_dist > 0:
             if bias == "Bearish":
                 if low <= (entry - 0.2 * total_tp_dist):
@@ -609,7 +609,7 @@ def backtest_strategy(df, interval=None, **kwargs):
             "Bias": pat["bias"],
             "Entry": pat["entry"],
             "SL": pat["sl"],
-            "Shoulder SL": pat.get("shoulder_sl", pat["sl"]),
+            "            "Shoulder SL": pat.get("shoulder_sl", pat["sl"]),
             "TP": pat["tp"],
             "Head Result": extra_stats["head_result"],
             "Shoulder Result": extra_stats["shoulder_result"],
