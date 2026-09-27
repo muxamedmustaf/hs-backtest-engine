@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.7 Fixed)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.9)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -33,6 +33,11 @@ def calculate_indicators(df):
 
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
+
+    if "Volume" in df.columns:
+        df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
+    else:
+        df["Vol_SMA20"] = np.nan
 
     return df
 
@@ -152,14 +157,13 @@ def simulate_backtest_outcome(pattern, df):
 
     post_df = df.loc[end_idx:]
 
-    for idx, row in post_df.iterrows():
+    for idx, row in post_df.iloc[1:].iterrows():
         high = float(row["High"])
         low = float(row["Low"])
 
         if bias == "Bearish":
             hit_sl = high >= sl
             hit_tp = low <= tp
-
             if hit_sl and hit_tp:
                 return "LOSS", idx, sl
             elif hit_sl:
@@ -170,7 +174,6 @@ def simulate_backtest_outcome(pattern, df):
         elif bias == "Bullish":
             hit_sl = low <= sl
             hit_tp = high >= tp
-
             if hit_sl and hit_tp:
                 return "LOSS", idx, sl
             elif hit_sl:
@@ -206,19 +209,23 @@ class PatternValidatorPipeline:
     def trend_filter(self, p, data):
         idx_l0 = p[0]["idx"]
         pre_l0_df = data.loc[:idx_l0]
+
         if len(pre_l0_df) > 10:
             past_min = float(pre_l0_df["Low"].iloc[-10:].min())
             if past_min > p[0]["val"]:
                 return False, None, None
+
         return True, None, None
 
     def invalidation_filter(self, p, data):
         h2 = p[3]["val"]
         idx_h2 = p[3]["idx"]
+
         post_head_df = data.loc[idx_h2:]
         if not post_head_df.empty:
             if float(post_head_df["High"].max()) > h2:
                 return False, None, None
+
         return True, None, None
 
     def indicator_confirmation_filter(self, p, data):
@@ -226,20 +233,25 @@ class PatternValidatorPipeline:
         rsi_val = float(data.loc[idx_h3, "RSI"])
         if not (30 <= rsi_val <= 75):
             return False, None, None
+
         ema50 = data.loc[idx_h3, "EMA50"]
         ema200 = data.loc[idx_h3, "EMA200"]
         if pd.isna(ema50) or pd.isna(ema200):
             return False, None, None
+
         return True, None, None
 
     def breakout_filter(self, p, data):
         idx_h3 = p[5]["idx"]
         l1, l2 = p[2]["val"], p[4]["val"]
         neckline_avg = (l1 + l2) / 2.0
+
         post_h3_df = data.loc[idx_h3:]
         breakout_candles = post_h3_df[post_h3_df["Close"] < neckline_avg]
+
         if breakout_candles.empty:
             return False, None, None
+
         end_idx = breakout_candles.index[0]
         end_val = float(breakout_candles["Close"].iloc[0])
         return True, end_idx, end_val
@@ -255,7 +267,7 @@ class PatternValidatorPipeline:
         return True, end_idx, end_val
 
 
-def detect_all_head_shoulders(pivots, df):
+def detect_all_head_shoulders_base(pivots, df):
     patterns = []
     if len(pivots) < 6:
         return patterns
@@ -268,6 +280,7 @@ def detect_all_head_shoulders(pivots, df):
             continue
 
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
+
         if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
             continue
 
@@ -318,7 +331,7 @@ def detect_all_head_shoulders(pivots, df):
             "neckline_end_idx": end_idx,
             "neckline_nodes": neckline_nodes,
             "target_nodes": target_nodes,
-            "end_pos": p[5]["pos"],
+            "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
             "Shoulder SL": float(round(sl, 5)),
         }
@@ -346,6 +359,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
             continue
 
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
+
         if l2 >= l1 or l2 >= l3:
             continue
 
@@ -399,6 +413,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
 
         post_l3_df = df.loc[idx_l3:]
         breakout_candles = post_l3_df[post_l3_df["Close"] > neckline_avg]
+
         if breakout_candles.empty:
             continue
 
@@ -430,7 +445,7 @@ def detect_all_inverse_head_shoulders(pivots, df):
             "neckline_end_idx": end_idx,
             "neckline_nodes": neckline_nodes,
             "target_nodes": target_nodes,
-            "end_pos": p[5]["pos"],
+            "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
             "Shoulder SL": float(round(sl, 5)),
         }
@@ -447,18 +462,13 @@ def detect_all_inverse_head_shoulders(pivots, df):
     return patterns
 
 
-_original_detect_all_head_shoulders = detect_all_head_shoulders
-
-
-def _detect_both_head_shoulders(pivots, df):
-    normal_patterns = _original_detect_all_head_shoulders(pivots, df)
+def detect_all_head_shoulders(pivots, df):
+    normal_patterns = detect_all_head_shoulders_base(pivots, df)
     inverse_patterns = detect_all_inverse_head_shoulders(pivots, df)
+
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
-
-
-detect_all_head_shoulders = _detect_both_head_shoulders
 
 
 def backtest_strategy(df):
@@ -467,13 +477,16 @@ def backtest_strategy(df):
 
     df = df.copy()
     required = ["Open", "High", "Low", "Close"]
+
     for col in required:
         if col not in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
     df = df.dropna(subset=required)
 
     df_active = calculate_indicators(df)
     df_active = calculate_zigzag(df_active)
+
     pivots = get_chronological_pivots(df_active)
     all_patterns = detect_all_head_shoulders(pivots, df_active)
 
@@ -501,25 +514,29 @@ def backtest_strategy(df):
 def run_full_analysis(df):
     if df is None or df.empty:
         return {
-            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral",
-            "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
+            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
     df = df.copy()
     required = ["Open", "High", "Low", "Close"]
+
     for col in required:
         if col not in df.columns:
             raise ValueError(f"Missing required column: {col}")
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=required)
+
     if len(df) < 30:
         return {
-            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral",
-            "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
+            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
-    df_active = df.tail(200).copy()
+    df_active = df.tail(300).copy()
     df_active = calculate_indicators(df_active)
     df_active = calculate_zigzag(df_active)
 
@@ -528,15 +545,16 @@ def run_full_analysis(df):
 
     if not all_patterns:
         return {
-            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral",
-            "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
+            "df": df_active, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
     latest_pattern = all_patterns[-1]
     signal = "STRONG SELL" if latest_pattern["bias"] == "Bearish" else "STRONG BUY"
 
     return {
-        "df": df,
+        "df": df_active,
         "signal": signal,
         "pattern": latest_pattern["pattern"],
         "bias": latest_pattern["bias"],
@@ -558,27 +576,5 @@ def run_full_analysis(df):
     }
 
 
-_original_run_full_analysis = run_full_analysis
-
-
-def _run_full_analysis_both_directions(df):
-    result = _original_run_full_analysis(df)
-    if result is None:
-        return result
-
-    if result.get("pattern") == "Inverse Head and Shoulders":
-        result["signal"] = "STRONG BUY"
-        result["bias"] = "Bullish"
-    elif result.get("pattern": "Head and Shoulders"):
-        result["signal"] = "STRONG SELL"
-        result["bias"] = "Bearish"
-
-    return result
-
-
-run_full_analysis = _run_full_analysis_both_directions
-
-
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7 Fixed).")
-                                  
+    print("ENGINE.PY loaded with v4.7 Pattern Recognition Logic.")
