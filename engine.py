@@ -295,8 +295,8 @@ def detect_all_head_shoulders_base(pivots, df):
         if head_height <= 0:
             continue
 
-        # Labada garab waxay kala fogaan karaan ilaa 65% height-ka madaxa
-        if abs(h1 - h3) > (head_height * 0.65):
+        # Labada garab waxay kala fogaan karaan ilaa 15% height-ka madaxa
+        if abs(h1 - h3) > (head_height * 0.15):
             continue
 
         max_shoulder = max(h1, h3)
