@@ -618,7 +618,7 @@ def backtest_strategy(df, interval=None, **kwargs):
 
 def run_full_analysis(df, interval=None, **kwargs):
     if df is None or df.empty:
-        return {
+        return {}
             "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
             "bias": "Neutral", "entry": None, "sl": None, "tp": None,
             "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
