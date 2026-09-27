@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & TRUE BACKTEST LAB (v4.7)
+# ENGINE.PY - DYNAMIC SWING SCANNER & TRUE BACKTEST LAB (v4.8)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -33,6 +33,12 @@ def calculate_indicators(df):
 
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
+
+    # حساب متوسط حجم التداول (Volume SMA 20)
+    if "Volume" in df.columns:
+        df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
+    else:
+        df["Vol_SMA20"] = np.nan
 
     return df
 
@@ -220,8 +226,16 @@ class PatternValidatorPipeline:
                 rsi_val = row["RSI"]
                 ema50 = row["EMA50"]
                 ema200 = row["EMA200"]
+                
+                # فحص الحجم إذا كان متوفراً
+                vol_val = row.get("Volume", 0)
+                vol_sma = row.get("Vol_SMA20", np.nan)
+                
+                vol_ok = True
+                if not pd.isna(vol_sma) and vol_sma > 0 and vol_val > 0:
+                    vol_ok = (vol_val >= vol_sma * 1.1)
 
-                if (30 <= rsi_val <= 75) and (ema50 > ema200):
+                if (30 <= rsi_val <= 75) and (ema50 > ema200) and vol_ok:
                     return True, current_idx, close_price
                 else:
                     return False, None, None
@@ -290,7 +304,6 @@ def _detect_all_head_shoulders_base(pivots, df, max_candles_ago=None):
 
         end_pos = df.index.get_loc(end_idx)
 
-        # عدم تقييد الأنماط عند الاختبار الرجعي
         if max_candles_ago is not None and (total_candles - end_pos) > max_candles_ago:
             continue
 
@@ -328,7 +341,7 @@ def _detect_all_head_shoulders_base(pivots, df, max_candles_ago=None):
             "neckline_end_idx": end_idx,
             "neckline_nodes": neckline_nodes,
             "target_nodes": target_nodes,
-            "end_pos": p[5]["pos"]
+            "end_pos": end_pos  # تعديل: الاعتماد على شمعة الاختراق الحقيقية
         })
 
     return patterns
@@ -408,7 +421,14 @@ def detect_all_inverse_head_shoulders(pivots, df, max_candles_ago=None):
                 ema50 = row["EMA50"]
                 ema200 = row["EMA200"]
 
-                if (30 <= rsi_val <= 75) and (ema50 < ema200):
+                vol_val = row.get("Volume", 0)
+                vol_sma = row.get("Vol_SMA20", np.nan)
+                
+                vol_ok = True
+                if not pd.isna(vol_sma) and vol_sma > 0 and vol_val > 0:
+                    vol_ok = (vol_val >= vol_sma * 1.1)
+
+                if (30 <= rsi_val <= 75) and (ema50 < ema200) and vol_ok:
                     breakout_confirmed = True
                     end_idx = current_idx
                     end_val = close_price
@@ -452,7 +472,7 @@ def detect_all_inverse_head_shoulders(pivots, df, max_candles_ago=None):
             "neckline_end_idx": end_idx,
             "neckline_nodes": neckline_nodes,
             "target_nodes": target_nodes,
-            "end_pos": p[5]["pos"]
+            "end_pos": end_pos  # تعديل: الاعتماد على شمعة الاختراق الحقيقية
         })
 
     return patterns
@@ -492,7 +512,6 @@ def run_full_analysis(df, interval="1d"):
             "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
         }
 
-    # للماسح الحي: نأخذ أحدث 300 شمعة
     df_active = df.tail(300).copy()
     df_active = calculate_indicators(df_active)
     df_active = calculate_zigzag(df_active)
@@ -528,17 +547,14 @@ def run_full_analysis(df, interval="1d"):
     }
 
 
-# دالة الاختبار الرجعي الشاملة والتاريخية الحقيقية (True Backtest)
 def backtest_strategy(df, interval="1d"):
     if df is None or len(df) < 50:
         return []
 
-    # معالجة كامل السلسلة الزمنية التاريخية
     df_calc = calculate_indicators(df)
     df_calc = calculate_zigzag(df_calc)
     pivots = get_chronological_pivots(df_calc)
     
-    # جلب كافة الأنماط التاريخية بدون تقييد زمني
     patterns = detect_all_head_shoulders(pivots, df_calc, max_candles_ago=None)
 
     trades = []
@@ -558,12 +574,11 @@ def backtest_strategy(df, interval="1d"):
             exit_date = None
             exit_price = None
 
-            # محاكاة حركة السعر شمعة بشمعة بعد الاختراق
             for current_idx, row in sub_df.iloc[1:].iterrows():
                 high_p = row["High"]
                 low_p = row["Low"]
 
-                if bias == "Bearish": # صفقة بيع (Head and Shoulders)
+                if bias == "Bearish":
                     if high_p >= sl:
                         head_result = "LOSS"
                         exit_date = current_idx
@@ -574,7 +589,7 @@ def backtest_strategy(df, interval="1d"):
                         exit_date = current_idx
                         exit_price = tp
                         break
-                else: # صفقة شراء (Inverse Head and Shoulders)
+                else:
                     if low_p <= sl:
                         head_result = "LOSS"
                         exit_date = current_idx
@@ -591,7 +606,7 @@ def backtest_strategy(df, interval="1d"):
                 exit_date = sub_df.index[-1]
                 exit_price = sub_df["Close"].iloc[-1]
 
-            entry_cond = f"{pat['pattern']} ({'كسر هبوطي' if bias == 'Bearish' else 'اختراق صعودي'}) + تأكيد EMA/RSI"
+            entry_cond = f"{pat['pattern']} ({'كسر هبوطي' if bias == 'Bearish' else 'اختراق صعودي'}) + تأكيد EMA/RSI/Volume"
 
             trades.append({
                 "Pattern": pat["pattern"],
@@ -616,5 +631,5 @@ def backtest_strategy(df, interval="1d"):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with True Backtest Lab & Live Scanner (v4.7).")
-        
+    print("ENGINE.PY loaded with Dynamic Volume Confirmation & True Backtest (v4.8).")
+            
