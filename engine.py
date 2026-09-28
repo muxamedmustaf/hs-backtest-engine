@@ -406,7 +406,7 @@ def detect_all_head_shoulders_base(pivots, df):
             continue
 
         max_shoulder = max(h1, h3)
-        if (h2 - max_shoulder) < (head_height * 0.30):
+        if (h2 - max_shoulder) < (head_height * 0.20):
             continue
 
         if abs(l1 - l2) > (head_height * 0.15):
