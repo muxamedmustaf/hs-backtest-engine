@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.2 Complete)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.3 Live & Backtest Hybrid)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 5
@@ -365,6 +365,7 @@ def detect_all_head_shoulders_base(pivots, df):
         return patterns
 
     validator = PatternValidatorPipeline(df)
+    latest_close = float(df["Close"].iloc[-1])
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -376,7 +377,6 @@ def detect_all_head_shoulders_base(pivots, df):
         if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
             continue
 
-        # SHARDI 3: H1 garabka bidix waa in uu yahay kan ugu dheer uguna sarreeya garabkaas
         if h1 <= max(l0, l1):
             continue
 
@@ -386,7 +386,6 @@ def detect_all_head_shoulders_base(pivots, df):
         if left_shoulder_height <= 0 or right_shoulder_height <= 0:
             continue
 
-        # SHARDI 1 & 2: Garabka midig 3-diisa nuqul vs Garabka bidix (Tolerance <= 0.5)
         height_diff_ratio = abs(right_shoulder_height - left_shoulder_height) / max(left_shoulder_height, 1e-9)
         if height_diff_ratio > 0.5:
             continue
@@ -426,6 +425,20 @@ def detect_all_head_shoulders_base(pivots, df):
         shoulder_sl = max(h1, h3)
         tp = entry - actual_head_length
 
+        # ----------------------------------------------------
+        # حساب نسبة التقدم وقاعدة الثلث (1/3 TP Rule)
+        # ----------------------------------------------------
+        total_tp_dist = abs(entry - tp)
+        moved_dist = max(0.0, entry - latest_close) if latest_close < entry else 0.0
+        progress_ratio = moved_dist / total_tp_dist if total_tp_dist > 0 else 0.0
+
+        # التأكد من عدم تجاوز وقف الخسارة بعد الاختراق
+        post_breakout_df = df.loc[end_idx:]
+        hit_sl_live = (post_breakout_df["High"] >= sl).any()
+
+        is_valid_entry = (progress_ratio <= (1.0 / 3.0)) and not hit_sl_live
+        is_near_target = (0.70 <= progress_ratio < 1.0) and not hit_sl_live
+
         nodes = [(x["idx"], x["val"]) for x in p]
         nodes.append((end_idx, float(end_val)))
 
@@ -449,7 +462,11 @@ def detect_all_head_shoulders_base(pivots, df):
             "target_nodes": target_nodes,
             "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
-            "Shoulder SL": float(round(shoulder_sl, 5))
+            "Shoulder SL": float(round(shoulder_sl, 5)),
+            "progress_ratio": float(round(progress_ratio * 100, 2)),
+            "is_valid_entry": is_valid_entry,
+            "is_near_target": is_near_target,
+            "status": "ACTIVE_ENTRY" if is_valid_entry else ("NEAR_TARGET" if is_near_target else "IN_PROGRESS")
         }
 
         trade_result, exit_idx, exit_price, extra_stats = simulate_backtest_outcome(pattern_dict, df)
@@ -471,6 +488,8 @@ def detect_all_inverse_head_shoulders(pivots, df):
     if len(pivots) < 6:
         return patterns
 
+    latest_close = float(df["Close"].iloc[-1])
+
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
         if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
@@ -481,7 +500,6 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if l2 >= l1 or l2 >= l3:
             continue
 
-        # SHARDI 3 (Inverse): L1 waa in uu yahay kan ugu hooseeya garabka bidix
         if l1 >= min(h0, h1):
             continue
 
@@ -491,7 +509,6 @@ def detect_all_inverse_head_shoulders(pivots, df):
         if left_shoulder_depth <= 0 or right_shoulder_depth <= 0:
             continue
 
-        # SHARDI 1 & 2 (Inverse): 0.5 Tolerance rule
         depth_diff_ratio = abs(right_shoulder_depth - left_shoulder_depth) / max(left_shoulder_depth, 1e-9)
         if depth_diff_ratio > 0.5:
             continue
@@ -566,6 +583,127 @@ def detect_all_inverse_head_shoulders(pivots, df):
         actual_head_length = neckline_avg - l2
         tp = entry + actual_head_length
 
+        # ----------------------------------------------------
+        # حساب نسبة التقدم وقاعدة الثلث (1/3 TP Rule)
+        # ----------------------------------------------------
+        total_tp_dist = abs(tp - entry)
+        moved_dist = max(0.0, latest_close - entry) if latest_close > entry else 0.0
+        progress_ratio = moved_dist / total_tp_dist if total_tp_dist > 0 else 0.0
+
+        post_breakout_df = df.loc[end_idx:]
+def detect_all_inverse_head_shoulders(pivots, df):
+    patterns = []
+    if len(pivots) < 6:
+        return patterns
+
+    latest_close = float(df["Close"].iloc[-1])
+
+    for i in range(len(pivots) - 5):
+        p = pivots[i:i + 6]
+        if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
+            continue
+
+        h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
+
+        if l2 >= l1 or l2 >= l3:
+            continue
+
+        if l1 >= min(h0, h1):
+            continue
+
+        left_shoulder_depth = max(h0, h1) - l1
+        right_shoulder_depth = max(h1, h2) - l3
+
+        if left_shoulder_depth <= 0 or right_shoulder_depth <= 0:
+            continue
+
+        depth_diff_ratio = abs(right_shoulder_depth - left_shoulder_depth) / max(left_shoulder_depth, 1e-9)
+        if depth_diff_ratio > 0.5:
+            continue
+
+        if abs(h2 - h0) / max(left_shoulder_depth, 1e-9) > 0.5:
+            continue
+        if abs(h2 - h1) / max(left_shoulder_depth, 1e-9) > 0.5:
+            continue
+        if abs(l3 - l1) / max(left_shoulder_depth, 1e-9) > 0.5:
+            continue
+
+        neckline_max = max(h1, h2)
+        head_depth = neckline_max - l2
+        if head_depth <= 0:
+            continue
+
+        if abs(l1 - l3) > (head_depth * 0.65):
+            continue
+
+        min_shoulder = min(l1, l3)
+        if (min_shoulder - l2) < (head_depth * 0.25):
+            continue
+
+        if abs(h1 - h2) > (head_depth * 0.25):
+            continue
+
+        positions = [x["pos"] for x in p]
+        if any((positions[j+1] - positions[j]) < MIN_WAVE_CANDLES for j in range(5)):
+            continue
+
+        idx_h0 = p[0]["idx"]
+        pre_left_df = df.loc[:idx_h0]
+        if len(pre_left_df) > 10:
+            past_max = float(pre_left_df["High"].iloc[-10:].max())
+            if past_max < p[0]["val"]:
+                continue
+
+        idx_l2 = p[3]["idx"]
+        post_head_df = df.loc[idx_l2:]
+        if not post_head_df.empty:
+            if float(post_head_df["Low"].min()) < l2:
+                continue
+
+        idx_l3 = p[5]["idx"]
+        if idx_l3 not in df.index:
+            continue
+
+        rsi_val = float(df.loc[idx_l3, "RSI"])
+        if not (25 <= rsi_val <= 70):
+            continue
+
+        ema50 = df.loc[idx_l3, "EMA50"]
+        ema200 = df.loc[idx_l3, "EMA200"]
+        if pd.isna(ema50) or pd.isna(ema200):
+            continue
+
+        h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
+        neckline_avg = (h1 + h2) / 2.0
+
+        post_l3_df = df.loc[idx_l3:]
+        breakout_candles = post_l3_df[post_l3_df["Close"] > neckline_avg]
+
+        if breakout_candles.empty:
+            continue
+
+        end_idx = breakout_candles.index[0]
+        end_val = float(breakout_candles["Close"].iloc[0])
+
+        entry = neckline_avg
+        sl = l2
+        shoulder_sl = min(l1, l3)
+        actual_head_length = neckline_avg - l2
+        tp = entry + actual_head_length
+
+        # ----------------------------------------------------
+        # حساب نسبة التقدم وقاعدة الثلث (1/3 TP Rule)
+        # ----------------------------------------------------
+        total_tp_dist = abs(tp - entry)
+        moved_dist = max(0.0, latest_close - entry) if latest_close > entry else 0.0
+        progress_ratio = moved_dist / total_tp_dist if total_tp_dist > 0 else 0.0
+
+        post_breakout_df = df.loc[end_idx:]
+        hit_sl_live = (post_breakout_df["Low"] <= sl).any()
+
+        is_valid_entry = (progress_ratio <= (1.0 / 3.0)) and not hit_sl_live
+        is_near_target = (0.70 <= progress_ratio < 1.0) and not hit_sl_live
+
         nodes = [(x["idx"], x["val"]) for x in p]
         nodes.append((end_idx, end_val))
 
@@ -589,7 +727,11 @@ def detect_all_inverse_head_shoulders(pivots, df):
             "target_nodes": target_nodes,
             "end_pos": df.index.get_loc(end_idx),
             "SL": float(round(sl, 5)),
-            "Shoulder SL": float(round(shoulder_sl, 5))
+            "Shoulder SL": float(round(shoulder_sl, 5)),
+            "progress_ratio": float(round(progress_ratio * 100, 2)),
+            "is_valid_entry": is_valid_entry,
+            "is_near_target": is_near_target,
+            "status": "ACTIVE_ENTRY" if is_valid_entry else ("NEAR_TARGET" if is_near_target else "IN_PROGRESS")
         }
 
         trade_result, exit_idx, exit_price, extra_stats = simulate_backtest_outcome(pattern_dict, df)
@@ -653,7 +795,10 @@ def backtest_strategy(df, interval=None, **kwargs):
             "Exit Index": exit_idx,
             "Exit Price": exit_price,
             "nodes": pat.get("nodes", []),
-            "trade_result": trade_result
+            "trade_result": trade_result,
+            "Progress Ratio (%)": pat.get("progress_ratio", 0.0),
+            "Valid Entry": pat.get("is_valid_entry", False),
+            "Near Target": pat.get("is_near_target", False)
         }
         trades.append(trade_record)
 
@@ -669,6 +814,7 @@ def run_full_analysis(df, interval=None, **kwargs):
         "entry": None,
         "entry_trigger": None,
         "sl": None,
+        "shoulder_sl": None,
         "tp": None,
         "nodes": [],
         "match": 0.0,
@@ -676,13 +822,17 @@ def run_full_analysis(df, interval=None, **kwargs):
         "neckline_nodes": [],
         "target_nodes": [],
         "all_patterns": [],
+        "near_target_patterns": [],
         "trade_result": "N/A",
         "SL": None,
         "Shoulder SL": None,
         "Head Result": "N/A",
         "Shoulder Result": "N/A",
         "Candles to Exit (Cabdale)": 0,
-        "Candles to TP Move": 0
+        "Candles to TP Move": 0,
+        "progress_ratio": 0.0,
+        "is_near_target": False,
+        "status": "NONE"
     }
 
     if df is None or df.empty:
@@ -712,8 +862,17 @@ def run_full_analysis(df, interval=None, **kwargs):
         default_response["df"] = df_active
         return default_response
 
-    latest_pattern = all_patterns[-1]
-    signal = "STRONG SELL" if latest_pattern["bias"] == "Bearish" else "STRONG BUY"
+    near_target_patterns = [p for p in all_patterns if p.get("is_near_target", False)]
+    active_entry_patterns = [p for p in all_patterns if p.get("is_valid_entry", False)]
+
+    if active_entry_patterns:
+        latest_pattern = active_entry_patterns[-1]
+        signal = "STRONG SELL" if latest_pattern["bias"] == "Bearish" else "STRONG BUY"
+    elif all_patterns:
+        latest_pattern = all_patterns[-1]
+        signal = "WAITING"
+    else:
+        return default_response
 
     return {
         "df": df_active,
@@ -723,6 +882,7 @@ def run_full_analysis(df, interval=None, **kwargs):
         "entry": latest_pattern["entry"],
         "entry_trigger": latest_pattern["entry_trigger"],
         "sl": latest_pattern["sl"],
+        "shoulder_sl": latest_pattern.get("shoulder_sl", latest_pattern["sl"]),
         "tp": latest_pattern["tp"],
         "nodes": latest_pattern["nodes"],
         "match": latest_pattern["match"],
@@ -730,11 +890,15 @@ def run_full_analysis(df, interval=None, **kwargs):
         "neckline_nodes": latest_pattern.get("neckline_nodes", []),
         "target_nodes": latest_pattern.get("target_nodes", []),
         "all_patterns": all_patterns,
+        "near_target_patterns": near_target_patterns,
         "trade_result": latest_pattern.get("trade_result", "OPEN"),
         "SL": latest_pattern.get("SL"),
         "Shoulder SL": latest_pattern.get("Shoulder SL"),
         "Head Result": latest_pattern.get("Head Result", "OPEN"),
         "Shoulder Result": latest_pattern.get("Shoulder Result", "OPEN"),
         "Candles to Exit (Cabdale)": latest_pattern.get("Candles to Exit (Cabdale)", 0),
-        "Candles to TP Move": latest_pattern.get("Candles to TP Move", 0)
+        "Candles to TP Move": latest_pattern.get("Candles to TP Move", 0),
+        "progress_ratio": latest_pattern.get("progress_ratio", 0.0),
+        "is_near_target": latest_pattern.get("is_near_target", False),
+        "status": latest_pattern.get("status", "NONE")
     }
