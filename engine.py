@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.2 Updated)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.2 Complete)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 5
@@ -373,11 +373,10 @@ def detect_all_head_shoulders_base(pivots, df):
 
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
 
-        # Standard baseline logic
         if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
             continue
 
-        # SHARDI 3: H1 Garabka bidix waa in uu yahay kan ugu dheer uguna sarreeya garabkaas
+        # SHARDI 3: H1 garabka bidix waa in uu yahay kan ugu dheer uguna sarreeya garabkaas
         if h1 <= max(l0, l1):
             continue
 
@@ -392,13 +391,10 @@ def detect_all_head_shoulders_base(pivots, df):
         if height_diff_ratio > 0.5:
             continue
 
-        # Nuqdooyinka L0, L1, L2 waa in ay dhawrkeeduba raacaan shardiga 0.5 tolerance
         if abs(l2 - l0) / max(left_shoulder_height, 1e-9) > 0.5:
             continue
         if abs(l2 - l1) / max(left_shoulder_height, 1e-9) > 0.5:
             continue
-
-        # H1 iyo H3 isku shardi ayay raacayaan
         if abs(h3 - h1) / max(left_shoulder_height, 1e-9) > 0.5:
             continue
 
@@ -662,3 +658,83 @@ def backtest_strategy(df, interval=None, **kwargs):
         trades.append(trade_record)
 
     return trades
+
+
+def run_full_analysis(df, interval=None, **kwargs):
+    default_response = {
+        "df": df,
+        "signal": "WAITING",
+        "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral",
+        "entry": None,
+        "entry_trigger": None,
+        "sl": None,
+        "tp": None,
+        "nodes": [],
+        "match": 0.0,
+        "neckline_start_idx": None,
+        "neckline_nodes": [],
+        "target_nodes": [],
+        "all_patterns": [],
+        "trade_result": "N/A",
+        "SL": None,
+        "Shoulder SL": None,
+        "Head Result": "N/A",
+        "Shoulder Result": "N/A",
+        "Candles to Exit (Cabdale)": 0,
+        "Candles to TP Move": 0
+    }
+
+    if df is None or df.empty:
+        return default_response
+
+    df = df.copy()
+    required = ["Open", "High", "Low", "Close"]
+
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column: {col}")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=required)
+
+    if len(df) < 30:
+        default_response["df"] = df
+        return default_response
+
+    df_active = calculate_indicators(df)
+    df_active = calculate_zigzag(df_active)
+
+    pivots = get_chronological_pivots(df_active)
+    all_patterns = detect_all_head_shoulders(pivots, df_active)
+
+    if not all_patterns:
+        default_response["df"] = df_active
+        return default_response
+
+    latest_pattern = all_patterns[-1]
+    signal = "STRONG SELL" if latest_pattern["bias"] == "Bearish" else "STRONG BUY"
+
+    return {
+        "df": df_active,
+        "signal": signal,
+        "pattern": latest_pattern["pattern"],
+        "bias": latest_pattern["bias"],
+        "entry": latest_pattern["entry"],
+        "entry_trigger": latest_pattern["entry_trigger"],
+        "sl": latest_pattern["sl"],
+        "tp": latest_pattern["tp"],
+        "nodes": latest_pattern["nodes"],
+        "match": latest_pattern["match"],
+        "neckline_start_idx": latest_pattern["neckline_start_idx"],
+        "neckline_nodes": latest_pattern.get("neckline_nodes", []),
+        "target_nodes": latest_pattern.get("target_nodes", []),
+        "all_patterns": all_patterns,
+        "trade_result": latest_pattern.get("trade_result", "OPEN"),
+        "SL": latest_pattern.get("SL"),
+        "Shoulder SL": latest_pattern.get("Shoulder SL"),
+        "Head Result": latest_pattern.get("Head Result", "OPEN"),
+        "Shoulder Result": latest_pattern.get("Shoulder Result", "OPEN"),
+        "Candles to Exit (Cabdale)": latest_pattern.get("Candles to Exit (Cabdale)", 0),
+        "Candles to TP Move": latest_pattern.get("Candles to TP Move", 0)
+    }
