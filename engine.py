@@ -390,11 +390,11 @@ def detect_all_head_shoulders_base(pivots, df):
         if height_diff_ratio > 0.40:
             continue
 
-        if abs(l2 - l0) / max(left_shoulder_height, 1e-9) > 0.25:
+        if abs(l2 - l0) / max(left_shoulder_height, 1e-9) > 0.40:
             continue
-        if abs(l2 - l1) / max(left_shoulder_height, 1e-9) > 0.25:
+        if abs(l2 - l1) / max(left_shoulder_height, 1e-9) > 0.40:
             continue
-        if abs(h3 - h1) / max(left_shoulder_height, 1e-9) > 0.25:
+        if abs(h3 - h1) / max(left_shoulder_height, 1e-9) > 0.40:
             continue
 
         neckline_min = min(l1, l2)
