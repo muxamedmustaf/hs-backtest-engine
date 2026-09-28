@@ -387,7 +387,7 @@ def detect_all_head_shoulders_base(pivots, df):
             continue
 
         height_diff_ratio = abs(right_shoulder_height - left_shoulder_height) / max(left_shoulder_height, 1e-9)
-        if height_diff_ratio > 0.25:
+        if height_diff_ratio > 0.40:
             continue
 
         if abs(l2 - l0) / max(left_shoulder_height, 1e-9) > 0.25:
