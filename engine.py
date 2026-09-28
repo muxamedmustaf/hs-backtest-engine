@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.1 Fixed)
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v5.2 Updated)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 5
@@ -373,7 +373,33 @@ def detect_all_head_shoulders_base(pivots, df):
 
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
 
+        # Standard baseline logic
         if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
+            continue
+
+        # SHARDI 3: H1 Garabka bidix waa in uu yahay kan ugu dheer uguna sarreeya garabkaas
+        if h1 <= max(l0, l1):
+            continue
+
+        left_shoulder_height = h1 - min(l0, l1)
+        right_shoulder_height = h3 - min(l1, l2)
+
+        if left_shoulder_height <= 0 or right_shoulder_height <= 0:
+            continue
+
+        # SHARDI 1 & 2: Garabka midig 3-diisa nuqul vs Garabka bidix (Tolerance <= 0.5)
+        height_diff_ratio = abs(right_shoulder_height - left_shoulder_height) / max(left_shoulder_height, 1e-9)
+        if height_diff_ratio > 0.5:
+            continue
+
+        # Nuqdooyinka L0, L1, L2 waa in ay dhawrkeeduba raacaan shardiga 0.5 tolerance
+        if abs(l2 - l0) / max(left_shoulder_height, 1e-9) > 0.5:
+            continue
+        if abs(l2 - l1) / max(left_shoulder_height, 1e-9) > 0.5:
+            continue
+
+        # H1 iyo H3 isku shardi ayay raacayaan
+        if abs(h3 - h1) / max(left_shoulder_height, 1e-9) > 0.5:
             continue
 
         neckline_min = min(l1, l2)
@@ -457,6 +483,28 @@ def detect_all_inverse_head_shoulders(pivots, df):
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
 
         if l2 >= l1 or l2 >= l3:
+            continue
+
+        # SHARDI 3 (Inverse): L1 waa in uu yahay kan ugu hooseeya garabka bidix
+        if l1 >= min(h0, h1):
+            continue
+
+        left_shoulder_depth = max(h0, h1) - l1
+        right_shoulder_depth = max(h1, h2) - l3
+
+        if left_shoulder_depth <= 0 or right_shoulder_depth <= 0:
+            continue
+
+        # SHARDI 1 & 2 (Inverse): 0.5 Tolerance rule
+        depth_diff_ratio = abs(right_shoulder_depth - left_shoulder_depth) / max(left_shoulder_depth, 1e-9)
+        if depth_diff_ratio > 0.5:
+            continue
+
+        if abs(h2 - h0) / max(left_shoulder_depth, 1e-9) > 0.5:
+            continue
+        if abs(h2 - h1) / max(left_shoulder_depth, 1e-9) > 0.5:
+            continue
+        if abs(l3 - l1) / max(left_shoulder_depth, 1e-9) > 0.5:
             continue
 
         neckline_max = max(h1, h2)
@@ -614,13 +662,3 @@ def backtest_strategy(df, interval=None, **kwargs):
         trades.append(trade_record)
 
     return trades
-
-
-def run_full_analysis(df, interval=None, **kwargs):
-    if df is None or df.empty:
-        return {
-            "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
-            "bias": "Neutral", "entry": None, "sl": None, "tp": None,
-            "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []
-        }
- 
