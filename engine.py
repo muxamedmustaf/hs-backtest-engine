@@ -388,7 +388,7 @@ def detect_all_head_shoulders_base(pivots, df):
             # ==================================================================
 
         height_diff_ratio = abs(right_shoulder_height - left_shoulder_height) / max(left_shoulder_height, 1e-9)
-        if height_diff_ratio > 0.25:
+        if height_diff_ratio > 0.50:
             continue
 
         if abs(l2 - l0) / max(left_shoulder_height, 1e-9) > 0.40:
@@ -403,14 +403,14 @@ def detect_all_head_shoulders_base(pivots, df):
         if head_height <= 0:
             continue
 
-        if abs(h1 - h3) > (head_height * 0.25):
+        if abs(h1 - h3) > (head_height * 0.50):
             continue
 
         max_shoulder = max(h1, h3)
-        if (h2 - max_shoulder) < (head_height * 0.25):
+        if (h2 - max_shoulder) < (head_height * 0.50):
             continue
 
-        if abs(l1 - l2) > (head_height * 0.25):
+        if abs(l1 - l2) > (head_height * 0.50):
             continue
 
         passed, end_idx, end_val = validator.run(p)
