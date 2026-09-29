@@ -529,79 +529,14 @@ def detect_all_head_shoulders(pivots, df):
     return all_patterns
 
 
-def create_pattern_chart(analysis_result):
-    """دالة رسم الشارت والمؤشرات مع النمط البارز"""
-    if not analysis_result or "df" not in analysis_result or analysis_result["df"].empty:
-        return None
-
-    df = analysis_result["df"].copy()
-    all_patterns = analysis_result.get("all_patterns", [])
-    df.index = pd.to_datetime(df.index)
-
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.04,
-        subplot_titles=('الشارت الرئيسي والأنماط', 'RSI وحجم التداول'),
-        row_width=[0.25, 0.75]
-    )
-
-    fig.add_trace(
-        go.Candlestick(
-            x=df.index,
-            open=df['Open'], high=df['High'],
-            low=df['Low'], close=df['Close'],
-            name='السعر'
-        ),
-        row=1, col=1
-    )
-
-    if "EMA50" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["EMA50"], mode='lines', name='EMA 50', line=dict(color='#FFB300', width=1.5)), row=1, col=1)
-    if "EMA200" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["EMA200"], mode='lines', name='EMA 200', line=dict(color='#1E88E5', width=1.8)), row=1, col=1)
-
-    for idx, pat in enumerate(all_patterns):
-        nodes_detailed = pat.get("nodes_detailed", [])
-        is_latest = (idx == len(all_patterns) - 1)
-        pattern_color = "#9C27B0" if is_latest else "rgba(156, 39, 176, 0.45)"
-        line_width = 3 if is_latest else 1.5
-
-        if nodes_detailed:
-            x_coords = [pd.to_datetime(n["idx"]) for n in nodes_detailed]
-            y_coords = [float(n["val"]) for n in nodes_detailed]
-            labels = [n.get("label", "") for n in nodes_detailed]
-
-            fig.add_trace(
-                go.Scatter(
-                    x=x_coords, y=y_coords,
-                    mode='lines+markers+text',
-                    name=f"نمط #{idx+1} ({pat['pattern']})",
-                    line=dict(color=pattern_color, width=line_width),
-                    marker=dict(size=8, color=pattern_color, symbol="circle"),
-                    text=labels if is_latest else None,
-                    textposition="top center",
-                    textfont=dict(size=11, color="white")
-                ),
-                row=1, col=1
-            )
-
-    if "RSI" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], mode='lines', name='RSI', line=dict(color='#AB47BC', width=1.5)), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="#FF5252", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="#69F0AE", row=2, col=1)
-
-    fig.update_layout(
-        xaxis_rangeslider_visible=False,
-        template="plotly_dark",
-        height=800,
-        margin=dict(l=15, r=15, t=35, b=15)
-    )
-    return fig
-
-
+# ==========================================================
+# الدالة الأولى: معالجة واستخراج صفقات الباكتيست الكامل
+# ==========================================================
 def backtest_strategy(df, interval=None, config=CONFIG, **kwargs):
-    """الدالة المطلوبة لـ backtest.py للباكتيست"""
+    """
+    الدالة الأولى المسؤولة عن معالجة كامل البيانات التاريخية دون اقتطاع
+    وإرجاع كافة الصفقات المكتشفة مع نتائجها التفصيلية.
+    """
     if df is None or df.empty or len(df) < 30:
         return []
 
@@ -637,8 +572,94 @@ def backtest_strategy(df, interval=None, config=CONFIG, **kwargs):
     return trades
 
 
+# ==========================================================
+# الدالة الثانية: إنشاء الشارت وتظليل الأنماط
+# ==========================================================
+def render_pattern_chart(df, patterns_to_draw=None, max_candles=None):
+    """
+    الدالة الثانية المسؤولة عن بناء شارت Plotly التفاعلي، رسم الأسعار، 
+    المؤشرات الفنية (EMA, RSI)، وتظليل الأنماط باللون الأرجواني.
+    """
+    if df is None or df.empty:
+        return None
+
+    df = df.copy()
+    if max_candles and len(df) > max_candles:
+        df = df.tail(max_candles)
+
+    df.index = pd.to_datetime(df.index)
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        subplot_titles=('الشارت الرئيسي والأنماط', 'RSI وحجم التداول'),
+        row_width=[0.25, 0.75]
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df['Open'], high=df['High'],
+            low=df['Low'], close=df['Close'],
+            name='السعر'
+        ),
+        row=1, col=1
+    )
+
+    if "EMA50" in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df["EMA50"], mode='lines', name='EMA 50', line=dict(color='#FFB300', width=1.5)), row=1, col=1)
+    if "EMA200" in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df["EMA200"], mode='lines', name='EMA 200', line=dict(color='#1E88E5', width=1.8)), row=1, col=1)
+
+    if patterns_to_draw:
+        for idx, pat in enumerate(patterns_to_draw):
+            nodes_detailed = pat.get("nodes_detailed", [])
+            is_latest = (idx == len(patterns_to_draw) - 1)
+            pattern_color = "#9C27B0" if is_latest else "rgba(156, 39, 176, 0.45)"
+            line_width = 3 if is_latest else 1.5
+
+            if nodes_detailed:
+                x_coords = [pd.to_datetime(n["idx"]) for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
+                y_coords = [float(n["val"]) for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
+                labels = [n.get("label", "") for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
+
+                if x_coords:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_coords, y=y_coords,
+                            mode='lines+markers+text',
+                            name=f"نمط #{idx+1} ({pat['pattern']})",
+                            line=dict(color=pattern_color, width=line_width),
+                            marker=dict(size=8, color=pattern_color, symbol="circle"),
+                            text=labels if is_latest else None,
+                            textposition="top center",
+                            textfont=dict(size=11, color="white")
+                        ),
+                        row=1, col=1
+                    )
+
+    if "RSI" in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], mode='lines', name='RSI', line=dict(color='#AB47BC', width=1.5)), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="#FF5252", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="#69F0AE", row=2, col=1)
+
+    fig.update_layout(
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        height=800,
+        margin=dict(l=15, r=15, t=35, b=15)
+    )
+    return fig
+
+
+# ==========================================================
+# دالة التوافق الشاملة واستدعاء واجهة backtest.py
+# ==========================================================
 def run_full_analysis(df):
-    """الدالة المطلوبة لـ backtest.py للتحليل الفوري والإرجاع"""
+    """
+    تجميع المخرجات لاستخدامها المباشر من ملف backtest.py.
+    """
     default_response = {
         "df": df,
         "signal": "WAITING",
@@ -665,8 +686,7 @@ def run_full_analysis(df):
     if len(df) < 30:
         return default_response
 
-    df_active = df.tail(200).copy()
-    df_active = calculate_indicators(df_active)
+    df_active = calculate_indicators(df)
     df_active = calculate_zigzag(df_active)
 
     pivots = get_chronological_pivots(df_active)
@@ -674,7 +694,7 @@ def run_full_analysis(df):
 
     if not all_patterns:
         default_response["df"] = df_active
-        default_response["fig"] = create_pattern_chart({"df": df_active, "all_patterns": []})
+        default_response["fig"] = render_pattern_chart(df_active, patterns_to_draw=[], max_candles=500)
         default_response["chart"] = default_response["fig"]
         return default_response
 
@@ -700,7 +720,7 @@ def run_full_analysis(df):
         "trade_result": selected_pattern.get("trade_result", "OPEN")
     }
 
-    fig = create_pattern_chart(analysis_res)
+    fig = render_pattern_chart(df_active, patterns_to_draw=all_patterns, max_candles=500)
     analysis_res["fig"] = fig
     analysis_res["chart"] = fig
 
