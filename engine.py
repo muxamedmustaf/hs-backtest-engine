@@ -578,7 +578,7 @@ def backtest_strategy(df, interval=None, config=CONFIG, **kwargs):
 def render_pattern_chart(df, patterns_to_draw=None, max_candles=None):
     """
     الدالة الثانية المسؤولة عن بناء شارت Plotly التفاعلي، رسم الأسعار، 
-    المؤشرات الفنية (EMA, RSI)، وتظليل الأنماط باللون الأرجواني.
+    المؤشرات الفنية (EMA, RSI)، وتظليل الأنماط، خطوط العنق، وأهداف TP.
     """
     if df is None or df.empty:
         return None
@@ -615,26 +615,69 @@ def render_pattern_chart(df, patterns_to_draw=None, max_candles=None):
     if patterns_to_draw:
         for idx, pat in enumerate(patterns_to_draw):
             nodes_detailed = pat.get("nodes_detailed", [])
+            nodes = pat.get("nodes", [])
+            neckline_nodes = pat.get("neckline_nodes", [])
+            target_nodes = pat.get("target_nodes", [])
+
             is_latest = (idx == len(patterns_to_draw) - 1)
             pattern_color = "#9C27B0" if is_latest else "rgba(156, 39, 176, 0.45)"
             line_width = 3 if is_latest else 1.5
 
+            # 1. رسم أضلاع النمط الهيكلية (Nodes)
+            x_coords, y_coords, labels = [], [], []
             if nodes_detailed:
                 x_coords = [pd.to_datetime(n["idx"]) for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
                 y_coords = [float(n["val"]) for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
                 labels = [n.get("label", "") for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
+            elif nodes:
+                x_coords = [pd.to_datetime(n[0]) for n in nodes if pd.to_datetime(n[0]) in df.index]
+                y_coords = [float(n[1]) for n in nodes if pd.to_datetime(n[0]) in df.index]
+                labels = None
 
-                if x_coords:
+            if x_coords:
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_coords, y=y_coords,
+                        mode='lines+markers+text' if labels else 'lines+markers',
+                        name=f"نمط #{idx+1} ({pat['pattern']})",
+                        line=dict(color=pattern_color, width=line_width),
+                        marker=dict(size=7, color=pattern_color, symbol="circle"),
+                        text=labels if is_latest else None,
+                        textposition="top center",
+                        textfont=dict(size=11, color="white")
+                    ),
+                    row=1, col=1
+                )
+
+            # 2. رسم خط العنق (Neckline Nodes)
+            if neckline_nodes:
+                neck_x = [pd.to_datetime(n[0]) for n in neckline_nodes if pd.to_datetime(n[0]) in df.index]
+                neck_y = [float(n[1]) for n in neckline_nodes if pd.to_datetime(n[0]) in df.index]
+                if len(neck_x) >= 2:
                     fig.add_trace(
                         go.Scatter(
-                            x=x_coords, y=y_coords,
-                            mode='lines+markers+text',
-                            name=f"نمط #{idx+1} ({pat['pattern']})",
-                            line=dict(color=pattern_color, width=line_width),
-                            marker=dict(size=8, color=pattern_color, symbol="circle"),
-                            text=labels if is_latest else None,
-                            textposition="top center",
-                            textfont=dict(size=11, color="white")
+                            x=neck_x, y=neck_y,
+                            mode='lines',
+                            name=f"خط العنق #{idx+1}",
+                            line=dict(color='#00E5FF', width=2, dash='dash'),
+                            showlegend=is_latest
+                        ),
+                        row=1, col=1
+                    )
+
+            # 3. رسم خط الهدف (Target TP Nodes)
+            if target_nodes:
+                target_x = [pd.to_datetime(n[0]) for n in target_nodes if pd.to_datetime(n[0]) in df.index]
+                target_y = [float(n[1]) for n in target_nodes if pd.to_datetime(n[0]) in df.index]
+                if len(target_x) >= 2:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=target_x, y=target_y,
+                            mode='lines+markers',
+                            name=f"هدف TP #{idx+1}",
+                            line=dict(color='#FF007F', width=2, dash='dot'),
+                            marker=dict(size=6, color='#FF007F', symbol='diamond'),
+                            showlegend=is_latest
                         ),
                         row=1, col=1
                     )
