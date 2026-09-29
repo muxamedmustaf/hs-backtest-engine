@@ -4,43 +4,75 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# ==========================================================
-# ENGINE.PY - BACKTEST & PATTERN ANALYSIS ENGINE
-# ==========================================================
-
-MIN_WAVE_CANDLES = 3
-
+# ==============================================================================
+#           [1. إعدادات التحكم والمتغيرات القياسية - CONFIGURATION]
+# ==============================================================================
 CONFIG = {
-    "ZIGZAG_DEPTH": 12,
-    "ZIGZAG_BACKSTEP": 6,
-    "MIN_WAVE_CANDLES": MIN_WAVE_CANDLES,
-    "RSI_BEARISH_MIN": 30.0,
-    "RSI_BEARISH_MAX": 75.0,
-    "RSI_BULLISH_MIN": 25.0,
-    "RSI_BULLISH_MAX": 70.0,
-    "MAX_RECENCY_CANDLES": 10,
-    "VALID_ENTRY_PROGRESS_MAX": 0.3333,
-    "NEAR_TARGET_PROGRESS_MIN": 0.70,
-    "VOLUME_BREAKOUT_FACTOR": 1.0
+    # --- إعدادات مؤشر الزيجزاج والموجات ---
+    "ZIGZAG_DEPTH": 12,                  # عمق البحث عن القمم والقيعان (عدد الشمعات)
+    "ZIGZAG_BACKSTEP": 6,                # خطوة الرجوع للخلف للتحقق من السعر الأقصى
+    "MIN_WAVE_CANDLES": 3,               # الحد الأدنى لعدد الشمعات بين نقطتي ارتكاز متتاليتين
+
+    # --- شروط ونسب هندسة نمط الرأس والكتفين (تحديث 5% وتصاعد الحجم) ---
+    "SHOULDER_DIFF_MAX_RATIO": 0.05,      # أقصى تفاوت مسموح بين الكتفين مقارنة بارتفاع الرأس (5% فقط)
+    "HEAD_PROPORTION_MIN_RATIO": 0.25,    # أدنى نسبة لبروز الرأس عن أعلى كتف (25%)
+    "NECKLINE_DIFF_MAX_RATIO": 0.25,      # أقصى تفاوت مسموح في مستوى خط العنق (25%)
+    "LIVE_MAX_BREAKOUT_CANDLES": 10,      # أقصى عدد شمعات بعد الاختراق للنمط الحي (10 شمعات)
+
+    # --- إعدادات حجم التداول (Volume) عند الكسر ---
+    "REQUIRE_VOLUME_BREAKOUT": True,      # تفعيل اشتراط تصاعد الحجم عند شمعة الكسر
+    "VOLUME_MA_PERIOD": 20,               # فترة المتوسط المتحرك لحجم التداول (Volume MA)
+    "VOLUME_FACTOR": 1.05,                # نسبة تفوق حجم شمعة الكسر على متوسط الحجم (105%)
+
+    # --- إعدادات المؤشرات الفنية (RSI & EMAs) ---
+    "RSI_PERIOD": 14,                    # فترة حساب مؤشر RSI
+    "RSI_MIN_BEARISH": 30.0,             # أدنى RSI مسموح عند كتف النمط الهابط
+    "RSI_MAX_BEARISH": 75.0,             # أقصى RSI مسموح عند كتف النمط الهابط
+    "RSI_MIN_BULLISH": 25.0,             # أدنى RSI مسموح عند كتف النمط الصاعد
+    "RSI_MAX_BULLISH": 70.0,             # أقصى RSI مسموح عند كتف النمط الصاعد
+    "EMA_FAST_SPAN": 50,                 # المتوسط المتحرك السريع
+    "EMA_SLOW_SPAN": 200,                # المتوسط المتحرك البطيء
+
+    # --- إعدادات تقييم الصفقة والحالة (Valid Entry & Near Target) ---
+    "VALID_ENTRY_PROGRESS_MAX": 33.33,    # الحد الأقصى لنسبة التحقق لدخول صالح (%)
+    "NEAR_TARGET_PROGRESS_MIN": 70.0,     # الحد الأدنى لنسبة التقدم لتصنيف الصفقة كـ "قريبة من الهدف" (%)
 }
 
 
-def calculate_indicators(df):
-    """حساب المتوسطات EMA، RSI، ATR، والحجم"""
-    df = df.copy()
-    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+# ==============================================================================
+#                 [2. دوال حساب المؤشرات الفنية والارتكازات]
+# ==============================================================================
 
-    # RSI
+def calculate_indicators(df, config=CONFIG):
+    """حساب المتوسطات، RSI، ATR وحجم التداول (Volume MA)"""
+    df = df.copy()
+    ema_fast = config["EMA_FAST_SPAN"]
+    ema_slow = config["EMA_SLOW_SPAN"]
+    rsi_period = config["RSI_PERIOD"]
+    vol_ma_period = config["VOLUME_MA_PERIOD"]
+
+    df["EMA50"] = df["Close"].ewm(span=ema_fast, adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=ema_slow, adjust=False).mean()
+
+    # حساب Volume MA للتحقق من تصاعد الحجم
+    if "Volume" in df.columns:
+        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df["Volume_MA"] = df["Volume"].rolling(vol_ma_period).mean().fillna(0.0)
+    else:
+        df["Volume"] = 1.0
+        df["Volume_MA"] = 1.0
+
     delta = df["Close"].diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = -delta.where(delta < 0, 0.0).rolling(14).mean()
+    gain = delta.where(delta > 0, 0.0).rolling(rsi_period).mean()
+    loss = -delta.where(delta < 0, 0.0).rolling(rsi_period).mean()
+
     loss_safe = loss.replace(0, 1e-9)
     rs = gain / loss_safe
-    df["RSI"] = 100 - (100 / (1 + rs))
+
+    df["RSI"] = 100.0 - (100.0 / (1.0 + rs))
     df["RSI"] = df["RSI"].fillna(50.0)
 
-    # ATR & Dynamic Swing
+    # حساب Dynamic Swing عبر ATR
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -51,18 +83,15 @@ def calculate_indicators(df):
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
 
-    if "Volume" in df.columns:
-        df["Volume_SMA20"] = df["Volume"].rolling(20).mean().fillna(0)
-    else:
-        df["Volume"] = 1.0
-        df["Volume_SMA20"] = 1.0
-
     return df
 
 
-def calculate_zigzag(df, depth=12, backstep=6):
-    """تحديد نقاط القمم والقيعان للزيجزاج"""
+def calculate_zigzag(df, config=CONFIG):
+    """تحديد نقاط القمم والقيعان بناءً على إعدادات العمق والرجوع"""
     df = df.copy()
+    depth = config["ZIGZAG_DEPTH"]
+    backstep = config["ZIGZAG_BACKSTEP"]
+
     df["Pivot_H"] = np.nan
     df["Pivot_L"] = np.nan
 
@@ -81,6 +110,7 @@ def calculate_zigzag(df, depth=12, backstep=6):
             current_high == np.max(high_window)
             and np.sum(high_window == current_high) == 1
         )
+
         is_low = (
             current_low == np.min(low_window)
             and np.sum(low_window == current_low) == 1
@@ -95,8 +125,9 @@ def calculate_zigzag(df, depth=12, backstep=6):
 
 
 def get_chronological_pivots(df):
-    """استخراج وتصفية نقاط الارتكاز الزمنية"""
+    """تنقية وربط نقاط الارتكاز المتراتبة زمنياً بناءً على Dynamic_Swing"""
     raw = []
+
     for pos, (idx, row) in enumerate(df.iterrows()):
         if not pd.isna(row["Pivot_H"]):
             raw.append({
@@ -157,47 +188,53 @@ def get_chronological_pivots(df):
     return final_clean
 
 
-class PatternValidatorPipeline:
-    """منظومة التحقق من صحة الأنماط"""
+# ==============================================================================
+#                 [3. أنبوب الفلترة ومحاكاة ناتج التداول]
+# ==============================================================================
 
-    def __init__(self, df):
+class PatternValidatorPipeline:
+    """أنبوب الفلترة القياسي مع فحص كسر خط العنق واشتراط تصاعد الحجم"""
+
+    def __init__(self, df, config=CONFIG):
         self.df = df
+        self.config = config
         self.filters = [
             self.time_filter,
             self.trend_filter,
             self.invalidation_filter,
             self.indicator_confirmation_filter,
-            self.breakout_filter,
-            self.volume_filter
+            self.breakout_filter
         ]
 
-    def time_filter(self, p, data, pattern_type="Bearish"):
+    def time_filter(self, p, data):
+        min_candles = self.config["MIN_WAVE_CANDLES"]
         positions = [x["pos"] for x in p]
         for j in range(len(positions) - 1):
-            if (positions[j+1] - positions[j]) < MIN_WAVE_CANDLES:
+            if (positions[j+1] - positions[j]) < min_candles:
                 return False, None, None
         return True, None, None
 
-    def trend_filter(self, p, data, pattern_type="Bearish"):
-        idx_0 = p[0]["idx"]
-        pre_df = data.loc[:idx_0]
+    def trend_filter(self, p, data):
+        idx_start = p[0]["idx"]
+        pre_df = data.loc[:idx_start]
         if len(pre_df) > 10:
-            if pattern_type == "Bearish":
+            if p[0]["type"] == "L": # النمط الهابط
                 past_min = pre_df["Low"].iloc[-10:].min()
                 if past_min > p[0]["val"]:
                     return False, None, None
-            else:
+            else: # النمط المعكوس
                 past_max = pre_df["High"].iloc[-10:].max()
                 if past_max < p[0]["val"]:
                     return False, None, None
         return True, None, None
 
-    def invalidation_filter(self, p, data, pattern_type="Bearish"):
-        idx_head = p[3]["idx"]
+    def invalidation_filter(self, p, data):
         head_val = p[3]["val"]
+        idx_head = p[3]["idx"]
         post_head_df = data.loc[idx_head:]
+
         if not post_head_df.empty:
-            if pattern_type == "Bearish":
+            if p[3]["type"] == "H":
                 if post_head_df["High"].max() > head_val:
                     return False, None, None
             else:
@@ -205,148 +242,211 @@ class PatternValidatorPipeline:
                     return False, None, None
         return True, None, None
 
-    def indicator_confirmation_filter(self, p, data, pattern_type="Bearish"):
+    def indicator_confirmation_filter(self, p, data):
         idx_shoulder2 = p[5]["idx"]
         if idx_shoulder2 not in data.index:
             return False, None, None
-        rsi_val = data.loc[idx_shoulder2, "RSI"]
-        rsi_min = CONFIG["RSI_BEARISH_MIN"] if pattern_type == "Bearish" else CONFIG["RSI_BULLISH_MIN"]
-        rsi_max = CONFIG["RSI_BEARISH_MAX"] if pattern_type == "Bearish" else CONFIG["RSI_BULLISH_MAX"]
+
+        rsi_val = float(data.loc[idx_shoulder2, "RSI"])
+        is_bearish = (p[3]["type"] == "H")
+
+        rsi_min = self.config["RSI_MIN_BEARISH"] if is_bearish else self.config["RSI_MIN_BULLISH"]
+        rsi_max = self.config["RSI_MAX_BEARISH"] if is_bearish else self.config["RSI_MAX_BULLISH"]
+
         if not (rsi_min <= rsi_val <= rsi_max):
             return False, None, None
+
+        ema50 = data.loc[idx_shoulder2, "EMA50"]
+        ema200 = data.loc[idx_shoulder2, "EMA200"]
+        if pd.isna(ema50) or pd.isna(ema200):
+            return False, None, None
+
         return True, None, None
 
-    def breakout_filter(self, p, data, pattern_type="Bearish"):
+    def breakout_filter(self, p, data):
         idx_shoulder2 = p[5]["idx"]
-        neckline_avg = (p[2]["val"] + p[4]["val"]) / 2.0
+        n1, n2 = p[2]["val"], p[4]["val"]
+        neckline_avg = (n1 + n2) / 2.0
         post_shoulder_df = data.loc[idx_shoulder2:]
-        if pattern_type == "Bearish":
-            breakout_candles = post_shoulder_df[post_shoulder_df["Close"] < neckline_avg]
+        is_bearish = (p[3]["type"] == "H")
+
+        if is_bearish:
+            breakout_candidates = post_shoulder_df[post_shoulder_df["Close"] < neckline_avg]
         else:
-            breakout_candles = post_shoulder_df[post_shoulder_df["Close"] > neckline_avg]
+            breakout_candidates = post_shoulder_df[post_shoulder_df["Close"] > neckline_avg]
 
-        if breakout_candles.empty:
-            return False, None, None
-        end_idx = breakout_candles.index[0]
-        end_val = breakout_candles["Close"].iloc[0]
-        return True, end_idx, end_val
-
-    def volume_filter(self, p, data, pattern_type="Bearish"):
-        passed_breakout, end_idx, _ = self.breakout_filter(p, data, pattern_type)
-        if not passed_breakout or end_idx not in data.index:
+        if breakout_candidates.empty:
             return False, None, None
 
-        if "Volume" not in data.columns or "Volume_SMA20" not in data.columns:
-            return True, end_idx, None
+        # --- إضافة شرط تصاعد الحجم (Volume Surge) عند الكسر ---
+        if self.config.get("REQUIRE_VOLUME_BREAKOUT", True) and "Volume" in data.columns:
+            valid_breakout_idx = None
+            valid_breakout_val = None
 
-        breakout_pos = data.index.get_loc(end_idx)
-        check_candles = data.iloc[breakout_pos:min(breakout_pos + 3, len(data))]
-        has_volume_spike = (
-            check_candles["Volume"] >= (check_candles["Volume_SMA20"] * CONFIG["VOLUME_BREAKOUT_FACTOR"])
-        ).any()
+            for b_idx, b_row in breakout_candidates.iterrows():
+                vol = float(b_row.get("Volume", 0.0))
+                vol_ma = float(b_row.get("Volume_MA", 0.0))
+                
+                pos_in_data = data.index.get_loc(b_idx)
+                prev_vol = float(data["Volume"].iloc[pos_in_data - 1]) if pos_in_data > 0 else 0.0
 
-        if not has_volume_spike:
-            return False, None, None
+                # يكتمل الكسر إذا كان حجم التداول أعلى من متوسطه وأعلى من الشمعة السابقة
+                has_volume_surge = (vol >= vol_ma * self.config.get("VOLUME_FACTOR", 1.0)) and (vol > prev_vol)
+                
+                if has_volume_surge:
+                    valid_breakout_idx = b_idx
+                    valid_breakout_val = float(b_row["Close"])
+                    break
 
-        return True, end_idx, None
+            if valid_breakout_idx is None:
+                return False, None, None
+            
+            return True, valid_breakout_idx, valid_breakout_val
+        else:
+            end_idx = breakout_candidates.index[0]
+            end_val = float(breakout_candidates["Close"].iloc[0])
+            return True, end_idx, end_val
 
-    def run(self, p, pattern_type="Bearish"):
+    def run(self, p):
         end_idx, end_val = None, None
         for f in self.filters:
-            passed, e_idx, e_val = f(p, self.df, pattern_type)
+            passed, e_idx, e_val = f(p, self.df)
             if not passed:
                 return False, None, None
             if e_idx is not None:
-                end_idx = e_idx
-            if e_val is not None:
-                end_val = e_val
-
-        if end_val is None and end_idx is not None:
-            end_val = self.df.loc[end_idx, "Close"]
+                end_idx, end_val = e_idx, e_val
         return True, end_idx, end_val
 
 
-def simulate_backtest_outcome(pattern, df):
-    """محاكاة نتيجة النمط تاريخياً"""
+def simulate_trade_outcome(pattern, df, config=CONFIG):
+    """محاكاة دقيقة وحساب الشمعات والنتائج لوقف خسارة الرأس والكتف"""
     bias = pattern["bias"]
+    entry = float(pattern["entry"])
     sl = float(pattern["sl"])
     shoulder_sl = float(pattern.get("shoulder_sl", sl))
     tp = float(pattern["tp"])
-    entry = float(pattern.get("entry", 0.0))
     end_idx = pattern["neckline_end_idx"]
 
-    extra_stats = {
-        "candles_to_exit": 0,
+    stats = {
+        "trade_result": "OPEN",
         "head_result": "OPEN",
         "shoulder_result": "OPEN",
-        "candles_to_tp_move": 0
+        "progress_ratio": 0.0,
+        "candles_to_exit": 0,
+        "candles_to_tp_move": 0,
+        "exit_idx": None,
+        "exit_price": None
     }
 
     if end_idx not in df.index:
-        return "OPEN", None, None, extra_stats
+        return stats
 
     post_df = df.loc[end_idx:]
-    head_result, shoulder_result = "OPEN", "OPEN"
-    exit_idx, exit_price = None, None
-    head_done, shoulder_done = False, False
+    if len(post_df) <= 1:
+        return stats
+
+    latest_close = float(df["Close"].iloc[-1])
+    total_tp_dist = abs(tp - entry)
+
+    head_done = False
+    shoulder_done = False
+    tp_move_found = False
 
     for candle_count, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
         high = float(row["High"])
         low = float(row["Low"])
 
+        if not tp_move_found and total_tp_dist > 0:
+            if bias == "Bearish" and low <= (entry - 0.2 * total_tp_dist):
+                stats["candles_to_tp_move"] = candle_count
+                tp_move_found = True
+            elif bias == "Bullish" and high >= (entry + 0.2 * total_tp_dist):
+                stats["candles_to_tp_move"] = candle_count
+                tp_move_found = True
+
         if not head_done:
             if bias == "Bearish":
-                if high >= sl:
-                    head_result = "LOSS"
-                    exit_idx, exit_price = idx, sl
+                hit_sl = high >= sl
+                hit_tp = low <= tp
+                if hit_sl:
+                    stats["head_result"] = "LOSS"
+                    stats["trade_result"] = "LOSS"
+                    stats["exit_idx"], stats["exit_price"] = idx, sl
+                    stats["candles_to_exit"] = candle_count
                     head_done = True
-                elif low <= tp:
-                    head_result = "WIN"
-                    exit_idx, exit_price = idx, tp
+                elif hit_tp:
+                    stats["head_result"] = "WIN"
+                    stats["trade_result"] = "WIN"
+                    stats["exit_idx"], stats["exit_price"] = idx, tp
+                    stats["candles_to_exit"] = candle_count
                     head_done = True
             elif bias == "Bullish":
-                if low <= sl:
-                    head_result = "LOSS"
-                    exit_idx, exit_price = idx, sl
+                hit_sl = low <= sl
+                hit_tp = high >= tp
+                if hit_sl:
+                    stats["head_result"] = "LOSS"
+                    stats["trade_result"] = "LOSS"
+                    stats["exit_idx"], stats["exit_price"] = idx, sl
+                    stats["candles_to_exit"] = candle_count
                     head_done = True
-                elif high >= tp:
-                    head_result = "WIN"
-                    exit_idx, exit_price = idx, tp
+                elif hit_tp:
+                    stats["head_result"] = "WIN"
+                    stats["trade_result"] = "WIN"
+                    stats["exit_idx"], stats["exit_price"] = idx, tp
+                    stats["candles_to_exit"] = candle_count
                     head_done = True
 
         if not shoulder_done:
             if bias == "Bearish":
                 if high >= shoulder_sl:
-                    shoulder_result = "LOSS"
+                    stats["shoulder_result"] = "LOSS"
                     shoulder_done = True
                 elif low <= tp:
-                    shoulder_result = "WIN"
+                    stats["shoulder_result"] = "WIN"
                     shoulder_done = True
             elif bias == "Bullish":
                 if low <= shoulder_sl:
-                    shoulder_result = "LOSS"
+                    stats["shoulder_result"] = "LOSS"
                     shoulder_done = True
                 elif high >= tp:
-                    shoulder_result = "WIN"
+                    stats["shoulder_result"] = "WIN"
                     shoulder_done = True
 
         if head_done and shoulder_done:
             break
 
-    extra_stats["head_result"] = head_result
-    extra_stats["shoulder_result"] = shoulder_result
-    return head_result, exit_idx, exit_price, extra_stats
+    if not head_done:
+        stats["candles_to_exit"] = max(0, len(post_df) - 1)
+
+    if not tp_move_found:
+        stats["candles_to_tp_move"] = stats["candles_to_exit"]
+
+    if stats["head_result"] == "WIN":
+        stats["progress_ratio"] = 100.0
+    elif stats["head_result"] == "LOSS":
+        stats["progress_ratio"] = 0.0
+    else:
+        if bias == "Bearish":
+            moved = max(0.0, entry - latest_close) if latest_close < entry else 0.0
+        else:
+            moved = max(0.0, latest_close - entry) if latest_close > entry else 0.0
+        stats["progress_ratio"] = round((moved / total_tp_dist) * 100, 2) if total_tp_dist > 0 else 0.0
+
+    return stats
 
 
-def detect_all_head_shoulders_base(pivots, df):
-    """اكتشاف نموذج الرأس والكتفين الهابط"""
+# ==============================================================================
+#                 [4. اكتشاف الأنماط (تطبيق شرط 5% للكتفين والحجم)]
+# ==============================================================================
+
+def detect_all_head_shoulders_base(pivots, df, config=CONFIG, is_backtest=False):
+    """اكتشاف نمط الرأس والكتفين الهابط بتطبيق التفاوت 5% والحجم"""
     patterns = []
     if len(pivots) < 6:
         return patterns
 
-    validator = PatternValidatorPipeline(df)
+    validator = PatternValidatorPipeline(df, config)
     total_candles = len(df)
-    latest_close = float(df["Close"].iloc[-1])
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -354,90 +454,99 @@ def detect_all_head_shoulders_base(pivots, df):
             continue
 
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
+
         if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
             continue
 
         neckline_min = min(l1, l2)
         head_height = h2 - neckline_min
-        if head_height <= 0 or abs(h1 - h3) > (head_height * 0.35):
+        if head_height <= 0:
+            continue
+
+        # --- تطبيق نسبة تفاوت القمم والقيعان للكتفين 5% فقط ---
+        if abs(h1 - h3) > (head_height * config["SHOULDER_DIFF_MAX_RATIO"]):
             continue
 
         max_shoulder = max(h1, h3)
-        if (h2 - max_shoulder) < (head_height * 0.25) or abs(l1 - l2) > (head_height * 0.25):
+        if (h2 - max_shoulder) < (head_height * config["HEAD_PROPORTION_MIN_RATIO"]):
             continue
 
-        passed, end_idx, end_val = validator.run(p, "Bearish")
+        if abs(l1 - l2) > (head_height * config["NECKLINE_DIFF_MAX_RATIO"]):
+            continue
+
+        passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
 
         end_pos = df.index.get_loc(end_idx)
+        if not is_backtest and (total_candles - end_pos) > config["LIVE_MAX_BREAKOUT_CANDLES"]:
+            continue
+
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         neckline_avg = (l1 + l2) / 2.0
         actual_head_length = h2 - neckline_avg
 
         entry = neckline_avg
         sl = h2
-        shoulder_sl = max(h1, h3)
+        shoulder_sl = max_shoulder
         tp = entry - actual_head_length
 
-        nodes = [
-            {"idx": p[0]["idx"], "val": l0, "label": "L0"},
-            {"idx": p[1]["idx"], "val": h1, "label": "LS (H1)"},
-            {"idx": p[2]["idx"], "val": l1, "label": "N1 (L1)"},
-            {"idx": p[3]["idx"], "val": h2, "label": "Head (H2)"},
-            {"idx": p[4]["idx"], "val": l2, "label": "N2 (L2)"},
-            {"idx": p[5]["idx"], "val": h3, "label": "RS (H3)"},
-            {"idx": end_idx, "val": float(end_val), "label": "Breakout"}
-        ]
+        nodes = [(x["idx"], x["val"]) for x in p]
+        nodes.append((end_idx, float(end_val)))
+
+        neckline_nodes = [(l1_idx, l1), (l2_idx, l2)]
+        target_nodes = [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))]
 
         pattern_dict = {
             "name": "Head and Shoulders",
             "pattern": "Head and Shoulders",
             "bias": "Bearish",
             "match": 100.0,
-            "nodes": [(x["idx"], x["val"]) for x in nodes],
-            "nodes_detailed": nodes,
+            "nodes": nodes,
             "entry": float(round(entry, 5)),
+            "entry_trigger": float(round(entry, 5)),
             "sl": float(round(sl, 5)),
             "shoulder_sl": float(round(shoulder_sl, 5)),
             "tp": float(round(tp, 5)),
             "neckline_start_idx": l1_idx,
             "neckline_end_idx": end_idx,
-            "neckline_nodes": [(l1_idx, l1), (l2_idx, l2)],
-            "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
+            "neckline_nodes": neckline_nodes,
+            "target_nodes": target_nodes,
             "end_pos": p[5]["pos"],
-            "recency_candle_count": total_candles - end_pos
+            "SL": float(round(sl, 5)),
+            "Shoulder SL": float(round(shoulder_sl, 5))
         }
 
-        trade_result, _, _, extra_stats = simulate_backtest_outcome(pattern_dict, df)
-        pattern_dict["trade_result"] = trade_result
-        pattern_dict["Head Result"] = extra_stats["head_result"]
-        pattern_dict["Shoulder Result"] = extra_stats["shoulder_result"]
+        sim_res = simulate_trade_outcome(pattern_dict, df, config)
+        pattern_dict.update(sim_res)
+        pattern_dict["Head Result"] = sim_res["head_result"]
+        pattern_dict["Shoulder Result"] = sim_res["shoulder_result"]
+        pattern_dict["Candles to Exit (Cabdale)"] = sim_res["candles_to_exit"]
+        pattern_dict["Candles to TP Move"] = sim_res["candles_to_tp_move"]
 
-        total_tp_dist = abs(entry - tp)
-        moved_dist = max(0.0, entry - latest_close) if latest_close < entry else 0.0
-        progress_ratio = moved_dist / total_tp_dist if total_tp_dist > 0 else 0.0
-        post_breakout_df = df.loc[end_idx:]
-        hit_sl_live = (post_breakout_df["High"] >= sl).any()
+        prog = sim_res["progress_ratio"]
+        hit_sl_live = (df.loc[end_idx:, "High"] >= sl).any()
 
-        pattern_dict["progress_ratio"] = float(round(progress_ratio * 100, 2))
-        pattern_dict["is_valid_entry"] = (progress_ratio <= CONFIG["VALID_ENTRY_PROGRESS_MAX"]) and not hit_sl_live
-        pattern_dict["is_near_target"] = (CONFIG["NEAR_TARGET_PROGRESS_MIN"] <= progress_ratio < 1.0) and not hit_sl_live
+        is_valid = (prog <= config["VALID_ENTRY_PROGRESS_MAX"]) and not hit_sl_live
+        is_near = (config["NEAR_TARGET_PROGRESS_MIN"] <= prog < 100.0) and not hit_sl_live
+
+        pattern_dict["is_valid_entry"] = is_valid
+        pattern_dict["is_near_target"] = is_near
+        pattern_dict["status"] = "ACTIVE_ENTRY" if is_valid else ("NEAR_TARGET" if is_near else "IN_PROGRESS")
 
         patterns.append(pattern_dict)
 
     return patterns
 
 
-def detect_all_inverse_head_shoulders(pivots, df):
-    """اكتشاف نموذج الرأس والكتفين المعكوس"""
+def detect_all_inverse_head_shoulders(pivots, df, config=CONFIG, is_backtest=False):
+    """اكتشاف نمط الرأس والكتفين المعكوس بتطبيق التفاوت 5% والحجم"""
     patterns = []
     if len(pivots) < 6:
         return patterns
 
-    validator = PatternValidatorPipeline(df)
+    validator = PatternValidatorPipeline(df, config)
     total_candles = len(df)
-    latest_close = float(df["Close"].iloc[-1])
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -450,321 +559,285 @@ def detect_all_inverse_head_shoulders(pivots, df):
 
         neckline_max = max(h1, h2)
         head_depth = neckline_max - l2
-        if head_depth <= 0 or abs(l1 - l3) > (head_depth * 0.35):
+        if head_depth <= 0:
+            continue
+
+        # --- تطبيق نسبة تفاوت القيعان للكتفين 5% فقط ---
+        if abs(l1 - l3) > (head_depth * config["SHOULDER_DIFF_MAX_RATIO"]):
             continue
 
         min_shoulder = min(l1, l3)
-        if (min_shoulder - l2) < (head_depth * 0.25) or abs(h1 - h2) > (head_depth * 0.25):
+        if (min_shoulder - l2) < (head_depth * config["HEAD_PROPORTION_MIN_RATIO"]):
             continue
 
-        passed, end_idx, end_val = validator.run(p, "Bullish")
+        if abs(h1 - h2) > (head_depth * config["NECKLINE_DIFF_MAX_RATIO"]):
+            continue
+
+        passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
 
         end_pos = df.index.get_loc(end_idx)
+        if not is_backtest and (total_candles - end_pos) > config["LIVE_MAX_BREAKOUT_CANDLES"]:
+            continue
+
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         neckline_avg = (h1 + h2) / 2.0
 
         entry = neckline_avg
         sl = l2
-        shoulder_sl = min(l1, l3)
+        shoulder_sl = min_shoulder
         actual_head_length = neckline_avg - l2
         tp = entry + actual_head_length
 
-        nodes = [
-            {"idx": p[0]["idx"], "val": h0, "label": "H0"},
-            {"idx": p[1]["idx"], "val": l1, "label": "LS (L1)"},
-            {"idx": p[2]["idx"], "val": h1, "label": "N1 (H1)"},
-            {"idx": p[3]["idx"], "val": l2, "label": "Head (L2)"},
-            {"idx": p[4]["idx"], "val": h2, "label": "N2 (H2)"},
-            {"idx": p[5]["idx"], "val": l3, "label": "RS (L3)"},
-            {"idx": end_idx, "val": float(end_val), "label": "Breakout"}
-        ]
+        nodes = [(x["idx"], x["val"]) for x in p]
+        nodes.append((end_idx, float(end_val)))
+
+        neckline_nodes = [(h1_idx, h1), (h2_idx, h2)]
+        target_nodes = [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))]
 
         pattern_dict = {
             "name": "Inverse Head and Shoulders",
             "pattern": "Inverse Head and Shoulders",
             "bias": "Bullish",
             "match": 100.0,
-            "nodes": [(x["idx"], x["val"]) for x in nodes],
-            "nodes_detailed": nodes,
+            "nodes": nodes,
             "entry": float(round(entry, 5)),
+            "entry_trigger": float(round(entry, 5)),
             "sl": float(round(sl, 5)),
             "shoulder_sl": float(round(shoulder_sl, 5)),
             "tp": float(round(tp, 5)),
             "neckline_start_idx": h1_idx,
             "neckline_end_idx": end_idx,
-            "neckline_nodes": [(h1_idx, h1), (h2_idx, h2)],
-            "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
+            "neckline_nodes": neckline_nodes,
+            "target_nodes": target_nodes,
             "end_pos": p[5]["pos"],
-            "recency_candle_count": total_candles - end_pos
+            "SL": float(round(sl, 5)),
+            "Shoulder SL": float(round(shoulder_sl, 5))
         }
 
-        trade_result, _, _, extra_stats = simulate_backtest_outcome(pattern_dict, df)
-        pattern_dict["trade_result"] = trade_result
-        pattern_dict["Head Result"] = extra_stats["head_result"]
-        pattern_dict["Shoulder Result"] = extra_stats["shoulder_result"]
+        sim_res = simulate_trade_outcome(pattern_dict, df, config)
+        pattern_dict.update(sim_res)
+        pattern_dict["Head Result"] = sim_res["head_result"]
+        pattern_dict["Shoulder Result"] = sim_res["shoulder_result"]
+        pattern_dict["Candles to Exit (Cabdale)"] = sim_res["candles_to_exit"]
+        pattern_dict["Candles to TP Move"] = sim_res["candles_to_tp_move"]
 
-        total_tp_dist = abs(tp - entry)
-        moved_dist = max(0.0, latest_close - entry) if latest_close > entry else 0.0
-        progress_ratio = moved_dist / total_tp_dist if total_tp_dist > 0 else 0.0
-        post_breakout_df = df.loc[end_idx:]
-        hit_sl_live = (post_breakout_df["Low"] <= sl).any()
+        prog = sim_res["progress_ratio"]
+        hit_sl_live = (df.loc[end_idx:, "Low"] <= sl).any()
 
-        pattern_dict["progress_ratio"] = float(round(progress_ratio * 100, 2))
-        pattern_dict["is_valid_entry"] = (progress_ratio <= CONFIG["VALID_ENTRY_PROGRESS_MAX"]) and not hit_sl_live
-        pattern_dict["is_near_target"] = (CONFIG["NEAR_TARGET_PROGRESS_MIN"] <= progress_ratio < 1.0) and not hit_sl_live
+        is_valid = (prog <= config["VALID_ENTRY_PROGRESS_MAX"]) and not hit_sl_live
+        is_near = (config["NEAR_TARGET_PROGRESS_MIN"] <= prog < 100.0) and not hit_sl_live
+
+        pattern_dict["is_valid_entry"] = is_valid
+        pattern_dict["is_near_target"] = is_near
+        pattern_dict["status"] = "ACTIVE_ENTRY" if is_valid else ("NEAR_TARGET" if is_near else "IN_PROGRESS")
 
         patterns.append(pattern_dict)
 
     return patterns
 
 
-def detect_all_head_shoulders(pivots, df):
-    """دمج الأنماط المكتشفة وتجميعها"""
-    normal_patterns = detect_all_head_shoulders_base(pivots, df)
-    inverse_patterns = detect_all_inverse_head_shoulders(pivots, df)
+def detect_all_head_shoulders(pivots, df, config=CONFIG, is_backtest=False):
+    """دمج الأنماط الهابطة والصاعدة وترتيبها زمنياً"""
+    normal_patterns = detect_all_head_shoulders_base(pivots, df, config, is_backtest)
+    inverse_patterns = detect_all_inverse_head_shoulders(pivots, df, config, is_backtest)
+
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
 
 
-# ==========================================================
-# الدالة الأولى: معالجة واستخراج صفقات الباكتيست الكامل
-# ==========================================================
-def backtest_strategy(df, interval=None, config=CONFIG, **kwargs):
-    """
-    الدالة الأولى المسؤولة عن معالجة كامل البيانات التاريخية دون اقتطاع
-    وإرجاع كافة الصفقات المكتشفة مع نتائجها التفصيلية.
-    """
-    if df is None or df.empty or len(df) < 30:
-        return []
+# ==============================================================================
+#                 [5. دالة رسم الأنماط والمؤشرات بـ Plotly]
+# ==============================================================================
 
-    df = df.copy()
-    required = ["Open", "High", "Low", "Close"]
-    for col in required:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=required)
-    df_active = calculate_indicators(df)
-    df_active = calculate_zigzag(df_active)
-
-    pivots = get_chronological_pivots(df_active)
-    all_patterns = detect_all_head_shoulders(pivots, df_active)
-
-    trades = []
-    for pat in all_patterns:
-        trades.append({
-            "Pattern": pat["pattern"],
-            "Bias": pat["bias"],
-            "Entry": pat["entry"],
-            "SL": pat["sl"],
-            "Shoulder SL": pat.get("shoulder_sl", pat["sl"]),
-            "TP": pat["tp"],
-            "Head Result": pat.get("Head Result", "OPEN"),
-            "Shoulder Result": pat.get("Shoulder Result", "OPEN"),
-            "trade_result": pat.get("trade_result", "OPEN"),
-            "Progress Ratio (%)": pat.get("progress_ratio", 0.0),
-            "Valid Entry": pat.get("is_valid_entry", False),
-            "Near Target": pat.get("is_near_target", False)
-        })
-
-    return trades
-
-
-# ==========================================================
-# الدالة الثانية: إنشاء الشارت وتظليل الأنماط
-# ==========================================================
-def render_pattern_chart(df, patterns_to_draw=None, max_candles=None):
-    """
-    الدالة الثانية المسؤولة عن بناء شارت Plotly التفاعلي، رسم الأسعار، 
-    المؤشرات الفنية (EMA, RSI)، وتظليل الأنماط، خطوط العنق، وأهداف TP.
-    """
+def render_pattern_chart(df, patterns_to_draw=None, max_candles=500):
+    """رسم الشموع، المتوسطات، هيكل الأنماط، خط العنق ومؤشر RSI"""
     if df is None or df.empty:
         return None
 
-    df = df.copy()
-    if max_candles and len(df) > max_candles:
-        df = df.tail(max_candles)
-
-    df.index = pd.to_datetime(df.index)
+    df_chart = df.tail(max_candles).copy() if (max_candles and len(df) > max_candles) else df.copy()
 
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.04,
-        subplot_titles=('الشارت الرئيسي والأنماط', 'RSI وحجم التداول'),
+        subplot_titles=('الشارت الرئيسي وهيكل النمط', 'مؤشر القوة النسبية RSI'),
         row_width=[0.25, 0.75]
     )
 
     fig.add_trace(
         go.Candlestick(
-            x=df.index,
-            open=df['Open'], high=df['High'],
-            low=df['Low'], close=df['Close'],
-            name='السعر'
-        ),
-        row=1, col=1
+            x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+            low=df_chart['Low'], close=df_chart['Close'], name='السعر'
+        ), row=1, col=1
     )
 
-    if "EMA50" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["EMA50"], mode='lines', name='EMA 50', line=dict(color='#FFB300', width=1.5)), row=1, col=1)
-    if "EMA200" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["EMA200"], mode='lines', name='EMA 200', line=dict(color='#1E88E5', width=1.8)), row=1, col=1)
+    if "EMA50" in df_chart.columns:
+        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA50"], mode='lines', name='EMA 50', line=dict(color='#FFB300', width=1.2)), row=1, col=1)
+    if "EMA200" in df_chart.columns:
+        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA200"], mode='lines', name='EMA 200', line=dict(color='#1E88E5', width=1.5)), row=1, col=1)
 
     if patterns_to_draw:
         for idx, pat in enumerate(patterns_to_draw):
-            nodes_detailed = pat.get("nodes_detailed", [])
             nodes = pat.get("nodes", [])
-            neckline_nodes = pat.get("neckline_nodes", [])
-            target_nodes = pat.get("target_nodes", [])
-
+            bias = pat.get("bias", "Bearish")
             is_latest = (idx == len(patterns_to_draw) - 1)
-            pattern_color = "#9C27B0" if is_latest else "rgba(156, 39, 176, 0.45)"
+
+            line_color = ("#00E676" if bias == "Bullish" else "#FF1744") if is_latest else "rgba(158, 158, 158, 0.45)"
             line_width = 3 if is_latest else 1.5
 
-            # 1. رسم أضلاع النمط الهيكلية (Nodes)
-            x_coords, y_coords, labels = [], [], []
-            if nodes_detailed:
-                x_coords = [pd.to_datetime(n["idx"]) for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
-                y_coords = [float(n["val"]) for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
-                labels = [n.get("label", "") for n in nodes_detailed if pd.to_datetime(n["idx"]) in df.index]
-            elif nodes:
-                x_coords = [pd.to_datetime(n[0]) for n in nodes if pd.to_datetime(n[0]) in df.index]
-                y_coords = [float(n[1]) for n in nodes if pd.to_datetime(n[0]) in df.index]
-                labels = None
+            labels = ["L0", "LS", "N1", "Head", "N2", "RS", "Breakout"] if bias == "Bearish" else ["H0", "LS", "N1", "Head", "N2", "RS", "Breakout"]
 
-            if x_coords:
+            x_coords, y_coords, text_labels = [], [], []
+            for i, node in enumerate(nodes):
+                if node[0] in df_chart.index:
+                    x_coords.append(node[0])
+                    y_coords.append(node[1])
+                    if i < len(labels):
+                        text_labels.append(labels[i])
+
+            if len(x_coords) >= 2:
                 fig.add_trace(
                     go.Scatter(
                         x=x_coords, y=y_coords,
-                        mode='lines+markers+text' if labels else 'lines+markers',
-                        name=f"نمط #{idx+1} ({pat['pattern']})",
-                        line=dict(color=pattern_color, width=line_width),
-                        marker=dict(size=7, color=pattern_color, symbol="circle"),
-                        text=labels if is_latest else None,
-                        textposition="top center",
+                        mode='lines+markers+text' if (is_latest and text_labels) else 'lines+markers',
+                        name=f"{pat['pattern']} (#{idx+1})",
+                        line=dict(color=line_color, width=line_width),
+                        marker=dict(size=7, color=line_color, symbol="circle"),
+                        text=text_labels if is_latest else None,
+                        textposition="top center" if bias == "Bearish" else "bottom center",
                         textfont=dict(size=11, color="white")
-                    ),
-                    row=1, col=1
+                    ), row=1, col=1
                 )
 
-            # 2. رسم خط العنق (Neckline Nodes)
+            neckline_nodes = pat.get("neckline_nodes", [])
             if neckline_nodes:
-                neck_x = [pd.to_datetime(n[0]) for n in neckline_nodes if pd.to_datetime(n[0]) in df.index]
-                neck_y = [float(n[1]) for n in neckline_nodes if pd.to_datetime(n[0]) in df.index]
+                neck_x = [n[0] for n in neckline_nodes if n[0] in df_chart.index]
+                neck_y = [n[1] for n in neckline_nodes if n[0] in df_chart.index]
                 if len(neck_x) >= 2:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=neck_x, y=neck_y,
-                            mode='lines',
-                            name=f"خط العنق #{idx+1}",
-                            line=dict(color='#00E5FF', width=2, dash='dash'),
-                            showlegend=is_latest
-                        ),
-                        row=1, col=1
-                    )
+                    fig.add_trace(go.Scatter(x=neck_x, y=neck_y, mode='lines', name=f"Neckline #{idx+1}", line=dict(color='#00E5FF', width=2, dash='dash'), showlegend=is_latest), row=1, col=1)
 
-            # 3. رسم خط الهدف (Target TP Nodes)
-            if target_nodes:
-                target_x = [pd.to_datetime(n[0]) for n in target_nodes if pd.to_datetime(n[0]) in df.index]
-                target_y = [float(n[1]) for n in target_nodes if pd.to_datetime(n[0]) in df.index]
+            target_nodes = pat.get("target_nodes", [])
+            if target_nodes and is_latest:
+                target_x = [n[0] for n in target_nodes if n[0] in df_chart.index]
+                target_y = [n[1] for n in target_nodes if n[0] in df_chart.index]
                 if len(target_x) >= 2:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=target_x, y=target_y,
-                            mode='lines+markers',
-                            name=f"هدف TP #{idx+1}",
-                            line=dict(color='#FF007F', width=2, dash='dot'),
-                            marker=dict(size=6, color='#FF007F', symbol='diamond'),
-                            showlegend=is_latest
-                        ),
-                        row=1, col=1
-                    )
+                    fig.add_trace(go.Scatter(x=target_x, y=target_y, mode='lines+markers', name="Target (TP)", line=dict(color='#FF007F', width=2, dash='dot'), marker=dict(size=6, color='#FF007F', symbol='diamond')), row=1, col=1)
 
-    if "RSI" in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], mode='lines', name='RSI', line=dict(color='#AB47BC', width=1.5)), row=2, col=1)
+    if "RSI" in df_chart.columns:
+        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["RSI"], mode='lines', name='RSI', line=dict(color='#AB47BC', width=1.5)), row=2, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="#FF5252", row=2, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="#69F0AE", row=2, col=1)
 
-    fig.update_layout(
-        xaxis_rangeslider_visible=False,
-        template="plotly_dark",
-        height=800,
-        margin=dict(l=15, r=15, t=35, b=15)
-    )
+    fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_dark", height=720, margin=dict(l=10, r=10, t=35, b=10))
     return fig
 
 
-# ==========================================================
-# دالة التوافق الشاملة واستدعاء واجهة backtest.py
-# ==========================================================
-def run_full_analysis(df):
-    """
-    تجميع المخرجات لاستخدامها المباشر من ملف backtest.py.
-    """
-    default_response = {
-        "df": df,
-        "signal": "WAITING",
-        "pattern": "NO PATTERN DETECTED",
-        "bias": "Neutral",
-        "entry": None,
-        "sl": None,
-        "tp": None,
-        "nodes": [],
-        "all_patterns": [],
-        "fig": None,
-        "chart": None
+# ==============================================================================
+#                 [6. منافذ التشغيل الرئيسية والباكتيست]
+# ==============================================================================
+
+def backtest_strategy(df, config=CONFIG):
+    """دالة إجراء باكتيست شامل على كافة البيانات التاريخية"""
+    if df is None or df.empty or len(df) < 30:
+        return []
+
+    df_calc = calculate_indicators(df, config)
+    df_calc = calculate_zigzag(df_calc, config)
+
+    pivots = get_chronological_pivots(df_calc)
+    all_patterns = detect_all_head_shoulders(pivots, df_calc, config, is_backtest=True)
+    return all_patterns
+
+
+def run_full_analysis(df, config=CONFIG, is_backtest=False):
+    """الدالة الموحدة للتحليل الحي والمباشر وتوليد الشارت"""
+    default_res = {
+        "df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral", "entry": None, "entry_trigger": None, "sl": None,
+        "shoulder_sl": None, "tp": None, "nodes": [], "match": 0.0,
+        "neckline_start_idx": None, "neckline_nodes": [], "target_nodes": [],
+        "all_patterns": [], "near_target_patterns": [], "trade_result": "N/A",
+        "SL": None, "Shoulder SL": None, "Head Result": "N/A", "Shoulder Result": "N/A",
+        "Candles to Exit (Cabdale)": 0, "Candles to TP Move": 0, "progress_ratio": 0.0,
+        "is_near_target": False, "status": "NONE", "fig": None, "chart": None
     }
 
     if df is None or df.empty:
-        return default_response
+        return default_res
 
     df = df.copy()
     required = ["Open", "High", "Low", "Close"]
+
     for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column: {col}")
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=required)
     if len(df) < 30:
-        return default_response
+        default_res["df"] = df
+        return default_res
 
-    df_active = calculate_indicators(df)
-    df_active = calculate_zigzag(df_active)
+    df_active = df if is_backtest else df.tail(200).copy()
+    df_active = calculate_indicators(df_active, config)
+    df_active = calculate_zigzag(df_active, config)
 
     pivots = get_chronological_pivots(df_active)
-    all_patterns = detect_all_head_shoulders(pivots, df_active)
+    all_patterns = detect_all_head_shoulders(pivots, df_active, config, is_backtest=is_backtest)
 
     if not all_patterns:
-        default_response["df"] = df_active
-        default_response["fig"] = render_pattern_chart(df_active, patterns_to_draw=[], max_candles=500)
-        default_response["chart"] = default_response["fig"]
-        return default_response
+        fig_empty = render_pattern_chart(df_active, patterns_to_draw=[], max_candles=500)
+        default_res["df"] = df_active
+        default_res["fig"] = fig_empty
+        default_res["chart"] = fig_empty
+        return default_res
 
-    recent_patterns = [p for p in all_patterns if p.get("recency_candle_count", 999) <= CONFIG["MAX_RECENCY_CANDLES"]]
-    selected_pattern = recent_patterns[-1] if recent_patterns else all_patterns[-1]
+    near_target_patterns = [p for p in all_patterns if p.get("is_near_target", False)]
+    active_entry_patterns = [p for p in all_patterns if p.get("is_valid_entry", False)]
 
-    signal = "STRONG BUY" if selected_pattern["pattern"] == "Inverse Head and Shoulders" else "STRONG SELL"
-
-    analysis_res = {
-        "df": df_active,
-        "signal": signal,
-        "pattern": selected_pattern["pattern"],
-        "bias": selected_pattern["bias"],
-        "entry": selected_pattern["entry"],
-        "sl": selected_pattern["sl"],
-        "shoulder_sl": selected_pattern.get("shoulder_sl", selected_pattern["sl"]),
-        "tp": selected_pattern["tp"],
-        "nodes": selected_pattern["nodes"],
-        "neckline_start_idx": selected_pattern["neckline_start_idx"],
-        "neckline_nodes": selected_pattern.get("neckline_nodes", []),
-        "target_nodes": selected_pattern.get("target_nodes", []),
-        "all_patterns": all_patterns,
-        "trade_result": selected_pattern.get("trade_result", "OPEN")
-    }
+    if active_entry_patterns:
+        latest_pattern = active_entry_patterns[-1]
+        signal = "STRONG BUY" if latest_pattern["bias"] == "Bullish" else "STRONG SELL"
+    else:
+        latest_pattern = all_patterns[-1]
+        signal = "STRONG BUY" if latest_pattern["bias"] == "Bullish" else "STRONG SELL"
 
     fig = render_pattern_chart(df_active, patterns_to_draw=all_patterns, max_candles=500)
-    analysis_res["fig"] = fig
-    analysis_res["chart"] = fig
 
-    return analysis_res
+    return {
+        "df": df_active,
+        "signal": signal,
+        "pattern": latest_pattern["pattern"],
+        "bias": latest_pattern["bias"],
+        "entry": latest_pattern["entry"],
+        "entry_trigger": latest_pattern["entry_trigger"],
+        "sl": latest_pattern["sl"],
+        "shoulder_sl": latest_pattern.get("shoulder_sl", latest_pattern["sl"]),
+        "tp": latest_pattern["tp"],
+        "nodes": latest_pattern["nodes"],
+        "match": latest_pattern["match"],
+        "neckline_start_idx": latest_pattern["neckline_start_idx"],
+        "neckline_nodes": latest_pattern.get("neckline_nodes", []),
+        "target_nodes": latest_pattern.get("target_nodes", []),
+        "all_patterns": all_patterns,
+        "near_target_patterns": near_target_patterns,
+        "trade_result": latest_pattern.get("trade_result", "OPEN"),
+        "SL": latest_pattern.get("SL"),
+        "Shoulder SL": latest_pattern.get("Shoulder SL"),
+        "Head Result": latest_pattern.get("Head Result", "OPEN"),
+        "Shoulder Result": latest_pattern.get("Shoulder Result", "OPEN"),
+        "Candles to Exit (Cabdale)": latest_pattern.get("Candles to Exit (Cabdale)", 0),
+        "Candles to TP Move": latest_pattern.get("Candles to TP Move", 0),
+        "progress_ratio": latest_pattern.get("progress_ratio", 0.0),
+        "is_near_target": latest_pattern.get("is_near_target", False),
+        "status": latest_pattern.get("status", "NONE"),
+        "fig": fig,
+        "chart": fig
+    }
+
+
+if __name__ == "__main__":
+    print("ENGINE.PY updated with 5% Shoulder Equality & Volume Surge Breakout Confirmation.")
