@@ -386,30 +386,6 @@ def detect_all_head_shoulders_base(pivots, df):
         if left_shoulder_height <= 0 or right_shoulder_height <= 0:
             continue
             # ==================================================================
-# 1. DHERERKA (PRICE HEIGHT SYMMETRY - 15% Tolerance)
-# ==================================================================
-left_shoulder_height = h1 - min(l0, l1)
-right_shoulder_height = h3 - min(l1, l2)
-
-# Farqiga dhererka ma ka badan karo 15% (0.15)
-height_diff_ratio = abs(right_shoulder_height - left_shoulder_height) / max(left_shoulder_height, 1e-9)
-if height_diff_ratio > 0.15: # ⚙️ Farqiga dhererka ma ka badan karo 15%
-    continue
-
-# ==================================================================
-# 2. BALACA / SHUMACYADA (TIME WIDTH SYMMETRY - 15% Tolerance)
-# ==================================================================
-# Shumacyada uu qaatay Garabka Bidix (L0 ilaa L1)
-left_shoulder_width = p[2]["pos"] - p[0]["pos"]
-
-# Shumacyada uu qaatay Garabka Midig (L2 ilaa H3/End)
-right_shoulder_width = p[5]["pos"] - p[3]["pos"]
-
-# Farqiga balaca (tirada shumacyada) ma ka badan karo 15% (0.15)
-width_diff_ratio = abs(right_shoulder_width - left_shoulder_width) / max(left_shoulder_width, 1)
-if width_diff_ratio > 0.15: # ⚙️ Farqiga balaca ma ka badan karo 15%
-    continue
-    
 
         height_diff_ratio = abs(right_shoulder_height - left_shoulder_height) / max(left_shoulder_height, 1e-9)
         if height_diff_ratio > 0.25:
