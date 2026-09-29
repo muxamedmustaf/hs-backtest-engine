@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # ==========================================================
-# ENGINE.PY - DYNAMIC SWING SCANNER (v4.6 - Fully Integrated)
+# ENGINE.PY - DYNAMIC SWING SCANNER WITH VOLUME & LABELS (v4.7)
 # ==========================================================
 
 MIN_WAVE_CANDLES = 3
@@ -18,26 +20,27 @@ CONFIG = {
     "RSI_BULLISH_MAX": 70.0,
     "MAX_RECENCY_CANDLES": 10,
     "VALID_ENTRY_PROGRESS_MAX": 0.3333,
-    "NEAR_TARGET_PROGRESS_MIN": 0.70
+    "NEAR_TARGET_PROGRESS_MIN": 0.70,
+    "VOLUME_BREAKOUT_FACTOR": 1.0  # حجم التداول عند الكسر يجب أن يكون أعلى من المتوسط
 }
 
 
 def calculate_indicators(df):
-    """حساب المتوسطات، مؤشر RSI، و Dynamic Swing بناءً على ATR"""
+    """حساب المتوسطات، مؤشر RSI، حجم التداول، و Dynamic Swing بناءً على ATR"""
     df = df.copy()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
+    # RSI
     delta = df["Close"].diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = -delta.where(delta < 0, 0.0).rolling(14).mean()
-
     loss_safe = loss.replace(0, 1e-9)
     rs = gain / loss_safe
-
     df["RSI"] = 100 - (100 / (1 + rs))
     df["RSI"] = df["RSI"].fillna(50.0)
 
+    # ATR & Dynamic Swing
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -47,6 +50,13 @@ def calculate_indicators(df):
 
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
+
+    # Volume Indicator
+    if "Volume" in df.columns:
+        df["Volume_SMA20"] = df["Volume"].rolling(20).mean().fillna(0)
+    else:
+        df["Volume"] = 1.0
+        df["Volume_SMA20"] = 1.0
 
     return df
 
@@ -156,7 +166,7 @@ def get_chronological_pivots(df):
 
 
 class PatternValidatorPipeline:
-    """أنبوب الفحص الموحد مع تطبيق جميع شروط الشمعات والاتجاه والاختراق"""
+    """أنبوب الفحص الموحد شاملاً شروط الكسر، الاتجاه، وتأكيد حجم التداول"""
 
     def __init__(self, df):
         self.df = df
@@ -165,7 +175,8 @@ class PatternValidatorPipeline:
             self.trend_filter,
             self.invalidation_filter,
             self.indicator_confirmation_filter,
-            self.breakout_filter
+            self.breakout_filter,
+            self.volume_filter
         ]
 
     def time_filter(self, p, data, pattern_type="Bearish"):
@@ -246,6 +257,31 @@ class PatternValidatorPipeline:
 
         return True, end_idx, end_val
 
+    def volume_filter(self, p, data, pattern_type="Bearish"):
+        """شرط زيادة حجم التداول في شمعة الكسر وما بعدها"""
+        # الفحص يحتاج معرفة شمعة الكسر
+        passed_breakout, end_idx, _ = self.breakout_filter(p, data, pattern_type)
+
+        if not passed_breakout or end_idx not in data.index:
+            return False, None, None
+
+        if "Volume" not in data.columns or "Volume_SMA20" not in data.columns:
+            return True, end_idx, None  # استمرار التجاور إذا لم تتوفر بيانات الفوليوم
+
+        # فحص الشمعة المسؤولة عن الكسر وشمعة المتابعة الكائنة بعدها
+        breakout_pos = data.index.get_loc(end_idx)
+        check_candles = data.iloc[breakout_pos:min(breakout_pos + 3, len(data))]
+
+        # اشتراط وجود زيادة في حجم التداول مقارنة بـ SMA20 بحد أدنى
+        has_volume_spike = (
+            check_candles["Volume"] >= (check_candles["Volume_SMA20"] * CONFIG["VOLUME_BREAKOUT_FACTOR"])
+        ).any()
+
+        if not has_volume_spike:
+            return False, None, None
+
+        return True, end_idx, None
+
     def run(self, p, pattern_type="Bearish"):
         end_idx, end_val = None, None
 
@@ -256,7 +292,12 @@ class PatternValidatorPipeline:
                 return False, None, None
 
             if e_idx is not None:
-                end_idx, end_val = e_idx, e_val
+                end_idx = e_idx
+            if e_val is not None:
+                end_val = e_val
+
+        if end_val is None and end_idx is not None:
+            end_val = self.df.loc[end_idx, "Close"]
 
         return True, end_idx, end_val
 
@@ -373,7 +414,7 @@ def simulate_backtest_outcome(pattern, df):
 
 
 def detect_all_head_shoulders_base(pivots, df):
-    """اكتشاف نموذج الرأس والكتفين الهابط مع شروط v4.6"""
+    """اكتشاف نموذج الرأس والكتفين الهابط مع تسمية النقاط L0, H1(LS), L1(N1), H2(Head), L2(N2), H3(RS), Breakout"""
     patterns = []
 
     if len(pivots) < 6:
@@ -431,8 +472,19 @@ def detect_all_head_shoulders_base(pivots, df):
         shoulder_sl = max(h1, h3)
         tp = entry - actual_head_length
 
-        nodes = [(x["idx"], x["val"]) for x in p]
-        nodes.append((end_idx, float(end_val)))
+        # قائمة العقد المسماة بحسب المخطط المطلوب L0 -> Breakout
+        node_labels = ["L0", "LS (H1)", "N1 (L1)", "Head (H2)", "N2 (L2)", "RS (H3)", "Breakout"]
+        nodes = [
+            {"idx": p[0]["idx"], "val": l0, "label": "L0"},
+            {"idx": p[1]["idx"], "val": h1, "label": "LS (H1)"},
+            {"idx": p[2]["idx"], "val": l1, "label": "N1 (L1)"},
+            {"idx": p[3]["idx"], "val": h2, "label": "Head (H2)"},
+            {"idx": p[4]["idx"], "val": l2, "label": "N2 (L2)"},
+            {"idx": p[5]["idx"], "val": h3, "label": "RS (H3)"},
+            {"idx": end_idx, "val": float(end_val), "label": "Breakout"}
+        ]
+
+        nodes_tuples = [(x["idx"], x["val"]) for x in nodes]
 
         neckline_nodes = [(l1_idx, l1), (l2_idx, l2)]
         target_nodes = [
@@ -445,7 +497,8 @@ def detect_all_head_shoulders_base(pivots, df):
             "pattern": "Head and Shoulders",
             "bias": "Bearish",
             "match": 100.0,
-            "nodes": nodes,
+            "nodes": nodes_tuples,
+            "nodes_detailed": nodes,
             "entry": float(round(entry, 5)),
             "entry_trigger": float(round(entry, 5)),
             "sl": float(round(sl, 5)),
@@ -493,7 +546,7 @@ def detect_all_head_shoulders_base(pivots, df):
 
 
 def detect_all_inverse_head_shoulders(pivots, df):
-    """اكتشاف نموذج الرأس والكتفين المعكوس مع شروط v4.6"""
+    """اكتشاف نموذج الرأس والكتفين المعكوس مع تسمية النقاط H0, L1(LS), H1(N1), L2(Head), H2(N2), L3(RS), Breakout"""
     patterns = []
 
     if len(pivots) < 6:
@@ -547,8 +600,17 @@ def detect_all_inverse_head_shoulders(pivots, df):
         actual_head_length = neckline_avg - l2
         tp = entry + actual_head_length
 
-        nodes = [(x["idx"], x["val"]) for x in p]
-        nodes.append((end_idx, float(end_val)))
+        nodes = [
+            {"idx": p[0]["idx"], "val": h0, "label": "H0"},
+            {"idx": p[1]["idx"], "val": l1, "label": "LS (L1)"},
+            {"idx": p[2]["idx"], "val": h1, "label": "N1 (H1)"},
+            {"idx": p[3]["idx"], "val": l2, "label": "Head (L2)"},
+            {"idx": p[4]["idx"], "val": h2, "label": "N2 (H2)"},
+            {"idx": p[5]["idx"], "val": l3, "label": "RS (L3)"},
+            {"idx": end_idx, "val": float(end_val), "label": "Breakout"}
+        ]
+
+        nodes_tuples = [(x["idx"], x["val"]) for x in nodes]
 
         neckline_nodes = [(h1_idx, h1), (h2_idx, h2)]
         target_nodes = [
@@ -561,7 +623,8 @@ def detect_all_inverse_head_shoulders(pivots, df):
             "pattern": "Inverse Head and Shoulders",
             "bias": "Bullish",
             "match": 100.0,
-            "nodes": nodes,
+            "nodes": nodes_tuples,
+            "nodes_detailed": nodes,
             "entry": float(round(entry, 5)),
             "entry_trigger": float(round(entry, 5)),
             "sl": float(round(sl, 5)),
@@ -609,13 +672,165 @@ def detect_all_inverse_head_shoulders(pivots, df):
 
 
 def detect_all_head_shoulders(pivots, df):
-    """دمج النماذج الهابطة والصاعدة وترتيبها زمنياً"""
+    """دمج النماذج وترتيبها زمنياً"""
     normal_patterns = detect_all_head_shoulders_base(pivots, df)
     inverse_patterns = detect_all_inverse_head_shoulders(pivots, df)
 
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
+
+
+def create_pattern_chart(analysis_result):
+    """رسم الشارت التفاعلي وإسقاط النمط وتسميات النقاط L0/H0 بدقة فوق الشمعات"""
+    if not analysis_result or "df" not in analysis_result or analysis_result["df"].empty:
+        return None
+
+    df = analysis_result["df"]
+    all_patterns = analysis_result.get("all_patterns", [])
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        subplot_titles=('Price Chart & Head & Shoulders Patterns', 'RSI & Volume'),
+        row_width=[0.25, 0.75]
+    )
+
+    # 1. الشموع اليابانية
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df['Open'],
+            high=df['High'],
+            low=df['Low'],
+            close=df['Close'],
+            name='Candles'
+        ),
+        row=1, col=1
+    )
+
+    # 2. المتوسطات المتحركة
+    if "EMA50" in df.columns:
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df["EMA50"], mode='lines', name='EMA 50', line=dict(color='rgba(255,165,0,0.8)', width=1.2)),
+            row=1, col=1
+        )
+    if "EMA200" in df.columns:
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df["EMA200"], mode='lines', name='EMA 200', line=dict(color='rgba(0,122,255,0.8)', width=1.5)),
+            row=1, col=1
+        )
+
+    # 3. RSI
+    if "RSI" in df.columns:
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df["RSI"], mode='lines', name='RSI', line=dict(color='purple', width=1.5)),
+            row=2, col=1
+        )
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+
+    # 4. رسم النمط وتسميات النقاط
+    for idx, pat in enumerate(all_patterns):
+        nodes_detailed = pat.get("nodes_detailed", [])
+        bias = pat.get("bias", "Bearish")
+        is_latest = (idx == len(all_patterns) - 1)
+
+        color = "#EF5350" if bias == "Bearish" else "#26A69A"
+        line_width = 3 if is_latest else 1.5
+        opacity = 1.0 if is_latest else 0.45
+
+        if nodes_detailed:
+            x_coords = [n["idx"] for n in nodes_detailed]
+            y_coords = [n["val"] for n in nodes_detailed]
+
+            # خط الاتصال بين نقاط النمط
+            fig.add_trace(
+                go.Scatter(
+                    x=x_coords,
+                    y=y_coords,
+                    mode='lines+markers',
+                    name=f"{pat['pattern']} ({bias})",
+                    line=dict(color=color, width=line_width),
+                    opacity=opacity,
+                    marker=dict(size=7, color=color, symbol="diamond")
+                ),
+                row=1, col=1
+            )
+
+            # إضافة التسميات المعيرة بدقة فوق/تحت كل نقطة
+            if is_latest:
+                for n_info in nodes_detailed:
+                    lbl = n_info.get("label", "")
+                    nx, ny = n_info["idx"], n_info["val"]
+                    
+                    is_top = (bias == "Bearish" and ("H" in lbl or "LS" in lbl or "RS" in lbl or "Head" in lbl)) or \
+                             (bias == "Bullish" and ("H" in lbl or "N1" in lbl or "N2" in lbl))
+                    
+                    fig.add_annotation(
+                        x=nx, y=ny,
+                        text=f"<b>{lbl}</b>",
+                        showarrow=True,
+                        arrowhead=2,
+                        ax=0,
+                        ay=-24 if is_top else 24,
+                        row=1, col=1
+                    )
+
+            # خط الرقبة Neckline
+            neckline_nodes = pat.get("neckline_nodes", [])
+            if len(neckline_nodes) >= 2:
+                nx = [neckline_nodes[0][0], neckline_nodes[1][0]]
+                ny = [neckline_nodes[0][1], neckline_nodes[1][1]]
+                fig.add_trace(
+                    go.Scatter(
+                        x=nx, y=ny,
+                        mode='lines',
+                        name='Neckline',
+                        line=dict(color='yellow' if is_latest else 'gray', width=2, dash='dash'),
+                        opacity=opacity
+                    ),
+                    row=1, col=1
+                )
+
+            # المستويات المالية (Entry, SL, TP)
+            if is_latest:
+                entry = pat.get("entry")
+                sl = pat.get("sl")
+                tp = pat.get("tp")
+                end_idx = pat.get("neckline_end_idx")
+
+                if entry and sl and tp and end_idx in df.index:
+                    last_x = df.index[-1]
+
+                    fig.add_trace(
+                        go.Scatter(x=[end_idx, last_x], y=[entry, entry], mode='lines+text', name='Entry',
+                                   text=["", f"Entry: {entry}"], textposition="top right",
+                                   line=dict(color='cyan', width=1.5, dash='dot')),
+                        row=1, col=1
+                    )
+                    fig.add_trace(
+                        go.Scatter(x=[end_idx, last_x], y=[sl, sl], mode='lines+text', name='SL',
+                                   text=["", f"SL: {sl}"], textposition="top right",
+                                   line=dict(color='red', width=1.5, dash='dot')),
+                        row=1, col=1
+                    )
+                    fig.add_trace(
+                        go.Scatter(x=[end_idx, last_x], y=[tp, tp], mode='lines+text', name='TP',
+                                   text=["", f"TP: {tp}"], textposition="top right",
+                                   line=dict(color='green', width=1.5, dash='dot')),
+                        row=1, col=1
+                    )
+
+    fig.update_layout(
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        height=780,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+
+    return fig
 
 
 def backtest_strategy(df, interval=None, config=CONFIG, **kwargs):
@@ -682,7 +897,9 @@ def run_full_analysis(df):
         "target_nodes": [],
         "all_patterns": [],
         "near_target_patterns": [],
-        "trade_result": "N/A"
+        "trade_result": "N/A",
+        "fig": None,
+        "chart": None
     }
 
     if df is None or df.empty:
@@ -711,11 +928,11 @@ def run_full_analysis(df):
 
     if not all_patterns:
         default_response["df"] = df_active
+        default_response["fig"] = create_pattern_chart({"df": df_active, "all_patterns": []})
+        default_response["chart"] = default_response["fig"]
         return default_response
 
-    # تطبيق شرط الحداثة للتحليل الفوري (آخر 10 شمعات)
     recent_patterns = [p for p in all_patterns if p.get("recency_candle_count", 999) <= CONFIG["MAX_RECENCY_CANDLES"]]
-
     selected_pattern = recent_patterns[-1] if recent_patterns else all_patterns[-1]
 
     if selected_pattern["pattern"] == "Inverse Head and Shoulders":
@@ -727,7 +944,7 @@ def run_full_analysis(df):
 
     near_target_patterns = [p for p in all_patterns if p.get("is_near_target", False)]
 
-    return {
+    analysis_res = {
         "df": df_active,
         "signal": signal,
         "pattern": selected_pattern["pattern"],
@@ -747,6 +964,12 @@ def run_full_analysis(df):
         "trade_result": selected_pattern.get("trade_result", "OPEN")
     }
 
+    fig = create_pattern_chart(analysis_res)
+    analysis_res["fig"] = fig
+    analysis_res["chart"] = fig
+
+    return analysis_res
+
 
 if __name__ == "__main__":
-    print("ENGINE.PY loaded with Dynamic ATR Swing Scanner (v4.6 - Complete Integration).")
+    print("ENGINE.PY loaded with Volume Confirmation & Labeling Scheme (v4.7).")
