@@ -297,8 +297,8 @@ class PatternValidatorPipeline:
         h2 = p[3]["val"]
         idx_h2 = p[3]["idx"]
 
-        post_head = self.df.loc[idx_h2:]
-        if not post_head.empty and post_head["High"].max() > h2:
+        # ⚠️ معطّل مؤقتاً لاختبار الانحياز
+return True
             return False
         return True
 
