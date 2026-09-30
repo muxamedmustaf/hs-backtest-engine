@@ -54,7 +54,6 @@ ALL_GLOBAL_INTERVALS = [
     "1d", "2d", "3d", "1wk", "1mo", "3mo", "6mo", "1y"
 ]
 
-# حدود yfinance للإطارات الصغيرة
 INTERVAL_LIMITS = {
     "1m": 7, "2m": 60, "5m": 60, "15m": 60, "30m": 60,
     "60m": 730, "90m": 60, "1h": 730,
@@ -64,7 +63,6 @@ INTERVAL_LIMITS = {
 # دوال مساعدة
 # ==============================================================================
 def fix_symbol(sym):
-    """تحويل الرموز إلى صيغة yfinance الصحيحة"""
     sym = str(sym).strip().upper()
     if len(sym) == 6 and sym.isalpha():
         return f"{sym}=X"
@@ -136,9 +134,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         9: "09 - سبتمبر", 10: "10 - أكتوبر", 11: "11 - نوفمبر", 12: "12 - ديسمبر"
     }
 
-    # =========================================================
-    # ✅ اختيار الفترة — 4 أنماط
-    # =========================================================
     st.markdown("#### 📅 اختيار الفترة الزمنية")
     period_mode = st.radio(
         "نمط الفترة:",
@@ -151,7 +146,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     end_date = None
     period_label = ""
 
-    # ─── النمط 1: شهر واحد ───
     if period_mode == "📆 شهر واحد":
         c_yr, c_mo = st.columns(2)
         selected_year = c_yr.selectbox("📅 السنة:", available_years, index=0, key="bt_single_year")
@@ -167,7 +161,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         end_date = f"{selected_year}-{selected_month:02d}-{last_day:02d}"
         period_label = f"{months_dict[selected_month]} {selected_year}"
 
-    # ─── النمط 2: نطاق مخصص ───
     elif period_mode == "📅 نطاق مخصص":
         c1, c2 = st.columns(2)
         start_pick = c1.date_input(
@@ -192,7 +185,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             days_count = (end_pick - start_pick).days
             period_label = f"من {start_date} إلى {end_date} ({days_count} يوم)"
 
-    # ─── النمط 3: أشهر متعددة ───
     elif period_mode == "📊 أشهر متعددة":
         c_yr, c_months = st.columns([1, 2])
         multi_year = c_yr.selectbox("📅 السنة:", available_years, index=0, key="bt_multi_year")
@@ -219,7 +211,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             if len(sorted_months) != (last_m - first_m + 1):
                 st.info(f"ℹ️ سيُختبر النطاق الكامل من {months_dict[first_m]} إلى {months_dict[last_m]}")
 
-    # ─── النمط 4: سنة كاملة ───
     elif period_mode == "🗓️ سنة كاملة":
         c_yr = st.columns(1)[0]
         year_pick = c_yr.selectbox("📅 السنة:", available_years, index=0, key="bt_full_year")
@@ -227,9 +218,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         end_date = f"{year_pick}-12-31"
         period_label = f"السنة {year_pick} كاملة"
 
-    # =========================================================
-    # الإطار الزمني
-    # =========================================================
     st.markdown("---")
     selected_interval = st.selectbox(
         "⏱️ الإطار الزمني:",
@@ -238,14 +226,10 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         key="bt_interval"
     )
 
-    # =========================================================
-    # عرض ملخص الفترة + تحذير
-    # =========================================================
     if start_date and end_date:
         st.success(f"✅ الفترة: **{period_label}**")
         st.caption(f"📅 من `{start_date}` إلى `{end_date}` | ⏱️ الإطار: `{selected_interval}`")
 
-        # تحذير من حدود yfinance
         max_days = INTERVAL_LIMITS.get(selected_interval)
         if max_days:
             actual_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
@@ -255,9 +239,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     f"الفترة المختارة ({actual_days} يوم) قد تُرجع بيانات جزئية."
                 )
 
-    # =========================================================
-    # زر التشغيل
-    # =========================================================
     if st.button("📊 بدء محاكاة الاختبار الرجعي", use_container_width=True) and bt_symbols and start_date and end_date:
         results, dfs = [], {}
         dl_int = selected_interval if selected_interval in [
@@ -312,15 +293,11 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 for msg in error_log:
                     st.text(msg)
 
-    # =========================================================
-    # عرض النتائج
-    # =========================================================
     if st.session_state.backtest_scanned_signals:
         res_list = st.session_state.backtest_scanned_signals
         dfs_dict = st.session_state.backtest_dfs
         period_display = st.session_state.get("backtest_period", "غير محدد")
 
-        # --- الملخص العام ---
         all_dfs = [
             i["trades_df"] for i in res_list
             if "trades_df" in i and not i["trades_df"].empty
@@ -356,7 +333,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             gm3.metric("❌ خاسرة", g_losses, delta=f"{g_loss_rate}% Loss Rate", delta_color="inverse")
             gm4.metric("⏳ مفتوحة", g_opens)
 
-            # ✅ زر تنزيل CSV — الملخص الكامل
             st.markdown("---")
             dl_col1, dl_col2 = st.columns(2)
 
@@ -371,7 +347,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 )
 
             with dl_col2:
-                # CSV بالإحصائيات
                 stats_summary = pd.DataFrame([{
                     "Period": period_display,
                     "Start": st.session_state.get("backtest_start", ""),
@@ -395,7 +370,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
             st.markdown("---")
 
-        # --- اختيار الأصل ---
         if bt_scan_mode == "مسح كلي لشيت الأصول":
             opts = [f"{i['symbol']} | الصفقات: {i['total_signals']}" for i in res_list]
             active_item = res_list[opts.index(st.selectbox("👇 اختر الأصل:", opts))]
@@ -406,7 +380,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         trades_df = active_item["trades_df"]
         st.session_state.current_symbol = active_sym
 
-        # --- إحصائيات الأصل ---
         res_col = None
         for col in ["Result", "Head Result"]:
             if col in trades_df.columns:
@@ -425,7 +398,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         win_rate = round((wins / closed_trades) * 100, 1) if closed_trades > 0 else 0.0
         loss_rate = round((losses / closed_trades) * 100, 1) if closed_trades > 0 else 0.0
 
-        # --- المدة ---
         dur_str = "غير متاح"
         if "Entry Date" in trades_df.columns and "Exit Date" in trades_df.columns:
             entry_dt = pd.to_datetime(trades_df["Entry Date"], errors="coerce")
@@ -434,7 +406,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             if len(days) > 0:
                 dur_str = f"{days.mean():.1f} يوم (متوسط)"
 
-        # --- Symmetry ---
         sym_scores = []
         if "nodes" in trades_df.columns:
             for idx, row in trades_df.iterrows():
@@ -451,7 +422,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
         avg_symmetry = f"{round(sum(sym_scores)/len(sym_scores), 1)}%" if sym_scores else "94.2% (ممتاز)"
 
-        # --- MFE / MAE ---
         if "Max Reach %" in trades_df.columns:
             avg_mfe = f"{round(trades_df['Max Reach %'].mean(), 1)}%"
         else:
@@ -462,7 +432,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         else:
             avg_mae_safety = "82.0%"
 
-        # --- شروط الدخول ---
         conds = []
         for col in ["Entry Conditions", "Pattern", "pattern"]:
             if col in trades_df.columns:
@@ -470,7 +439,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 break
         cond_str = " | ".join(map(str, conds)) if conds else "اختراق خط العنق + اكتمال هيكل النمط"
 
-        # --- عرض النتائج ---
         st.markdown(f"### 📊 نتائج **{active_sym}** — {period_display}")
 
         m1, m2, m3, m4 = st.columns(4)
@@ -482,7 +450,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         st.info(f"**هـ. شروط الدخول:** {cond_str} | **🎯 دقة الهيكل (Symmetry):** {avg_symmetry}")
         st.success(f"📈 **متوسط الحركة:** يصل السوق إلى **{avg_mfe}** من الهدف قبل الارتداد، بينما منطقة الأمان لـ SL بنسبة **{avg_mae_safety}**.")
 
-        # ✅ زر تنزيل CSV — هذا الأصل
         dl_sym_col1, dl_sym_col2 = st.columns(2)
         with dl_sym_col1:
             csv_symbol = trades_df.to_csv(index=False).encode('utf-8-sig')
@@ -494,7 +461,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 use_container_width=True
             )
 
-        # --- الشارت ---
         if active_sym in dfs_dict and not dfs_dict[active_sym].empty:
             df_res = dfs_dict[active_sym].copy()
             df_res['EMA50'] = df_res['Close'].ewm(span=50, adjust=False).mean()
@@ -538,6 +504,74 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
 
         st.dataframe(trades_df, use_container_width=True)
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # 🔬 التقرير التشخيصي — أي فلتر يرفض أكثر؟
+        # ═══════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        with st.expander("🔬 تقرير تشخيصي — أي فلتر يرفض أكثر؟", expanded=True):
+            try:
+                from engine import diagnose_filters
+
+                df_for_diag = dfs_dict.get(active_sym)
+                if df_for_diag is None or df_for_diag.empty:
+                    st.warning("⚠️ لا توجد بيانات خام لهذا الرمز")
+                else:
+                    with st.spinner("جاري التشخيص..."):
+                        diag = diagnose_filters(
+                            df_for_diag,
+                            interval=selected_interval,
+                            symbol=active_sym,
+                        )
+
+                    if diag.get("error"):
+                        st.error(f"❌ {diag['error']}")
+                    else:
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("أنماط خام", diag["total_raw_candidates"])
+                        col2.metric("بعد الفلاتر", diag["final_count"])
+                        col3.metric(
+                            "نسبة القبول",
+                            f"{round(diag['final_count'] / max(diag['total_raw_candidates'], 1) * 100, 1)}%"
+                        )
+
+                        st.markdown("### 📊 مراحل الفلترة")
+                        stages_data = []
+                        for stage_name, stage_data in diag["stages"].items():
+                            stages_data.append({
+                                "الفلتر": stage_name,
+                                "قبل": stage_data.get("before", "-"),
+                                "بعد": stage_data.get("after", "-"),
+                                "مرفوض": stage_data.get("rejected", "-"),
+                                "نسبة القبول %": stage_data.get("pass_rate", "-"),
+                            })
+                        st.dataframe(
+                            pd.DataFrame(stages_data),
+                            use_container_width=True
+                        )
+
+                        if diag["recommendations"]:
+                            st.markdown("### 🎯 توصيات")
+                            for r in diag["recommendations"]:
+                                if "حرج" in r["severity"]:
+                                    st.error(f"🔴 {r['message']}")
+                                elif "متوسط" in r["severity"]:
+                                    st.warning(f"🟡 {r['message']}")
+                                else:
+                                    st.info(f"ℹ️ {r['message']}")
+
+                        if diag["rejection_samples"]:
+                            st.markdown("### 🔍 عينات من الأنماط المرفوضة")
+                            for filter_name, samples in diag["rejection_samples"].items():
+                                with st.expander(f"{filter_name} ({len(samples)} عينة)"):
+                                    st.dataframe(
+                                        pd.DataFrame(samples),
+                                        use_container_width=True
+                                    )
+            except Exception as e:
+                import traceback
+                st.error(f"⚠️ خطأ في التقرير التشخيصي: {type(e).__name__}: {e}")
+                st.code(traceback.format_exc())
 
 # ==============================================================================
 # ================= LIVE SCAN MODE =================
@@ -618,9 +652,6 @@ else:
                 for msg in error_log:
                     st.text(msg)
 
-    # ==========================================================================
-    # عرض نتائج المسح الحي
-    # ==========================================================================
     if st.session_state.scanned_signals:
         sigs = st.session_state.scanned_signals
 
