@@ -847,16 +847,3 @@ def backtest_strategy(df, interval="1h", symbol=None):
     return trades
 
 
-# ==============================================================================
-# [12] منفذ الاختبار
-# ==============================================================================
-if __name__ == "__main__":
-    print("ENGINE.PY - Head & Shoulders Detector")
-    print("Filters:")
-    print("  1. max_gap (H3 → Breakout)")
-    print("  2. max_pattern_duration (L0 → H3)")
-    print("  3. Time Stop = max(300, pattern_duration × 3)")
-    print("  4. Strict Trend: Price vs EMA50 vs EMA200")
-    print("  5. RSI (30-75 / 25-70)")
-    print("  6. Breakout confirm ≥ 0.1%")
-    print("
