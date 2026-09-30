@@ -837,4 +837,57 @@ def backtest_strategy(df, interval="1h", symbol=None):
         return []
 
     df = calculate_indicators(df)
-    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIG
+    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+
+    pivots = get_chronological_pivots(df)
+
+    max_gap = _get_max_gap(interval)
+    max_pattern_dur = _get_max_pattern_duration(interval)
+    all_patterns = detect_all_head_shoulders(
+        pivots, df, is_backtest=True,
+        max_gap=max_gap, max_pattern_duration=max_pattern_dur
+    )
+
+    trades = []
+    for p in all_patterns:
+        trade = {
+            "Symbol": symbol or "N/A",
+            "Pattern": p["pattern"],
+            "pattern": p["pattern"],
+            "Bias": p["bias"],
+            "Result": p.get("Result", "OPEN"),
+            "Head Result": p.get("Head Result", "OPEN"),
+            "Entry": p["entry"],
+            "SL": p["sl"],
+            "TP": p["tp"],
+            "Entry Date": p.get("Entry Date"),
+            "Exit Date": p.get("Exit Date"),
+            "time": p.get("Entry Date"),
+            "close_time": p.get("Exit Date"),
+            "Max Reach %": p.get("Max Reach %", 0.0),
+            "SL Safety %": p.get("SL Safety %", 0.0),
+            "Entry Conditions": p.get("Entry Conditions", ""),
+            "nodes": p["nodes"],
+            "candles_to_exit": p.get("candles_to_exit", 0),
+            "progress_ratio": p.get("progress_ratio", 0.0),
+            "neckline_end_idx": p["neckline_end_idx"],
+            "Pattern Duration": p.get("Pattern Duration", 0),
+            "Timeout Used": p.get("Timeout Used", 0),
+        }
+        trades.append(trade)
+
+    return trades
+
+
+# ==============================================================================
+# [12] منفذ الاختبار
+# ==============================================================================
+if __name__ == "__main__":
+    print("ENGINE.PY - Head & Shoulders Detector")
+    print("Filters:")
+    print("  1. max_gap (H3 to Breakout)")
+    print("  2. max_pattern_duration (L0 to H3)")
+    print("  3. Time Stop = max(300, pattern_duration x 3)")
+    print("  4. Strict Trend: Price vs EMA50 vs EMA200")
+    print("  5. RSI (30-75 / 25-70)")
+    print("  6. Breakout confirm >= 0.1%")
