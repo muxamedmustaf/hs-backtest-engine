@@ -727,11 +727,6 @@ def detect_all_head_shoulders(pivots, df, config=CONFIG, is_backtest=False):
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
-
-
-# ==============================================================================
-# [5. دالة رسم الأنماط والمؤشرات بـ Plotly]
-# ==============================================================================
 def render_pattern_chart(df, patterns_to_draw=None, max_candles=500):
     """رسم الشموع والأنماط وخطوط العنق والأهداف."""
     if df is None or df.empty:
@@ -745,23 +740,31 @@ def render_pattern_chart(df, patterns_to_draw=None, max_candles=500):
         row_width=[0.25, 0.75]
     )
 
-    # --- Price ---
+    # --------------------------------------------------------------------------
+    # السعر
+    # --------------------------------------------------------------------------
     fig.add_trace(
         go.Candlestick(
             x=df_chart.index,
-            open=df_chart["Open"], high=df_chart["High"],
-            low=df_chart["Low"], close=df_chart["Close"],
+            open=df_chart["Open"],
+            high=df_chart["High"],
+            low=df_chart["Low"],
+            close=df_chart["Close"],
             name="Price"
         ),
         row=1, col=1
     )
 
-    # --- EMAs ---
+    # --------------------------------------------------------------------------
+    # EMA
+    # --------------------------------------------------------------------------
     if "EMA50" in df_chart.columns:
         fig.add_trace(
             go.Scatter(
-                x=df_chart.index, y=df_chart["EMA50"],
-                mode="lines", name="EMA 50",
+                x=df_chart.index,
+                y=df_chart["EMA50"],
+                mode="lines",
+                name="EMA 50",
                 line=dict(color="#FFB300", width=1.2)
             ),
             row=1, col=1
@@ -769,14 +772,18 @@ def render_pattern_chart(df, patterns_to_draw=None, max_candles=500):
     if "EMA200" in df_chart.columns:
         fig.add_trace(
             go.Scatter(
-                x=df_chart.index, y=df_chart["EMA200"],
-                mode="lines", name="EMA 200",
+                x=df_chart.index,
+                y=df_chart["EMA200"],
+                mode="lines",
+                name="EMA 200",
                 line=dict(color="#1E88E5", width=1.5)
             ),
             row=1, col=1
         )
 
-    # --- Pattern Colors ---
+    # --------------------------------------------------------------------------
+    # ألوان مستقلة لكل نمط
+    # --------------------------------------------------------------------------
     pattern_colors = [
         "#FF1744", "#00E676", "#2979FF", "#FF9100", "#D500F9",
         "#00E5FF", "#FFEA00", "#76FF03", "#F50057", "#651FFF",
@@ -790,4 +797,106 @@ def render_pattern_chart(df, patterns_to_draw=None, max_candles=500):
             is_latest = (idx == len(patterns_to_draw) - 1)
 
             pattern_color = pattern_colors[idx % len(pattern_colors)]
-            line_width =
+            line_width = 3 if is_latest else 2
+
+            labels = (
+                ["L0", "LS", "N1", "Head", "N2", "RS", "Breakout"]
+                if bias == "Bearish"
+                else ["H0", "LS", "N1", "Head", "N2", "RS", "Breakout"]
+            )
+
+            x_coords = []
+            y_coords = []
+            text_labels = []
+            for i, node in enumerate(nodes):
+                if node[0] in df_chart.index:
+                    x_coords.append(node[0])
+                    y_coords.append(node[1])
+                    if i < len(labels):
+                        text_labels.append(labels[i])
+
+            if len(x_coords) >= 2:
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_coords,
+                        y=y_coords,
+                        mode=("lines+markers+text" if (is_latest and text_labels) else "lines+markers"),
+                        name=f"{pat['pattern']} (#{idx + 1})",
+                        line=dict(color=pattern_color, width=line_width),
+                        marker=dict(size=7, color=pattern_color, symbol="circle"),
+                        text=(text_labels if is_latest else None),
+                        textposition=("top center" if bias == "Bearish" else "bottom center"),
+                        textfont=dict(size=11, color="white")
+                    ),
+                    row=1, col=1
+                )
+
+            # ------------------------------------------------------------------
+            # خط العنق
+            # ------------------------------------------------------------------
+            neckline_nodes = pat.get("neckline_nodes", [])
+            if neckline_nodes:
+                neck_x = [n[0] for n in neckline_nodes if n[0] in df_chart.index]
+                neck_y = [n[1] for n in neckline_nodes if n[0] in df_chart.index]
+                if len(neck_x) >= 2:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=neck_x,
+                            y=neck_y,
+                            mode="lines",
+                            name=f"Neckline (#{idx + 1})",
+                            line=dict(color=pattern_color, width=1.5, dash="dash"),
+                            showlegend=True
+                        ),
+                        row=1, col=1
+                    )
+
+            # ------------------------------------------------------------------
+            # الهدف
+            # ------------------------------------------------------------------
+            target_nodes = pat.get("target_nodes", [])
+            if target_nodes:
+                target_x = [n[0] for n in target_nodes if n[0] in df_chart.index]
+                target_y = [n[1] for n in target_nodes if n[0] in df_chart.index]
+                if len(target_x) >= 2:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=target_x,
+                            y=target_y,
+                            mode="lines+markers",
+                            name=f"Target (#{idx + 1})",
+                            line=dict(color=pattern_color, width=1.5, dash="dot"),
+                            marker=dict(size=6, color=pattern_color, symbol="diamond"),
+                            showlegend=True
+                        ),
+                        row=1, col=1
+                    )
+
+    # --------------------------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------------------------
+    if "RSI" in df_chart.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df_chart.index,
+                y=df_chart["RSI"],
+                mode="lines",
+                name="RSI",
+                line=dict(color="#AB47BC", width=1.5)
+            ),
+            row=2, col=1
+        )
+        fig.add_hline(y=70, line_dash="dash", line_color="#FF5252", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="#69F0AE", row=2, col=1)
+
+    # --------------------------------------------------------------------------
+    # إعداد الشارت
+    # --------------------------------------------------------------------------
+    fig.update_layout(
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        height=720,
+        margin=dict(l=10, r=10, t=35, b=10)
+    )
+
+    return fig
