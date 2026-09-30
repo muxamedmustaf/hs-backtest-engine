@@ -900,3 +900,163 @@ def render_pattern_chart(df, patterns_to_draw=None, max_candles=500):
     )
 
     return fig
+
+# ==============================================================================
+# [6. منافذ التشغيل الرئيسية والباكتيست]
+# ==============================================================================
+def backtest_strategy(df, config=CONFIG):
+    """إجراء باكتيست شامل باستخدام نفس منطق التحليل."""
+    if (df is None or df.empty or len(df) < 30):
+        return []
+
+    df_calc = calculate_indicators(df, config)
+    df_calc = calculate_zigzag(df_calc, config)
+    pivots = get_chronological_pivots(df_calc)
+    all_patterns = detect_all_head_shoulders(
+        pivots, df_calc, config, is_backtest=True
+    )
+    return all_patterns
+
+
+def run_full_analysis(df, config=CONFIG, is_backtest=False):
+    """الدالة الموحدة للتحليل الحي والباكتيست وتوليد الشارت."""
+    default_res = {
+        "df": df,
+        "signal": "WAITING",
+        "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral",
+        "entry": None,
+        "entry_trigger": None,
+        "sl": None,
+        "shoulder_sl": None,
+        "tp": None,
+        "nodes": [],
+        "match": 0.0,
+        "neckline_start_idx": None,
+        "neckline_nodes": [],
+        "target_nodes": [],
+        "all_patterns": [],
+        "near_target_patterns": [],
+        "trade_result": "N/A",
+        "SL": None,
+        "Shoulder SL": None,
+        "Head Result": "N/A",
+        "Shoulder Result": "N/A",
+        "Candles to Exit (Cabdale)": 0,
+        "Candles to TP Move": 0,
+        "progress_ratio": 0.0,
+        "is_near_target": False,
+        "status": "NONE",
+        "fig": None,
+        "chart": None
+    }
+
+    if df is None or df.empty:
+        return default_res
+
+    df = df.copy()
+    required = ["Open", "High", "Low", "Close"]
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column: {col}")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=required)
+    if len(df) < 30:
+        default_res["df"] = df
+        return default_res
+
+    # --------------------------------------------------------------------------
+    # نفس منطق الحساب لكلا الوضعين
+    # --------------------------------------------------------------------------
+    if is_backtest:
+        df_active = df.copy()
+    else:
+        live_candles = config.get("LIVE_ANALYSIS_CANDLES", 500)
+        df_active = df.tail(live_candles).copy()
+
+    df_active = calculate_indicators(df_active, config)
+    df_active = calculate_zigzag(df_active, config)
+    pivots = get_chronological_pivots(df_active)
+    all_patterns = detect_all_head_shoulders(
+        pivots, df_active, config, is_backtest=is_backtest
+    )
+
+    # --------------------------------------------------------------------------
+    # لا توجد أنماط
+    # --------------------------------------------------------------------------
+    if not all_patterns:
+        fig_empty = render_pattern_chart(
+            df_active, patterns_to_draw=[], max_candles=500
+        )
+        default_res["df"] = df_active
+        default_res["fig"] = fig_empty
+        default_res["chart"] = fig_empty
+        return default_res
+
+    # --------------------------------------------------------------------------
+    # تصنيف الأنماط
+    # --------------------------------------------------------------------------
+    near_target_patterns = [
+        p for p in all_patterns if p.get("is_near_target", False)
+    ]
+    active_entry_patterns = [
+        p for p in all_patterns if p.get("is_valid_entry", False)
+    ]
+
+    # --------------------------------------------------------------------------
+    # اختيار النمط الحالي
+    # --------------------------------------------------------------------------
+    if active_entry_patterns:
+        latest_pattern = active_entry_patterns[-1]
+    else:
+        latest_pattern = all_patterns[-1]
+
+    if latest_pattern["bias"] == "Bullish":
+        signal = "STRONG BUY"
+    else:
+        signal = "STRONG SELL"
+
+    # --------------------------------------------------------------------------
+    # رسم جميع الأنماط
+    # --------------------------------------------------------------------------
+    fig = render_pattern_chart(
+        df_active, patterns_to_draw=all_patterns, max_candles=500
+    )
+
+    return {
+        "df": df_active,
+        "signal": signal,
+        "pattern": latest_pattern["pattern"],
+        "bias": latest_pattern["bias"],
+        "entry": latest_pattern["entry"],
+        "entry_trigger": latest_pattern["entry_trigger"],
+        "sl": latest_pattern["sl"],
+        "shoulder_sl": latest_pattern.get(
+            "shoulder_sl", latest_pattern["sl"]
+        ),
+        "tp": latest_pattern["tp"],
+        "nodes": latest_pattern["nodes"],
+        "match": latest_pattern["match"],
+        "neckline_start_idx": latest_pattern["neckline_start_idx"],
+        "neckline_nodes": latest_pattern.get("neckline_nodes", []),
+        "target_nodes": latest_pattern.get("target_nodes", []),
+        "all_patterns": all_patterns,
+        "near_target_patterns": near_target_patterns,
+        "trade_result": latest_pattern.get("trade_result", "OPEN"),
+        "SL": latest_pattern.get("SL"),
+        "Shoulder SL": latest_pattern.get("Shoulder SL"),
+        "Head Result": latest_pattern.get("Head Result", "OPEN"),
+        "Shoulder Result": latest_pattern.get("Shoulder Result", "OPEN"),
+        "Candles to Exit (Cabdale)": latest_pattern.get(
+            "Candles to Exit (Cabdale)", 0
+        ),
+        "Candles to TP Move": latest_pattern.get(
+            "Candles to TP Move", 0
+        ),
+        "progress_ratio": latest_pattern.get("progress_ratio", 0.0),
+        "is_near_target": latest_pattern.get("is_near_target", False),
+        "status": latest_pattern.get("status", "NONE"),
+        "fig": fig,
+        "chart": fig
+    }
