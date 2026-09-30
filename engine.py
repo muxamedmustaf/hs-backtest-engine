@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY - Head & Shoulders Pattern Detector
-Unified Live + Backtest Engine
+ENGINE.PY - Head & Shoulders Detector
+Merged: v4.6 pattern logic + strict filters
 """
 import pandas as pd
 import numpy as np
@@ -16,7 +16,7 @@ CONFIG = {
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "HEAD_PROPORTION_MIN_RATIO": 0.25,
     "NECKLINE_DIFF_MAX_RATIO": 0.25,
-    "LIVE_MAX_BREAKOUT_CANDLES": 30,
+    "LIVE_MAX_BREAKOUT_CANDLES": 10,
 
     # RSI
     "RSI_MIN_BEARISH": 30.0,
@@ -71,13 +71,14 @@ def _get_max_pattern_duration(interval):
 
 
 # ==============================================================================
-# [2] حساب المؤشرات
+# [2] حساب المؤشرات (من الملف الحالي — محسّن)
 # ==============================================================================
 def calculate_indicators(df):
     df = df.copy()
     df["EMA50"] = df["Close"].ewm(span=CONFIG["EMA_FAST_SPAN"], adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=CONFIG["EMA_SLOW_SPAN"], adjust=False).mean()
 
+    # RSI (Wilder's smoothing)
     delta = df["Close"].diff()
     gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
@@ -86,6 +87,7 @@ def calculate_indicators(df):
     df["RSI"] = 100 - (100 / (1 + rs))
     df["RSI"] = df["RSI"].fillna(50.0)
 
+    # ATR
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -110,7 +112,7 @@ def calculate_indicators(df):
 
 
 # ==============================================================================
-# [3] ZigZag
+# [3] ZigZag (من v4.6 — بنية أصلية)
 # ==============================================================================
 def calculate_zigzag(df, depth=12, backstep=6):
     df = df.copy()
@@ -149,7 +151,7 @@ def calculate_zigzag(df, depth=12, backstep=6):
 
 
 # ==============================================================================
-# [4] تنقية النقاط الزمنية
+# [4] تنقية النقاط الزمنية (من v4.6 — بنية أصلية)
 # ==============================================================================
 def get_chronological_pivots(df):
     raw = []
@@ -157,14 +159,16 @@ def get_chronological_pivots(df):
     for pos, (idx, row) in enumerate(df.iterrows()):
         if not pd.isna(row["Pivot_H"]):
             raw.append({
-                "idx": idx, "pos": pos,
+                "idx": idx,
+                "pos": pos,
                 "val": float(row["Pivot_H"]),
                 "type": "H",
                 "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))
             })
         elif not pd.isna(row["Pivot_L"]):
             raw.append({
-                "idx": idx, "pos": pos,
+                "idx": idx,
+                "pos": pos,
                 "val": float(row["Pivot_L"]),
                 "type": "L",
                 "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))
@@ -174,6 +178,7 @@ def get_chronological_pivots(df):
         return []
 
     clean = []
+
     for p in raw:
         if not clean:
             clean.append(p)
@@ -184,6 +189,7 @@ def get_chronological_pivots(df):
 
         if last["type"] != p["type"]:
             movement = abs(p["val"] - last["val"]) / max(abs(last["val"]), 1e-9)
+
             if movement >= current_min_swing:
                 clean.append(p)
             else:
@@ -191,11 +197,12 @@ def get_chronological_pivots(df):
                     clean[-1] = p
                 elif last["type"] == "L" and p["val"] < last["val"]:
                     clean[-1] = p
-        else:
-            if p["type"] == "H" and p["val"] > last["val"]:
-                clean[-1] = p
-            elif p["type"] == "L" and p["val"] < last["val"]:
-                clean[-1] = p
+
+        elif p["type"] == "H" and p["val"] > last["val"]:
+            clean[-1] = p
+
+        elif p["type"] == "L" and p["val"] < last["val"]:
+            clean[-1] = p
 
     final_clean = []
     for p in clean:
@@ -214,7 +221,7 @@ def get_chronological_pivots(df):
 
 
 # ==============================================================================
-# [5] محاكاة نتيجة الصفقة
+# [5] محاكاة نتيجة الصفقة مع Time Stop (من ملفنا الحالي)
 # ==============================================================================
 def simulate_trade_outcome(pattern, df):
     bias = pattern["bias"]
@@ -223,6 +230,7 @@ def simulate_trade_outcome(pattern, df):
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
 
+    # حساب Pattern Duration
     nodes = pattern.get("nodes", [])
     if len(nodes) >= 6:
         first_idx = nodes[0][0]
@@ -344,14 +352,24 @@ def simulate_trade_outcome(pattern, df):
 
 
 # ==============================================================================
-# [6] فلاتر النمط
+# [6] PatternValidatorPipeline — دمج v4.6 (بنية filters list) + فلاتر جديدة
 # ==============================================================================
 class PatternValidatorPipeline:
-    """فلاتر التحقق من صحة النمط"""
+    """
+    بنية v4.6 (filters list) + الفلاتر الجديدة:
+    - time_filter (v4.6)
+    - strict_trend_filter (جديد — Price vs EMA50 vs EMA200)
+    - invalidation_filter (معطّل)
+    - indicator_filter (RSI فقط — بدون EMA check)
+    - breakout_filter (v4.6)
+    - breakout_confirm_filter (جديد — 0.1%)
+    - volume_filter (اختياري)
+    """
 
     def __init__(self, df):
         self.df = df
 
+    # ─── v4.6: time_filter ───
     def time_filter(self, p):
         positions = [x["pos"] for x in p]
         for j in range(len(positions) - 1):
@@ -359,15 +377,9 @@ class PatternValidatorPipeline:
                 return False
         return True
 
-    def invalidation_filter(self, p):
-        return True
-
-    # ✅ الشرط الجديد: Price > EMA50 > EMA200 أو العكس
+    # ─── جديد: strict_trend_filter ───
     def strict_trend_filter(self, p):
-        """
-        H&S الهابط: Price < EMA50 < EMA200 عند H3
-        Inverse H&S: Price > EMA50 > EMA200 عند L3
-        """
+        """H&S: Price < EMA50 < EMA200 | Inverse: Price > EMA50 > EMA200"""
         if not CONFIG.get("REQUIRE_STRICT_TREND", True):
             return True
 
@@ -390,12 +402,15 @@ class PatternValidatorPipeline:
         is_bearish = (p[3]["type"] == "H")
 
         if is_bearish:
-            # H&S الهابط: Price < EMA50 < EMA200
             return price < ema50 < ema200
         else:
-            # Inverse H&S: Price > EMA50 > EMA200
             return price > ema50 > ema200
 
+    # ─── معطّل (لتجنب Bias) ───
+    def invalidation_filter(self, p):
+        return True
+
+    # ─── جديد: RSI فقط (بدون EMA check) ───
     def indicator_filter(self, p):
         idx_end = p[5]["idx"]
         if idx_end not in self.df.index:
@@ -411,6 +426,7 @@ class PatternValidatorPipeline:
         else:
             return CONFIG["RSI_MIN_BULLISH"] <= rsi_val <= CONFIG["RSI_MAX_BULLISH"]
 
+    # ─── v4.6: breakout_filter (يُرجع tuple) ───
     def breakout_filter(self, p):
         idx_h3 = p[5]["idx"]
         l1, l2 = p[2]["val"], p[4]["val"]
@@ -428,6 +444,7 @@ class PatternValidatorPipeline:
             return None
         return breakout.index[0], float(breakout["Close"].iloc[0])
 
+    # ─── جديد: breakout_confirm ───
     def breakout_confirm_filter(self, p, breakout_price):
         l1, l2 = p[2]["val"], p[4]["val"]
         neckline = (l1 + l2) / 2.0
@@ -439,6 +456,7 @@ class PatternValidatorPipeline:
         else:
             return breakout_price >= neckline * (1 + min_pct)
 
+    # ─── جديد: volume (اختياري) ───
     def volume_filter(self, breakout_idx):
         if not CONFIG.get("REQUIRE_VOLUME_BREAKOUT", False):
             return True
@@ -456,13 +474,13 @@ class PatternValidatorPipeline:
         factor = CONFIG.get("VOLUME_FACTOR", 1.2)
         return vol >= vol_ma * factor
 
+    # ─── run ───
     def run(self, p):
         if not self.time_filter(p):
             return False, None, None
-        if not self.invalidation_filter(p):
-            return False, None, None
-        # ✅ الاتجاه الصارم
         if not self.strict_trend_filter(p):
+            return False, None, None
+        if not self.invalidation_filter(p):
             return False, None, None
         if not self.indicator_filter(p):
             return False, None, None
@@ -483,11 +501,13 @@ class PatternValidatorPipeline:
 
 
 # ==============================================================================
-# [7] كشف H&S الهابط
+# [7] كشف H&S الهابط (من v4.6 + فلاتر جديدة)
 # ==============================================================================
-def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
-                                   max_gap=50, max_pattern_duration=200):
+def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
+                                    max_gap=50, max_pattern_duration=200):
+    """كشف H&S الهابط — بنية v4.6 مع فلاتر جديدة"""
     patterns = []
+
     if len(pivots) < 6:
         return patterns
 
@@ -502,24 +522,29 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
 
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
 
-        if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
+        if h1 <= l0 or l1 <= l0:
+            continue
+
+        if h2 <= h1 or h2 <= h3:
             continue
 
         neckline_min = min(l1, l2)
         head_height = h2 - neckline_min
+
         if head_height <= 0:
             continue
 
-        if abs(h1 - h3) > head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]:
+        if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
             continue
 
         max_shoulder = max(h1, h3)
-        if (h2 - max_shoulder) < head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]:
+        if (h2 - max_shoulder) < (head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
             continue
 
-        if abs(l1 - l2) > head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]:
+        if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
             continue
 
+        # ✅ max_pattern_duration
         l0_pos = p[0]["pos"]
         h3_pos = p[5]["pos"]
         pattern_size = h3_pos - l0_pos
@@ -535,6 +560,7 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
 
         end_pos = df.index.get_loc(end_idx)
 
+        # ✅ max_gap
         if (end_pos - h3_pos) > max_gap:
             continue
 
@@ -578,7 +604,7 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Head and Shoulders",
-            "Entry Conditions": "Strict Trend (Price<EMA50<EMA200) + RSI + Breakout ≥0.1%",
+            "Entry Conditions": "Strict Trend + RSI + Breakout",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -589,16 +615,18 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
 
 
 # ==============================================================================
-# [8] كشف Inverse H&S الصاعد
+# [8] كشف Inverse H&S الصاعد (من v4.6 + فلاتر جديدة)
 # ==============================================================================
-def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
-                                   max_gap=50, max_pattern_duration=200):
+def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
+                                       max_gap=50, max_pattern_duration=200):
+    """كشف Inverse H&S — بنية v4.6 مع فلاتر جديدة"""
     patterns = []
+
     if len(pivots) < 6:
         return patterns
 
-    total_candles = len(df)
     validator = PatternValidatorPipeline(df)
+    total_candles = len(df)
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -608,29 +636,31 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
 
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
 
-        if l2 >= l1 or l2 >= l3 or l1 >= h1 or l3 >= h2:
+        if l2 >= l1 or l2 >= l3:
             continue
 
         neckline_max = max(h1, h2)
         head_depth = neckline_max - l2
+
         if head_depth <= 0:
             continue
 
-        if abs(l1 - l3) > head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]:
+        if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
             continue
 
         min_shoulder = min(l1, l3)
-        if (min_shoulder - l2) < head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]:
+        if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
             continue
 
-        if abs(h1 - h2) > head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]:
+        if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
             continue
 
         positions = [x["pos"] for x in p]
-        if any(positions[j+1] - positions[j] < CONFIG["MIN_WAVE_CANDLES"]
+        if any((positions[j+1] - positions[j]) < CONFIG["MIN_WAVE_CANDLES"]
                for j in range(len(positions) - 1)):
             continue
 
+        # ✅ max_pattern_duration
         h0_pos = p[0]["pos"]
         l3_pos = p[5]["pos"]
         pattern_size = l3_pos - h0_pos
@@ -638,8 +668,8 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
             continue
 
         idx_l2 = p[3]["idx"]
-        post_head = df.loc[idx_l2:]
-        if not post_head.empty and post_head["Low"].min() < l2:
+        post_head_df = df.loc[idx_l2:]
+        if not post_head_df.empty and post_head_df["Low"].min() < l2:
             continue
 
         passed, end_idx, end_val = validator.run(p)
@@ -651,6 +681,7 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
 
         end_pos = df.index.get_loc(end_idx)
 
+        # ✅ max_gap
         if (end_pos - l3_pos) > max_gap:
             continue
 
@@ -694,7 +725,7 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Inverse Head and Shoulders",
-            "Entry Conditions": "Strict Trend (Price>EMA50>EMA200) + RSI + Breakout ≥0.1%",
+            "Entry Conditions": "Strict Trend + RSI + Breakout",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -705,18 +736,19 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
 
 
 # ==============================================================================
-# [9] دالة الكشف الموحدة
+# [9] دمج الاتجاهين (Monkey Patching — بنية v4.6)
 # ==============================================================================
 def detect_all_head_shoulders(pivots, df, is_backtest=False,
                                max_gap=50, max_pattern_duration=200):
-    bearish = detect_head_shoulders_bearish(
+    """كشف كلا الاتجاهين وترتيبهم زمنياً"""
+    normal_patterns = detect_all_head_shoulders_base(
         pivots, df, is_backtest, max_gap, max_pattern_duration
     )
-    bullish = detect_head_shoulders_bullish(
+    inverse_patterns = detect_all_inverse_head_shoulders(
         pivots, df, is_backtest, max_gap, max_pattern_duration
     )
 
-    all_patterns = bearish + bullish
+    all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
 
@@ -748,7 +780,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
         default_empty["error"] = f"Insufficient data: {len(df)}"
         return default_empty
 
-    df_active = df.tail(500).copy()
+    df_active = df.tail(200).copy()
     df_active = calculate_indicators(df_active)
     df_active = calculate_zigzag(df_active, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
 
@@ -805,45 +837,4 @@ def backtest_strategy(df, interval="1h", symbol=None):
         return []
 
     df = calculate_indicators(df)
-    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-
-    pivots = get_chronological_pivots(df)
-
-    max_gap = _get_max_gap(interval)
-    max_pattern_dur = _get_max_pattern_duration(interval)
-    all_patterns = detect_all_head_shoulders(
-        pivots, df, is_backtest=True,
-        max_gap=max_gap, max_pattern_duration=max_pattern_dur
-    )
-
-    trades = []
-    for p in all_patterns:
-        trade = {
-            "Symbol": symbol or "N/A",
-            "Pattern": p["pattern"],
-            "pattern": p["pattern"],
-            "Bias": p["bias"],
-            "Result": p.get("Result", "OPEN"),
-            "Head Result": p.get("Head Result", "OPEN"),
-            "Entry": p["entry"],
-            "SL": p["sl"],
-            "TP": p["tp"],
-            "Entry Date": p.get("Entry Date"),
-            "Exit Date": p.get("Exit Date"),
-            "time": p.get("Entry Date"),
-            "close_time": p.get("Exit Date"),
-            "Max Reach %": p.get("Max Reach %", 0.0),
-            "SL Safety %": p.get("SL Safety %", 0.0),
-            "Entry Conditions": p.get("Entry Conditions", ""),
-            "nodes": p["nodes"],
-            "candles_to_exit": p.get("candles_to_exit", 0),
-            "progress_ratio": p.get("progress_ratio", 0.0),
-            "neckline_end_idx": p["neckline_end_idx"],
-            "Pattern Duration": p.get("Pattern Duration", 0),
-            "Timeout Used": p.get("Timeout Used", 0),
-        }
-        trades.append(trade)
-
-    return trades
-
-
+    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIG
