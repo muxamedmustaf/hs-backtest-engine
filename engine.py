@@ -18,23 +18,18 @@ CONFIG = {
     "NECKLINE_DIFF_MAX_RATIO": 0.25,
     "LIVE_MAX_BREAKOUT_CANDLES": 10,
 
-    # RSI
     "RSI_MIN_BEARISH": 30.0,
     "RSI_MAX_BEARISH": 75.0,
     "RSI_MIN_BULLISH": 25.0,
     "RSI_MAX_BULLISH": 70.0,
 
-    # EMA
     "EMA_FAST_SPAN": 50,
     "EMA_SLOW_SPAN": 200,
 
-    # الاتجاه الصارم
     "REQUIRE_STRICT_TREND": True,
 
-    # قوة الكسر
     "BREAKOUT_MIN_PCT": 0.001,
 
-    # الحجم (اختياري)
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
@@ -45,7 +40,7 @@ TIMEOUT_DURATION_MULTIPLIER = 3
 
 
 # ==============================================================================
-# [1.b] الحد الأقصى للمسافة H3 → نقطة الكسر
+# [1.b] الحد الأقصى للمسافة H3 -> نقطة الكسر
 # ==============================================================================
 def _get_max_gap(interval):
     return {
@@ -58,7 +53,7 @@ def _get_max_gap(interval):
 
 
 # ==============================================================================
-# [1.c] الحد الأقصى لحجم النمط (L0 → H3)
+# [1.c] الحد الأقصى لحجم النمط (L0 -> H3)
 # ==============================================================================
 def _get_max_pattern_duration(interval):
     return {
@@ -213,7 +208,7 @@ def get_chronological_pivots(df):
 
 
 # ==============================================================================
-# [5] محاكاة نتيجة الصفقة مع Time Stop
+# [5] محاكاة نتيجة الصفقة
 # ==============================================================================
 def simulate_trade_outcome(pattern, df):
     bias = pattern["bias"]
@@ -779,7 +774,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
 
 # ==============================================================================
-# [10.b] ✅ دالة التشخيص الشاملة
+# [10.b] دالة التشخيص الشاملة
 # ==============================================================================
 def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
     diagnostics = {
@@ -822,7 +817,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
     max_gap = _get_max_gap(interval)
     max_pattern_dur = _get_max_pattern_duration(interval)
 
-    # ─── المرحلة 0: كل الأنماط الخام ───
+    # المرحلة 0: كل الأنماط الخام
     raw_candidates = []
 
     for i in range(len(pivots) - 5):
@@ -836,7 +831,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
 
     diagnostics["total_raw_candidates"] = len(raw_candidates)
 
-    # ─── المرحلة 1: الفلترة الهندسية ───
+    # المرحلة 1: الفلترة الهندسية
     geo_passed = []
 
     for cand in raw_candidates:
@@ -874,21 +869,21 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
                 min_shoulder = min(l1, l3)
                 if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
                     continue
-                                if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
+                if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
                     continue
 
             geo_passed.append(cand)
         except (ValueError, IndexError, KeyError):
             continue
 
-    diagnostics["stages"]["geometry"] = {
+        diagnostics["stages"]["geometry"] = {
         "before": len(raw_candidates),
         "after": len(geo_passed),
         "rejected": len(raw_candidates) - len(geo_passed),
         "pass_rate": round(len(geo_passed) / max(len(raw_candidates), 1) * 100, 1),
     }
 
-    # ─── المرحلة 2: MAX_PATTERN_DURATION ───
+    # المرحلة 2: MAX_PATTERN_DURATION
     size_passed = []
     size_rejected = []
 
@@ -915,7 +910,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
         "max_allowed": max_pattern_dur,
     }
 
-    # ─── المرحلة 3: STRICT_TREND ───
+    # المرحلة 3: STRICT_TREND
     trend_passed = []
     trend_rejected = []
 
@@ -952,7 +947,6 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
                     "price": round(price, 5),
                     "ema50": round(ema50, 5),
                     "ema200": round(ema200, 5),
-                    "expected": "< EMA50 < EMA200" if is_bearish else "> EMA50 > EMA200",
                 })
     else:
         trend_passed = size_passed
@@ -967,7 +961,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
     if trend_rejected:
         diagnostics["rejection_samples"]["strict_trend"] = trend_rejected[:sample_size]
 
-    # ─── المرحلة 4: RSI ───
+    # المرحلة 4: RSI
     rsi_passed = []
     rsi_rejected = []
 
@@ -1005,7 +999,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
     if rsi_rejected:
         diagnostics["rejection_samples"]["rsi"] = rsi_rejected[:sample_size]
 
-    # ─── المرحلة 5: BREAKOUT ───
+    # المرحلة 5: BREAKOUT
     breakout_passed = []
     breakout_rejected = []
 
@@ -1044,7 +1038,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
         "pass_rate": round(len(breakout_passed) / max(len(rsi_passed), 1) * 100, 1),
     }
 
-    # ─── المرحلة 6: BREAKOUT_CONFIRM ───
+    # المرحلة 6: BREAKOUT_CONFIRM
     confirm_passed = []
     confirm_rejected = []
 
@@ -1077,7 +1071,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
     if confirm_rejected:
         diagnostics["rejection_samples"]["breakout_confirm"] = confirm_rejected[:sample_size]
 
-    # ─── المرحلة 7: MAX_GAP ───
+    # المرحلة 7: MAX_GAP
     gap_passed = []
     gap_rejected = []
 
@@ -1109,10 +1103,10 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
         "max_allowed": max_gap,
     }
 
-    # ─── النتيجة النهائية ───
+    # النتيجة النهائية
     diagnostics["final_count"] = len(gap_passed)
 
-    # ─── الاقتراحات التلقائية ───
+    # الاقتراحات التلقائية
     rec = diagnostics["recommendations"]
     for stage_name, stage_data in diagnostics["stages"].items():
         if stage_name == "geometry":
@@ -1124,18 +1118,18 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
         if before > 0 and pass_rate < 20:
             rec.append({
                 "filter": stage_name,
-                "severity": "🔴 حرج",
+                "severity": "حرج",
                 "pass_rate": pass_rate,
                 "rejected": rejected,
-                "message": f"الفلتر '{stage_name}' يرفض {100 - pass_rate:.0f}% — صارم جداً",
+                "message": f"الفلتر '{stage_name}' يرفض {100 - pass_rate:.0f}% - صارم جداً",
             })
         elif before > 0 and pass_rate < 50:
             rec.append({
                 "filter": stage_name,
-                "severity": "🟡 متوسط",
+                "severity": "متوسط",
                 "pass_rate": pass_rate,
                 "rejected": rejected,
-                "message": f"الفلتر '{stage_name}' يرفض {100 - pass_rate:.0f}% — يستحق المراجعة",
+                "message": f"الفلتر '{stage_name}' يرفض {100 - pass_rate:.0f}% - يستحق المراجعة",
             })
 
     return diagnostics
@@ -1217,4 +1211,4 @@ if __name__ == "__main__":
     print("Functions:")
     print("  - run_full_analysis(df, interval, symbol)")
     print("  - backtest_strategy(df, interval, symbol)")
-    print("  - diagnose_filters(df, interval, symbol)  <-- جديد")
+    print("  - diagnose_filters(df, interval, symbol)")
