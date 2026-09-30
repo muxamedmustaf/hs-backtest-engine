@@ -17,15 +17,29 @@ CONFIG = {
     "HEAD_PROPORTION_MIN_RATIO": 0.25,
     "NECKLINE_DIFF_MAX_RATIO": 0.25,
     "LIVE_MAX_BREAKOUT_CANDLES": 30,
+
+    # RSI
     "RSI_MIN_BEARISH": 30.0,
     "RSI_MAX_BEARISH": 75.0,
     "RSI_MIN_BULLISH": 25.0,
     "RSI_MAX_BULLISH": 70.0,
+
+    # EMA
     "EMA_FAST_SPAN": 50,
     "EMA_SLOW_SPAN": 200,
+
+    # ✅ الاتجاه الصارم
+    "REQUIRE_STRICT_TREND": True,
+
+    # ✅ قوة الكسر
+    "BREAKOUT_MIN_PCT": 0.001,
+
+    # ✅ الحجم (اختياري)
+    "REQUIRE_VOLUME_BREAKOUT": False,
+    "VOLUME_FACTOR": 1.2,
+    "VOLUME_MA_PERIOD": 20,
 }
 
-# إعدادات Time Stop
 TIMEOUT_STATISTICAL_FLOOR = 300
 TIMEOUT_DURATION_MULTIPLIER = 3
 
@@ -34,68 +48,36 @@ TIMEOUT_DURATION_MULTIPLIER = 3
 # [1.b] الحد الأقصى للمسافة H3 → نقطة الكسر
 # ==============================================================================
 def _get_max_gap(interval):
-    """
-    الحد الأقصى لعدد الشموع بين الكتف الأيمن (H3/L3) ونقطة الكسر.
-    الهدف: رفض الأنماط ذات النقطة الأخيرة البعيدة جداً.
-    """
-    gaps = {
+    return {
         "1m": 120, "2m": 90, "3m": 80, "4m": 70,
         "5m": 50, "10m": 40, "15m": 30, "30m": 25, "45m": 22,
         "1h": 20, "2h": 18, "3h": 17, "4h": 15, "6h": 13,
         "8h": 12, "12h": 11, "1d": 10, "2d": 8, "3d": 7,
         "1wk": 5, "1mo": 3,
-    }
-    return gaps.get(interval, 50)
+    }.get(interval, 50)
 
 
 # ==============================================================================
-# [1.c] 🆕 الحد الأقصى لحجم النمط (L0 → H3) — ما قبل الكسر
+# [1.c] الحد الأقصى لحجم النمط (L0 → H3)
 # ==============================================================================
 def _get_max_pattern_duration(interval):
-    """
-    الحد الأقصى لعدد شموع النمط كاملاً (L0 → H3) — ما قبل الكسر.
-    الهدف: رفض الأنماط الممتدة جداً (التي هي في الواقع أنماط إطار أعلى).
-
-    مثال (5m):
-    - H&S نموذجي على 5m = 100-150 شمعة (8-12 ساعة)
-    - 200 شمعة = ~17 ساعة (حد أقصى معقول)
-    - > 200 شمعة = النمط طويل جداً على 5m → مرفوض
-    """
     return {
-        "1m": 600,    # 10 ساعات
-        "2m": 400,    # ~13 ساعة
-        "3m": 320,    # 16 ساعة
-        "4m": 280,    # ~19 ساعة
-        "5m": 200,    # ~17 ساعة
-        "10m": 180,   # 30 ساعة
-        "15m": 150,   # ~37 ساعة
-        "30m": 120,   # ~2.5 يوم
-        "45m": 110,
-        "1h": 100,    # ~4 أيام
-        "2h": 90,     # ~7.5 يوم
-        "3h": 85,
-        "4h": 80,     # ~13 يوم
-        "6h": 75,
-        "8h": 70,
-        "12h": 65,
-        "1d": 60,     # ~2 شهر
-        "2d": 50,
-        "3d": 45,
-        "1wk": 30,
-        "1mo": 20,
+        "1m": 600, "2m": 400, "3m": 320, "4m": 280,
+        "5m": 200, "10m": 180, "15m": 150, "30m": 120, "45m": 110,
+        "1h": 100, "2h": 90, "3h": 85, "4h": 80, "6h": 75,
+        "8h": 70, "12h": 65, "1d": 60, "2d": 50, "3d": 45,
+        "1wk": 30, "1mo": 20,
     }.get(interval, 200)
 
 
 # ==============================================================================
-# [2] حساب المؤشرات الفنية
+# [2] حساب المؤشرات
 # ==============================================================================
 def calculate_indicators(df):
-    """حساب EMA50, EMA200, RSI, ATR, Dynamic_Swing"""
     df = df.copy()
-    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    df["EMA50"] = df["Close"].ewm(span=CONFIG["EMA_FAST_SPAN"], adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=CONFIG["EMA_SLOW_SPAN"], adjust=False).mean()
 
-    # RSI (Wilder's smoothing)
     delta = df["Close"].diff()
     gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
@@ -104,16 +86,25 @@ def calculate_indicators(df):
     df["RSI"] = 100 - (100 / (1 + rs))
     df["RSI"] = df["RSI"].fillna(50.0)
 
-    # ATR
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
     true_range = ranges.max(axis=1)
     df["ATR"] = true_range.rolling(14).mean()
-
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
+
+    # Volume (اختياري)
+    if "Volume" in df.columns:
+        vol_numeric = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df["Volume"] = vol_numeric
+        df["Volume_MA"] = vol_numeric.rolling(CONFIG["VOLUME_MA_PERIOD"]).mean().fillna(0.0)
+        df["Has_Valid_Volume"] = vol_numeric.std() > 0
+    else:
+        df["Volume"] = 0.0
+        df["Volume_MA"] = 0.0
+        df["Has_Valid_Volume"] = False
 
     return df
 
@@ -122,7 +113,6 @@ def calculate_indicators(df):
 # [3] ZigZag
 # ==============================================================================
 def calculate_zigzag(df, depth=12, backstep=6):
-    """تحديد قمم وقيعان ZigZag"""
     df = df.copy()
     df["Pivot_H"] = np.nan
     df["Pivot_L"] = np.nan
@@ -162,7 +152,6 @@ def calculate_zigzag(df, depth=12, backstep=6):
 # [4] تنقية النقاط الزمنية
 # ==============================================================================
 def get_chronological_pivots(df):
-    """تنقية وترتيب نقاط ZigZag زمنياً"""
     raw = []
 
     for pos, (idx, row) in enumerate(df.iterrows()):
@@ -225,21 +214,15 @@ def get_chronological_pivots(df):
 
 
 # ==============================================================================
-# [5] محاكاة نتيجة الصفقة — مع Time Stop
+# [5] محاكاة نتيجة الصفقة
 # ==============================================================================
 def simulate_trade_outcome(pattern, df):
-    """
-    محاكاة نتيجة الصفقة مع Time Stop مُبرَّر إحصائياً.
-    
-    Timeout = max(300, pattern_duration × 3)
-    """
     bias = pattern["bias"]
     entry = float(pattern["entry"])
     sl = float(pattern["sl"])
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
 
-    # حساب Pattern Duration
     nodes = pattern.get("nodes", [])
     if len(nodes) >= 6:
         first_idx = nodes[0][0]
@@ -259,16 +242,11 @@ def simulate_trade_outcome(pattern, df):
     )
 
     stats = {
-        "Result": "OPEN",
-        "Head Result": "OPEN",
-        "progress_ratio": 0.0,
-        "candles_to_exit": 0,
-        "exit_idx": None,
-        "exit_price": None,
-        "Entry Date": None,
-        "Exit Date": None,
-        "Max Reach %": 0.0,
-        "SL Safety %": 0.0,
+        "Result": "OPEN", "Head Result": "OPEN",
+        "progress_ratio": 0.0, "candles_to_exit": 0,
+        "exit_idx": None, "exit_price": None,
+        "Entry Date": None, "Exit Date": None,
+        "Max Reach %": 0.0, "SL Safety %": 0.0,
         "Pattern Duration": pattern_duration,
         "Timeout Used": TIMEOUT_CANDLES,
     }
@@ -382,32 +360,109 @@ class PatternValidatorPipeline:
         return True
 
     def invalidation_filter(self, p):
-        """⚠️ معطّل مؤقتاً لاختبار الانحياز"""
         return True
 
-    def indicator_filter(self, p):
-        idx_h3 = p[5]["idx"]
-        if idx_h3 not in self.df.index:
+    # ✅ الشرط الجديد: Price > EMA50 > EMA200 أو العكس
+    def strict_trend_filter(self, p):
+        """
+        H&S الهابط: Price < EMA50 < EMA200 عند H3
+        Inverse H&S: Price > EMA50 > EMA200 عند L3
+        """
+        if not CONFIG.get("REQUIRE_STRICT_TREND", True):
+            return True
+
+        idx_end = p[5]["idx"]
+        if idx_end not in self.df.index:
             return False
-        rsi_val = float(self.df.loc[idx_h3, "RSI"])
-        return CONFIG["RSI_MIN_BEARISH"] <= rsi_val <= CONFIG["RSI_MAX_BEARISH"]
+
+        row = self.df.loc[idx_end]
+        ema50 = row.get("EMA50", None)
+        ema200 = row.get("EMA200", None)
+        price = row.get("Close", None)
+
+        if pd.isna(ema50) or pd.isna(ema200) or pd.isna(price):
+            return False
+
+        ema50 = float(ema50)
+        ema200 = float(ema200)
+        price = float(price)
+
+        is_bearish = (p[3]["type"] == "H")
+
+        if is_bearish:
+            # H&S الهابط: Price < EMA50 < EMA200
+            return price < ema50 < ema200
+        else:
+            # Inverse H&S: Price > EMA50 > EMA200
+            return price > ema50 > ema200
+
+    def indicator_filter(self, p):
+        idx_end = p[5]["idx"]
+        if idx_end not in self.df.index:
+            return False
+        rsi_val = self.df.loc[idx_end, "RSI"]
+        if pd.isna(rsi_val):
+            return False
+        rsi_val = float(rsi_val)
+
+        is_bearish = (p[3]["type"] == "H")
+        if is_bearish:
+            return CONFIG["RSI_MIN_BEARISH"] <= rsi_val <= CONFIG["RSI_MAX_BEARISH"]
+        else:
+            return CONFIG["RSI_MIN_BULLISH"] <= rsi_val <= CONFIG["RSI_MAX_BULLISH"]
 
     def breakout_filter(self, p):
         idx_h3 = p[5]["idx"]
         l1, l2 = p[2]["val"], p[4]["val"]
         neckline = (l1 + l2) / 2.0
 
+        is_bearish = (p[3]["type"] == "H")
+
         post_h3 = self.df.loc[idx_h3:]
-        breakout = post_h3[post_h3["Close"] < neckline]
+        if is_bearish:
+            breakout = post_h3[post_h3["Close"] < neckline]
+        else:
+            breakout = post_h3[post_h3["Close"] > neckline]
 
         if breakout.empty:
             return None
         return breakout.index[0], float(breakout["Close"].iloc[0])
 
+    def breakout_confirm_filter(self, p, breakout_price):
+        l1, l2 = p[2]["val"], p[4]["val"]
+        neckline = (l1 + l2) / 2.0
+        is_bearish = (p[3]["type"] == "H")
+        min_pct = CONFIG.get("BREAKOUT_MIN_PCT", 0.001)
+
+        if is_bearish:
+            return breakout_price <= neckline * (1 - min_pct)
+        else:
+            return breakout_price >= neckline * (1 + min_pct)
+
+    def volume_filter(self, breakout_idx):
+        if not CONFIG.get("REQUIRE_VOLUME_BREAKOUT", False):
+            return True
+
+        if breakout_idx not in self.df.index:
+            return False
+
+        row = self.df.loc[breakout_idx]
+        vol = float(row.get("Volume", 0))
+        vol_ma = float(row.get("Volume_MA", 0))
+
+        if vol == 0 or vol_ma == 0:
+            return True
+
+        factor = CONFIG.get("VOLUME_FACTOR", 1.2)
+        return vol >= vol_ma * factor
+
     def run(self, p):
         if not self.time_filter(p):
             return False, None, None
         if not self.invalidation_filter(p):
+            return False, None, None
+        # ✅ الاتجاه الصارم
+        if not self.strict_trend_filter(p):
             return False, None, None
         if not self.indicator_filter(p):
             return False, None, None
@@ -416,21 +471,22 @@ class PatternValidatorPipeline:
         if result is None:
             return False, None, None
 
-        return True, result[0], result[1]
+        breakout_idx, breakout_price = result
+
+        if not self.breakout_confirm_filter(p, breakout_price):
+            return False, None, None
+
+        if not self.volume_filter(breakout_idx):
+            return False, None, None
+
+        return True, breakout_idx, breakout_price
 
 
 # ==============================================================================
-# [7] كشف النمط الهابط — 🆕 يقبل max_pattern_duration
+# [7] كشف H&S الهابط
 # ==============================================================================
 def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
                                    max_gap=50, max_pattern_duration=200):
-    """
-    كشف نمط الرأس والكتفين الهابط.
-    
-    Args:
-        max_gap: أقصى عدد شموع بين H3 ونقطة الكسر
-        max_pattern_duration: أقصى عدد شموع للنمط (L0 → H3)
-    """
     patterns = []
     if len(pivots) < 6:
         return patterns
@@ -464,12 +520,11 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
         if abs(l1 - l2) > head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]:
             continue
 
-        # 🆕 فحص حجم النمط (L0 → H3) — قبل كل شيء
         l0_pos = p[0]["pos"]
         h3_pos = p[5]["pos"]
         pattern_size = h3_pos - l0_pos
         if pattern_size > max_pattern_duration:
-            continue   # النمط ممتد جداً
+            continue
 
         passed, end_idx, end_val = validator.run(p)
         if not passed:
@@ -480,7 +535,6 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
 
         end_pos = df.index.get_loc(end_idx)
 
-        # فحص المسافة H3 → الكسر
         if (end_pos - h3_pos) > max_gap:
             continue
 
@@ -524,7 +578,7 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Head and Shoulders",
-            "Entry Conditions": "Breakout + RSI + Head Structure",
+            "Entry Conditions": "Strict Trend (Price<EMA50<EMA200) + RSI + Breakout ≥0.1%",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -535,22 +589,16 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
 
 
 # ==============================================================================
-# [8] كشف النمط الصاعد — 🆕 يقبل max_pattern_duration
+# [8] كشف Inverse H&S الصاعد
 # ==============================================================================
 def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
                                    max_gap=50, max_pattern_duration=200):
-    """
-    كشف نمط الرأس والكتفين المعكوس (صاعد).
-    
-    Args:
-        max_gap: أقصى عدد شموع بين L3 ونقطة الكسر
-        max_pattern_duration: أقصى عدد شموع للنمط (H0 → L3)
-    """
     patterns = []
     if len(pivots) < 6:
         return patterns
 
     total_candles = len(df)
+    validator = PatternValidatorPipeline(df)
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -583,38 +631,26 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
                for j in range(len(positions) - 1)):
             continue
 
-        # 🆕 فحص حجم النمط (H0 → L3) — قبل كل شيء
         h0_pos = p[0]["pos"]
         l3_pos = p[5]["pos"]
         pattern_size = l3_pos - h0_pos
         if pattern_size > max_pattern_duration:
-            continue   # النمط ممتد جداً
+            continue
 
         idx_l2 = p[3]["idx"]
         post_head = df.loc[idx_l2:]
         if not post_head.empty and post_head["Low"].min() < l2:
             continue
 
-        idx_l3 = p[5]["idx"]
-        if idx_l3 not in df.index:
-            continue
-        rsi_val = float(df.loc[idx_l3, "RSI"])
-        if not (CONFIG["RSI_MIN_BULLISH"] <= rsi_val <= CONFIG["RSI_MAX_BULLISH"]):
+        passed, end_idx, end_val = validator.run(p)
+        if not passed:
             continue
 
-        h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
-        neckline_avg = (h1 + h2) / 2.0
-
-        post_l3 = df.loc[idx_l3:]
-        breakout = post_l3[post_l3["Close"] > neckline_avg]
-        if breakout.empty:
+        if end_idx not in df.index:
             continue
 
-        end_idx = breakout.index[0]
-        end_val = float(breakout["Close"].iloc[0])
         end_pos = df.index.get_loc(end_idx)
 
-        # فحص المسافة L3 → الكسر
         if (end_pos - l3_pos) > max_gap:
             continue
 
@@ -622,7 +658,10 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
             if (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
                 continue
 
+        h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
+        neckline_avg = (h1 + h2) / 2.0
         actual_head_length = neckline_avg - l2
+
         entry = neckline_avg
         sl = l2
         tp = entry + actual_head_length
@@ -655,7 +694,7 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Inverse Head and Shoulders",
-            "Entry Conditions": "Breakout + RSI + Inverse Head Structure",
+            "Entry Conditions": "Strict Trend (Price>EMA50>EMA200) + RSI + Breakout ≥0.1%",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -666,11 +705,10 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
 
 
 # ==============================================================================
-# [9] دالة الكشف الموحدة — 🆕 تمرر max_pattern_duration
+# [9] دالة الكشف الموحدة
 # ==============================================================================
 def detect_all_head_shoulders(pivots, df, is_backtest=False,
                                max_gap=50, max_pattern_duration=200):
-    """كشف كلا الاتجاهين وترتيبهم زمنياً"""
     bearish = detect_head_shoulders_bearish(
         pivots, df, is_backtest, max_gap, max_pattern_duration
     )
@@ -684,27 +722,20 @@ def detect_all_head_shoulders(pivots, df, is_backtest=False,
 
 
 # ==============================================================================
-# [10] التحليل الحي — 🆕 يحسب max_pattern_duration
+# [10] التحليل الحي
 # ==============================================================================
 def run_full_analysis(df, interval="1h", symbol=None):
-    """التحليل الحي - متوافق مع backtest.py"""
     default_empty = {
-        "df": df,
-        "symbol": symbol or "N/A",
-        "signal": "WAITING",
-        "pattern": "NO PATTERN DETECTED",
-        "bias": "Neutral",
-        "entry": None, "sl": None, "tp": None,
-        "nodes": [], "pattern_nodes": [],
-        "all_patterns": [],
-        "error": None,
+        "df": df, "symbol": symbol or "N/A",
+        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
     }
 
     if df is None or df.empty:
         return default_empty
 
     df = df.copy()
-
     required = ["Open", "High", "Low", "Close"]
     for col in required:
         if col not in df.columns:
@@ -713,9 +744,8 @@ def run_full_analysis(df, interval="1h", symbol=None):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=required)
-
     if len(df) < 30:
-        default_empty["error"] = f"Insufficient data: {len(df)} candles"
+        default_empty["error"] = f"Insufficient data: {len(df)}"
         return default_empty
 
     df_active = df.tail(500).copy()
@@ -739,17 +769,12 @@ def run_full_analysis(df, interval="1h", symbol=None):
     signal = "STRONG BUY" if latest["bias"] == "Bullish" else "STRONG SELL"
 
     return {
-        "df": df_active,
-        "symbol": symbol or "N/A",
-        "signal": signal,
-        "pattern": latest["pattern"],
+        "df": df_active, "symbol": symbol or "N/A",
+        "signal": signal, "pattern": latest["pattern"],
         "bias": latest["bias"],
-        "entry": latest["entry"],
-        "entry_trigger": latest["entry_trigger"],
-        "sl": latest["sl"],
-        "tp": latest["tp"],
-        "nodes": latest["nodes"],
-        "pattern_nodes": latest["nodes"],
+        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
+        "sl": latest["sl"], "tp": latest["tp"],
+        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
         "neckline_nodes": latest.get("neckline_nodes", []),
         "target_nodes": latest.get("target_nodes", []),
         "all_patterns": all_patterns,
@@ -762,15 +787,13 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
 
 # ==============================================================================
-# [11] الباكتيست — 🆕 يحسب max_pattern_duration
+# [11] الباكتيست
 # ==============================================================================
 def backtest_strategy(df, interval="1h", symbol=None):
-    """الباكتيست الرجعي - متوافق مع backtest.py"""
     if df is None or df.empty or len(df) < 30:
         return []
 
     df = df.copy()
-
     required = ["Open", "High", "Low", "Close"]
     for col in required:
         if col not in df.columns:
@@ -778,7 +801,6 @@ def backtest_strategy(df, interval="1h", symbol=None):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=required)
-
     if len(df) < 30:
         return []
 
@@ -826,11 +848,15 @@ def backtest_strategy(df, interval="1h", symbol=None):
 
 
 # ==============================================================================
-# [12] منفذ الاختبار المباشر
+# [12] منفذ الاختبار
 # ==============================================================================
 if __name__ == "__main__":
     print("ENGINE.PY - Head & Shoulders Detector")
     print("Filters:")
     print("  1. max_gap (H3 → Breakout)")
-    print("  2. Time Stop = max(300, pattern_duration × 3)")
-    print("  3. max_pattern_duration (L0 → H3) ← NEW")
+    print("  2. max_pattern_duration (L0 → H3)")
+    print("  3. Time Stop = max(300, pattern_duration × 3)")
+    print("  4. Strict Trend: Price vs EMA50 vs EMA200")
+    print("  5. RSI (30-75 / 25-70)")
+    print("  6. Breakout confirm ≥ 0.1%")
+    print("
