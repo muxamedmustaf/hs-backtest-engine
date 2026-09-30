@@ -293,14 +293,8 @@ class PatternValidatorPipeline:
         return True
 
     def invalidation_filter(self, p):
-        """الرأس يجب أن يكون أعلى قمة في النمط (لا توجد قمة أعلى منه)"""
-        h2 = p[3]["val"]
-        idx_h2 = p[3]["idx"]
-
-        # ⚠️ معطّل مؤقتاً لاختبار الانحياز
-return True
-            return False
-        return True
+    """⚠️ معطّل مؤقتاً لاختبار الانحياز"""
+    return True
 
     def indicator_filter(self, p):
         """RSI في نطاق معقول عند الكتف الأيمن"""
