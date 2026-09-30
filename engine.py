@@ -10,8 +10,8 @@ import numpy as np
 # [1] الإعدادات المركزية
 # ==============================================================================
 CONFIG = {
-    "ZIGZAG_DEPTH": 12,
-    "ZIGZAG_BACKSTEP": 6,
+    "ZIGZAG_DEPTH": 8,
+    "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 3,
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "HEAD_PROPORTION_MIN_RATIO": 0.25,
