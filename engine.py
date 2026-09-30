@@ -29,7 +29,7 @@ CONFIG = {
     "EMA_SLOW_SPAN": 200,
 
     # ✅ الاتجاه الصارم
-    "REQUIRE_STRICT_TREND": True,
+    "REQUIRE_STRICT_TREND": False,
 
     # ✅ قوة الكسر
     "BREAKOUT_MIN_PCT": 0.001,
