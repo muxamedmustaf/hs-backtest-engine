@@ -294,7 +294,7 @@ class PatternValidatorPipeline:
 
     def invalidation_filter(self, p):
     """⚠️ معطّل مؤقتاً لاختبار الانحياز"""
-    return True
+            return True
 
     def indicator_filter(self, p):
         """RSI في نطاق معقول عند الكتف الأيمن"""
