@@ -194,25 +194,23 @@ def simulate_trade_outcome(pattern, df):
     if len(post_df) <= 1:
         return stats
 
-    # تاريخ الدخول
     stats["Entry Date"] = str(end_idx)
 
     total_tp_dist = abs(tp - entry)
     total_sl_dist = abs(sl - entry)
-    max_favorable = 0.0   # أقصى وصول للهدف
-    max_adverse = 0.0     # أقصى ابتعاد عن SL
+    max_favorable = 0.0
+    max_adverse = 0.0
 
     for candle_count, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
         high = float(row["High"])
         low = float(row["Low"])
 
-        # تتبع Max Reach و SL Safety
         if bias == "Bearish":
-            favorable = max(0.0, entry - low)   # انخفاض = ربح
-            adverse = max(0.0, high - entry)    # ارتفاع = خطر
+            favorable = max(0.0, entry - low)
+            adverse = max(0.0, high - entry)
         else:
-            favorable = max(0.0, high - entry)  # ارتفاع = ربح
-            adverse = max(0.0, entry - low)     # انخفاض = خطر
+            favorable = max(0.0, high - entry)
+            adverse = max(0.0, entry - low)
 
         if total_tp_dist > 0:
             max_favorable = max(max_favorable, favorable / total_tp_dist * 100)
@@ -226,7 +224,6 @@ def simulate_trade_outcome(pattern, df):
             hit_sl = low <= sl
             hit_tp = high >= tp
 
-        # أولوية SL (تحفظي)
         if hit_sl and hit_tp:
             stats["Result"] = "LOSS"
             stats["Head Result"] = "LOSS"
@@ -252,14 +249,12 @@ def simulate_trade_outcome(pattern, df):
             stats["Exit Date"] = str(idx)
             break
     else:
-        # لم يضرب أي منهما
         stats["candles_to_exit"] = max(0, len(post_df) - 1)
         stats["Exit Date"] = str(df.index[-1])
 
     stats["Max Reach %"] = round(max_favorable, 1)
     stats["SL Safety %"] = round(100 - max_adverse, 1) if max_adverse <= 100 else 0.0
 
-    # progress_ratio
     if stats["Result"] == "WIN":
         stats["progress_ratio"] = 100.0
     elif stats["Result"] == "LOSS":
@@ -293,8 +288,8 @@ class PatternValidatorPipeline:
         return True
 
     def invalidation_filter(self, p):
-    """⚠️ معطّل مؤقتاً لاختبار الانحياز"""
-            return True
+        """⚠️ معطّل مؤقتاً لاختبار الانحياز"""
+        return True
 
     def indicator_filter(self, p):
         """RSI في نطاق معقول عند الكتف الأيمن"""
@@ -352,7 +347,6 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False):
 
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
 
-        # شروط أساسية
         if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
             continue
 
@@ -361,20 +355,16 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False):
         if head_height <= 0:
             continue
 
-        # تناسق الكتفين
         if abs(h1 - h3) > head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]:
             continue
 
-        # بروز الرأس
         max_shoulder = max(h1, h3)
         if (h2 - max_shoulder) < head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]:
             continue
 
-        # استواء خط العنق
         if abs(l1 - l2) > head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]:
             continue
 
-        # الفلاتر
         passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
@@ -384,19 +374,17 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False):
 
         end_pos = df.index.get_loc(end_idx)
 
-        # في الوضع الحي: نقبل فقط الكسر الحديث
         if not is_backtest:
             if (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
                 continue
 
-        # الحسابات
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         neckline_avg = (l1 + l2) / 2.0
         actual_head_length = h2 - neckline_avg
 
         entry = neckline_avg
-        sl = h2                                    # SL عند قمة الرأس
-        tp = entry - actual_head_length            # TP بمسافة طول الرأس
+        sl = h2
+        tp = entry - actual_head_length
 
         nodes = [(x["idx"], x["val"]) for x in p]
         nodes.append((end_idx, float(end_val)))
@@ -426,14 +414,11 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False):
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Head and Shoulders",
-            "pattern": "Head and Shoulders",
             "Entry Conditions": "Breakout + RSI + Head Structure",
         }
 
-        # محاكاة النتيجة
         sim = simulate_trade_outcome(pattern, df)
         pattern.update(sim)
-
         patterns.append(pattern)
 
     return patterns
@@ -458,7 +443,6 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False):
 
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
 
-        # شروط أساسية
         if l2 >= l1 or l2 >= l3 or l1 >= h1 or l3 >= h2:
             continue
 
@@ -467,32 +451,26 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False):
         if head_depth <= 0:
             continue
 
-        # تناسق الكتفين
         if abs(l1 - l3) > head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]:
             continue
 
-        # بروز الرأس
         min_shoulder = min(l1, l3)
         if (min_shoulder - l2) < head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]:
             continue
 
-        # استواء خط العنق
         if abs(h1 - h2) > head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]:
             continue
 
-        # فحص زمني
         positions = [x["pos"] for x in p]
         if any(positions[j+1] - positions[j] < CONFIG["MIN_WAVE_CANDLES"]
                for j in range(len(positions) - 1)):
             continue
 
-        # invalidation: الرأس يجب أن يكون أدنى قاع
         idx_l2 = p[3]["idx"]
         post_head = df.loc[idx_l2:]
         if not post_head.empty and post_head["Low"].min() < l2:
             continue
 
-        # RSI
         idx_l3 = p[5]["idx"]
         if idx_l3 not in df.index:
             continue
@@ -500,7 +478,6 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False):
         if not (CONFIG["RSI_MIN_BULLISH"] <= rsi_val <= CONFIG["RSI_MAX_BULLISH"]):
             continue
 
-        # كسر خط العنق لأعلى
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         neckline_avg = (h1 + h2) / 2.0
 
@@ -517,11 +494,10 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False):
             if (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
                 continue
 
-        # الحسابات - الوقف والهدف حسب طول الرأس
         actual_head_length = neckline_avg - l2
         entry = neckline_avg
-        sl = l2                                    # SL عند قاع الرأس
-        tp = entry + actual_head_length            # TP بمسافة طول الرأس
+        sl = l2
+        tp = entry + actual_head_length
 
         nodes = [(x["idx"], x["val"]) for x in p]
         nodes.append((end_idx, end_val))
@@ -551,13 +527,11 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False):
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Inverse Head and Shoulders",
-            "pattern": "Inverse Head and Shoulders",
             "Entry Conditions": "Breakout + RSI + Inverse Head Structure",
         }
 
         sim = simulate_trade_outcome(pattern, df)
         pattern.update(sim)
-
         patterns.append(pattern)
 
     return patterns
@@ -598,7 +572,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
     df = df.copy()
 
-    # تأكد من الأعمدة
     required = ["Open", "High", "Low", "Close"]
     for col in required:
         if col not in df.columns:
@@ -612,7 +585,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
         default_empty["error"] = f"Insufficient data: {len(df)} candles"
         return default_empty
 
-    # نافذة التحليل الحي - آخر 500 شمعة
     df_active = df.tail(500).copy()
     df_active = calculate_indicators(df_active)
     df_active = calculate_zigzag(df_active, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
@@ -671,14 +643,12 @@ def backtest_strategy(df, interval="1h", symbol=None):
     if len(df) < 30:
         return []
 
-    # الباكتيست: نستخدم كل البيانات
     df = calculate_indicators(df)
     df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
 
     pivots = get_chronological_pivots(df)
     all_patterns = detect_all_head_shoulders(pivots, df, is_backtest=True)
 
-    # تحويل إلى قائمة صفقات متوافقة مع الواجهة
     trades = []
     for p in all_patterns:
         trade = {
