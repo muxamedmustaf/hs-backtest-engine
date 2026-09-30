@@ -25,43 +25,65 @@ CONFIG = {
     "EMA_SLOW_SPAN": 200,
 }
 
-# ✅ إعدادات Time Stop المُبرَّرة إحصائياً
-TIMEOUT_STATISTICAL_FLOOR = 300   # 95th percentile of WIN candles_to_exit
-TIMEOUT_DURATION_MULTIPLIER = 3   # هامش على Median ratio (2.5)
+# إعدادات Time Stop
+TIMEOUT_STATISTICAL_FLOOR = 300
+TIMEOUT_DURATION_MULTIPLIER = 3
 
 
 # ==============================================================================
-# [1.b] دالة: الحد الأقصى للمسافة الزمنية بين الكتف الأيمن والكسر
+# [1.b] الحد الأقصى للمسافة H3 → نقطة الكسر
 # ==============================================================================
 def _get_max_gap(interval):
     """
-    إرجاع الحد الأقصى لعدد الشموع بين الكتف الأيمن (H3/L3) ونقطة الكسر.
+    الحد الأقصى لعدد الشموع بين الكتف الأيمن (H3/L3) ونقطة الكسر.
     الهدف: رفض الأنماط ذات النقطة الأخيرة البعيدة جداً.
     """
     gaps = {
-        "1m": 120,   # 2 ساعة
-        "2m": 90,    # 3 ساعات
-        "3m": 80,
-        "4m": 70,
-        "5m": 50,    # ~4 ساعات
-        "10m": 40,
-        "15m": 30,   # ~7.5 ساعة
-        "30m": 25,   # ~12 ساعة
-        "45m": 22,
-        "1h": 20,    # ~20 ساعة
-        "2h": 18,
-        "3h": 17,
-        "4h": 15,    # ~2.5 يوم
-        "6h": 13,
-        "8h": 12,
-        "12h": 11,
-        "1d": 10,    # ~10 أيام
-        "2d": 8,
-        "3d": 7,
-        "1wk": 5,
-        "1mo": 3,
+        "1m": 120, "2m": 90, "3m": 80, "4m": 70,
+        "5m": 50, "10m": 40, "15m": 30, "30m": 25, "45m": 22,
+        "1h": 20, "2h": 18, "3h": 17, "4h": 15, "6h": 13,
+        "8h": 12, "12h": 11, "1d": 10, "2d": 8, "3d": 7,
+        "1wk": 5, "1mo": 3,
     }
     return gaps.get(interval, 50)
+
+
+# ==============================================================================
+# [1.c] 🆕 الحد الأقصى لحجم النمط (L0 → H3) — ما قبل الكسر
+# ==============================================================================
+def _get_max_pattern_duration(interval):
+    """
+    الحد الأقصى لعدد شموع النمط كاملاً (L0 → H3) — ما قبل الكسر.
+    الهدف: رفض الأنماط الممتدة جداً (التي هي في الواقع أنماط إطار أعلى).
+
+    مثال (5m):
+    - H&S نموذجي على 5m = 100-150 شمعة (8-12 ساعة)
+    - 200 شمعة = ~17 ساعة (حد أقصى معقول)
+    - > 200 شمعة = النمط طويل جداً على 5m → مرفوض
+    """
+    return {
+        "1m": 600,    # 10 ساعات
+        "2m": 400,    # ~13 ساعة
+        "3m": 320,    # 16 ساعة
+        "4m": 280,    # ~19 ساعة
+        "5m": 200,    # ~17 ساعة
+        "10m": 180,   # 30 ساعة
+        "15m": 150,   # ~37 ساعة
+        "30m": 120,   # ~2.5 يوم
+        "45m": 110,
+        "1h": 100,    # ~4 أيام
+        "2h": 90,     # ~7.5 يوم
+        "3h": 85,
+        "4h": 80,     # ~13 يوم
+        "6h": 75,
+        "8h": 70,
+        "12h": 65,
+        "1d": 60,     # ~2 شهر
+        "2d": 50,
+        "3d": 45,
+        "1wk": 30,
+        "1mo": 20,
+    }.get(interval, 200)
 
 
 # ==============================================================================
@@ -203,15 +225,13 @@ def get_chronological_pivots(df):
 
 
 # ==============================================================================
-# [5] محاكاة نتيجة الصفقة — ✅ معدّل: Time Stop مُبرَّر
+# [5] محاكاة نتيجة الصفقة — مع Time Stop
 # ==============================================================================
 def simulate_trade_outcome(pattern, df):
     """
     محاكاة نتيجة الصفقة مع Time Stop مُبرَّر إحصائياً.
     
     Timeout = max(300, pattern_duration × 3)
-    - 300 = 95th percentile من WIN (من تحليل 135 صفقة)
-    - pattern_duration × 3 = مرونة للنماذج الكبيرة
     """
     bias = pattern["bias"]
     entry = float(pattern["entry"])
@@ -219,11 +239,11 @@ def simulate_trade_outcome(pattern, df):
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
 
-    # ✅ حساب Pattern Duration
+    # حساب Pattern Duration
     nodes = pattern.get("nodes", [])
     if len(nodes) >= 6:
         first_idx = nodes[0][0]
-        h3_idx = nodes[-2][0]  # قبل نقطة الكسر
+        h3_idx = nodes[-2][0]
         try:
             first_pos = df.index.get_loc(first_idx)
             h3_pos = df.index.get_loc(h3_idx)
@@ -231,9 +251,8 @@ def simulate_trade_outcome(pattern, df):
         except KeyError:
             pattern_duration = 50
     else:
-        pattern_duration = 50  # fallback
+        pattern_duration = 50
 
-    # ✅ حساب Timeout
     TIMEOUT_CANDLES = max(
         TIMEOUT_STATISTICAL_FLOOR,
         pattern_duration * TIMEOUT_DURATION_MULTIPLIER
@@ -317,7 +336,6 @@ def simulate_trade_outcome(pattern, df):
             stats["Exit Date"] = str(idx)
             break
 
-        # ✅ Time Stop الإجباري
         if candle_count >= TIMEOUT_CANDLES:
             stats["Result"] = "TIMEOUT"
             stats["Head Result"] = "TIMEOUT"
@@ -368,7 +386,6 @@ class PatternValidatorPipeline:
         return True
 
     def indicator_filter(self, p):
-        """RSI في نطاق معقول عند الكتف الأيمن"""
         idx_h3 = p[5]["idx"]
         if idx_h3 not in self.df.index:
             return False
@@ -376,7 +393,6 @@ class PatternValidatorPipeline:
         return CONFIG["RSI_MIN_BEARISH"] <= rsi_val <= CONFIG["RSI_MAX_BEARISH"]
 
     def breakout_filter(self, p):
-        """البحث عن كسر خط العنق"""
         idx_h3 = p[5]["idx"]
         l1, l2 = p[2]["val"], p[4]["val"]
         neckline = (l1 + l2) / 2.0
@@ -404,10 +420,17 @@ class PatternValidatorPipeline:
 
 
 # ==============================================================================
-# [7] كشف النمط الهابط (H&S)
+# [7] كشف النمط الهابط — 🆕 يقبل max_pattern_duration
 # ==============================================================================
-def detect_head_shoulders_bearish(pivots, df, is_backtest=False, max_gap=50):
-    """كشف نمط الرأس والكتفين الهابط"""
+def detect_head_shoulders_bearish(pivots, df, is_backtest=False,
+                                   max_gap=50, max_pattern_duration=200):
+    """
+    كشف نمط الرأس والكتفين الهابط.
+    
+    Args:
+        max_gap: أقصى عدد شموع بين H3 ونقطة الكسر
+        max_pattern_duration: أقصى عدد شموع للنمط (L0 → H3)
+    """
     patterns = []
     if len(pivots) < 6:
         return patterns
@@ -441,6 +464,13 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False, max_gap=50):
         if abs(l1 - l2) > head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]:
             continue
 
+        # 🆕 فحص حجم النمط (L0 → H3) — قبل كل شيء
+        l0_pos = p[0]["pos"]
+        h3_pos = p[5]["pos"]
+        pattern_size = h3_pos - l0_pos
+        if pattern_size > max_pattern_duration:
+            continue   # النمط ممتد جداً
+
         passed, end_idx, end_val = validator.run(p)
         if not passed:
             continue
@@ -450,7 +480,7 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False, max_gap=50):
 
         end_pos = df.index.get_loc(end_idx)
 
-        h3_pos = p[5]["pos"]
+        # فحص المسافة H3 → الكسر
         if (end_pos - h3_pos) > max_gap:
             continue
 
@@ -505,10 +535,17 @@ def detect_head_shoulders_bearish(pivots, df, is_backtest=False, max_gap=50):
 
 
 # ==============================================================================
-# [8] كشف النمط الصاعد (Inverse H&S)
+# [8] كشف النمط الصاعد — 🆕 يقبل max_pattern_duration
 # ==============================================================================
-def detect_head_shoulders_bullish(pivots, df, is_backtest=False, max_gap=50):
-    """كشف نمط الرأس والكتفين المعكوس (صاعد)"""
+def detect_head_shoulders_bullish(pivots, df, is_backtest=False,
+                                   max_gap=50, max_pattern_duration=200):
+    """
+    كشف نمط الرأس والكتفين المعكوس (صاعد).
+    
+    Args:
+        max_gap: أقصى عدد شموع بين L3 ونقطة الكسر
+        max_pattern_duration: أقصى عدد شموع للنمط (H0 → L3)
+    """
     patterns = []
     if len(pivots) < 6:
         return patterns
@@ -546,6 +583,13 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False, max_gap=50):
                for j in range(len(positions) - 1)):
             continue
 
+        # 🆕 فحص حجم النمط (H0 → L3) — قبل كل شيء
+        h0_pos = p[0]["pos"]
+        l3_pos = p[5]["pos"]
+        pattern_size = l3_pos - h0_pos
+        if pattern_size > max_pattern_duration:
+            continue   # النمط ممتد جداً
+
         idx_l2 = p[3]["idx"]
         post_head = df.loc[idx_l2:]
         if not post_head.empty and post_head["Low"].min() < l2:
@@ -570,7 +614,7 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False, max_gap=50):
         end_val = float(breakout["Close"].iloc[0])
         end_pos = df.index.get_loc(end_idx)
 
-        l3_pos = p[5]["pos"]
+        # فحص المسافة L3 → الكسر
         if (end_pos - l3_pos) > max_gap:
             continue
 
@@ -622,12 +666,17 @@ def detect_head_shoulders_bullish(pivots, df, is_backtest=False, max_gap=50):
 
 
 # ==============================================================================
-# [9] دالة الكشف الموحدة
+# [9] دالة الكشف الموحدة — 🆕 تمرر max_pattern_duration
 # ==============================================================================
-def detect_all_head_shoulders(pivots, df, is_backtest=False, max_gap=50):
+def detect_all_head_shoulders(pivots, df, is_backtest=False,
+                               max_gap=50, max_pattern_duration=200):
     """كشف كلا الاتجاهين وترتيبهم زمنياً"""
-    bearish = detect_head_shoulders_bearish(pivots, df, is_backtest, max_gap)
-    bullish = detect_head_shoulders_bullish(pivots, df, is_backtest, max_gap)
+    bearish = detect_head_shoulders_bearish(
+        pivots, df, is_backtest, max_gap, max_pattern_duration
+    )
+    bullish = detect_head_shoulders_bullish(
+        pivots, df, is_backtest, max_gap, max_pattern_duration
+    )
 
     all_patterns = bearish + bullish
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
@@ -635,7 +684,7 @@ def detect_all_head_shoulders(pivots, df, is_backtest=False, max_gap=50):
 
 
 # ==============================================================================
-# [10] التحليل الحي (Live Analysis)
+# [10] التحليل الحي — 🆕 يحسب max_pattern_duration
 # ==============================================================================
 def run_full_analysis(df, interval="1h", symbol=None):
     """التحليل الحي - متوافق مع backtest.py"""
@@ -676,8 +725,10 @@ def run_full_analysis(df, interval="1h", symbol=None):
     pivots = get_chronological_pivots(df_active)
 
     max_gap = _get_max_gap(interval)
+    max_pattern_dur = _get_max_pattern_duration(interval)
     all_patterns = detect_all_head_shoulders(
-        pivots, df_active, is_backtest=False, max_gap=max_gap
+        pivots, df_active, is_backtest=False,
+        max_gap=max_gap, max_pattern_duration=max_pattern_dur
     )
 
     if not all_patterns:
@@ -711,7 +762,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
 
 # ==============================================================================
-# [11] الباكتيست الرجعي (Backtest) — ✅ مع حقول Time Stop الجديدة
+# [11] الباكتيست — 🆕 يحسب max_pattern_duration
 # ==============================================================================
 def backtest_strategy(df, interval="1h", symbol=None):
     """الباكتيست الرجعي - متوافق مع backtest.py"""
@@ -737,8 +788,10 @@ def backtest_strategy(df, interval="1h", symbol=None):
     pivots = get_chronological_pivots(df)
 
     max_gap = _get_max_gap(interval)
+    max_pattern_dur = _get_max_pattern_duration(interval)
     all_patterns = detect_all_head_shoulders(
-        pivots, df, is_backtest=True, max_gap=max_gap
+        pivots, df, is_backtest=True,
+        max_gap=max_gap, max_pattern_duration=max_pattern_dur
     )
 
     trades = []
@@ -764,7 +817,6 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "candles_to_exit": p.get("candles_to_exit", 0),
             "progress_ratio": p.get("progress_ratio", 0.0),
             "neckline_end_idx": p["neckline_end_idx"],
-            # ✅ حقول Time Stop الجديدة
             "Pattern Duration": p.get("Pattern Duration", 0),
             "Timeout Used": p.get("Timeout Used", 0),
         }
@@ -778,6 +830,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
 # ==============================================================================
 if __name__ == "__main__":
     print("ENGINE.PY - Head & Shoulders Detector")
-    print("Functions: run_full_analysis(), backtest_strategy()")
-    print("Filter 1: max_gap (H3→breakout) ENABLED")
-    print("Filter 2: Time Stop = max(300, pattern_duration × 3) ENABLED")
+    print("Filters:")
+    print("  1. max_gap (H3 → Breakout)")
+    print("  2. Time Stop = max(300, pattern_duration × 3)")
+    print("  3. max_pattern_duration (L0 → H3) ← NEW")
