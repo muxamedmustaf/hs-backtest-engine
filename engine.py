@@ -528,7 +528,7 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         neckline_avg = (l1 + l2) / 2.0
         actual_head_length = h2 - neckline_avg
 
-        entry = neckline_avg
+        entry = float(end_val)
         sl = h2
         tp = entry - actual_head_length
 
