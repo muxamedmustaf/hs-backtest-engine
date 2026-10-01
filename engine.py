@@ -582,7 +582,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
 
-                if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
+       if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
             continue
 
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
