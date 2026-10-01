@@ -353,30 +353,38 @@ class PatternValidatorPipeline:
         return True
 
     def strict_trend_filter(self, p):
-        if not CONFIG.get("REQUIRE_STRICT_TREND", True):
-            return True
+    """
+    فلتر الاتجاه — يفحص أن السعر أعلى من EMA50 و EMA200 معاً.
+    
+    لا يشترط ترتيب EMA50 > EMA200، لأن أنماط H&S (انعكاسية)
+    تحدث عند تحول الاتجاه، حيث قد يكون EMA50 لا يزال تحت EMA200.
+    """
+    if not CONFIG.get("REQUIRE_STRICT_TREND", True):
+        return True
 
-        idx_end = p[5]["idx"]
-        if idx_end not in self.df.index:
-            return False
+    idx_end = p[5]["idx"]
+    if idx_end not in self.df.index:
+        return False
 
-        row = self.df.loc[idx_end]
-        ema50 = row.get("EMA50", None)
-        ema200 = row.get("EMA200", None)
-        price = row.get("Close", None)
+    row = self.df.loc[idx_end]
+    ema50 = row.get("EMA50", None)
+    ema200 = row.get("EMA200", None)
+    price = row.get("Close", None)
 
-        if pd.isna(ema50) or pd.isna(ema200) or pd.isna(price):
-            return False
+    if pd.isna(ema50) or pd.isna(ema200) or pd.isna(price):
+        return False
 
-        ema50 = float(ema50)
-        ema200 = float(ema200)
-        price = float(price)
-        is_bearish = (p[3]["type"] == "H")
+    ema50 = float(ema50)
+    ema200 = float(ema200)
+    price = float(price)
+    is_bearish = (p[3]["type"] == "H")
 
-        if is_bearish:
-            return price < ema50 < ema200
-        else:
-            return price > ema50 > ema200
+    if is_bearish:
+        # H&S الهابط: السعر تحت كلا المتوسطين
+        return price < ema50 and price < ema200
+    else:
+        # Inverse H&S: السعر فوق كلا المتوسطين
+        return price > ema50 and price > ema200
 
     def invalidation_filter(self, p):
         return True
