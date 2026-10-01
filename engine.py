@@ -2,6 +2,7 @@
 """
 ENGINE.PY - Head & Shoulders Detector
 Merged: v4.6 pattern logic + strict filters + diagnostics + breakeven
+UPDATED: Realistic entry (end_val) + Equal Shoulders/Neckline + Correct RSI
 """
 import pandas as pd
 import numpy as np
@@ -10,14 +11,15 @@ CONFIG = {
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 3,
-    "SHOULDER_DIFF_MAX_RATIO": 0.50,
+    "SHOULDER_DIFF_MAX_RATIO": 0.10,   # ✅ تساوي الكتفين (10%)
     "HEAD_PROPORTION_MIN_RATIO": 0.15,
-    "NECKLINE_DIFF_MAX_RATIO": 0.40,
+    "NECKLINE_DIFF_MAX_RATIO": 0.10,   # ✅ تساوي قاعين العنق (10%)
     "LIVE_MAX_BREAKOUT_CANDLES": 10,
-    "RSI_MIN_BEARISH": 30.0,
-    "RSI_MAX_BEARISH": 75.0,
-    "RSI_MIN_BULLISH": 25.0,
-    "RSI_MAX_BULLISH": 70.0,
+    # ✅ شروط RSI المصححة
+    "RSI_MIN_BEARISH": 25.0,           # البيع: الحد الأدنى
+    "RSI_MAX_BEARISH": 50.0,           # البيع: الحد الأقصى
+    "RSI_MIN_BULLISH": 35.0,           # الشراء: الحد الأدنى
+    "RSI_MAX_BULLISH": 75.0,           # الشراء: الحد الأقصى
     "EMA_FAST_SPAN": 50,
     "EMA_SLOW_SPAN": 200,
     "REQUIRE_STRICT_TREND": True,
@@ -25,11 +27,9 @@ CONFIG = {
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
-    # ✅ إعدادات Break-even
-    "BREAKEVEN_ACTIVATION_PCT": 0.50,  # 50% من TP
+    "BREAKEVEN_ACTIVATION_PCT": 0.50,
 }
 
-# ✅ Time Stop مخفّض
 TIMEOUT_STATISTICAL_FLOOR = 200
 TIMEOUT_DURATION_MULTIPLIER = 3
 
@@ -213,7 +213,6 @@ def simulate_trade_outcome(pattern, df):
         pattern_duration * TIMEOUT_DURATION_MULTIPLIER
     )
 
-    # ✅ إعدادات Break-even
     BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.50)
     original_sl = sl
     breakeven_activated = False
@@ -261,11 +260,10 @@ def simulate_trade_outcome(pattern, df):
         if total_sl_dist > 0:
             max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
 
-        # ✅ فحص تنشيط Break-even
         if (not breakeven_activated) and total_tp_dist > 0:
             if bias == "Bearish":
                 if low <= entry - BE_ACTIVATION * total_tp_dist:
-                    sl = entry  # ← حرّك SL للدخول
+                    sl = entry
                     breakeven_activated = True
                     stats["Breakeven Activated"] = True
             else:
@@ -281,7 +279,6 @@ def simulate_trade_outcome(pattern, df):
             hit_sl = low <= sl
             hit_tp = high >= tp
 
-        # ✅ كشف BREAKEVEN exit
         if hit_sl:
             if breakeven_activated:
                 stats["Result"] = "BREAKEVEN"
@@ -492,6 +489,7 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         if head_height <= 0:
             continue
 
+        # ✅ شرط تساوي الكتفين (10%)
         if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
             continue
 
@@ -499,6 +497,7 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         if (h2 - max_shoulder) < (head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
             continue
 
+        # ✅ شرط تساوي قاعين العنق (10%)
         if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
             continue
 
@@ -528,6 +527,7 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         neckline_avg = (l1 + l2) / 2.0
         actual_head_length = h2 - neckline_avg
 
+        # ✅ الدخول من سعر كسر العنق الفعلي
         entry = float(end_val)
         sl = h2
         tp = entry - actual_head_length
@@ -560,7 +560,7 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Head and Shoulders",
-            "Entry Conditions": "Strict Trend + RSI + Breakout",
+            "Entry Conditions": "Strict Trend + RSI(25-50) + Breakout + Equal Shoulders/Neckline",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -595,6 +595,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         if head_depth <= 0:
             continue
 
+        # ✅ شرط تساوي الكتفين (10%)
         if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
             continue
 
@@ -602,6 +603,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
             continue
 
+        # ✅ شرط تساوي قاعين العنق (10%)
         if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
             continue
 
@@ -641,7 +643,8 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         neckline_avg = (h1 + h2) / 2.0
         actual_head_length = neckline_avg - l2
 
-        entry = neckline_avg
+        # ✅ الدخول من سعر كسر العنق الفعلي
+        entry = float(end_val)
         sl = l2
         tp = entry + actual_head_length
 
@@ -673,7 +676,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Inverse Head and Shoulders",
-            "Entry Conditions": "Strict Trend + RSI + Breakout",
+            "Entry Conditions": "Strict Trend + RSI(35-75) + Breakout + Equal Shoulders/Neckline",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -826,9 +829,10 @@ if __name__ == "__main__":
     print("  2. max_pattern_duration (L0 to H3)")
     print("  3. Time Stop = max(200, pattern_duration x 3)")
     print("  4. Strict Trend: Price vs EMA50 vs EMA200")
-    print("  5. RSI")
+    print("  5. RSI Bearish: 25-50 | RSI Bullish: 35-75")
     print("  6. Breakout confirm")
     print("  7. Break-even Stop: SL to Entry at 50% of TP")
+    print("  8. Equal Shoulders (10%) + Equal Neckline (10%)")
     print("Functions:")
     print("  - run_full_analysis(df, interval, symbol)")
     print("  - backtest_strategy(df, interval, symbol)")
