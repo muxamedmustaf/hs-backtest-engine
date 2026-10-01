@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ENGINE.PY - Head & Shoulders Detector
-Merged: v4.6 pattern logic + strict filters + diagnostics
+Merged: v4.6 pattern logic + strict filters + diagnostics + breakeven
 """
 import pandas as pd
 import numpy as np
@@ -10,9 +10,9 @@ CONFIG = {
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 3,
-    "SHOULDER_DIFF_MAX_RATIO": 0.50,    # 35 → 50
-    "HEAD_PROPORTION_MIN_RATIO": 0.15,  # 25 → 15
-    "NECKLINE_DIFF_MAX_RATIO": 0.40,    # 25 → 40
+    "SHOULDER_DIFF_MAX_RATIO": 0.50,
+    "HEAD_PROPORTION_MIN_RATIO": 0.15,
+    "NECKLINE_DIFF_MAX_RATIO": 0.40,
     "LIVE_MAX_BREAKOUT_CANDLES": 10,
     "RSI_MIN_BEARISH": 30.0,
     "RSI_MAX_BEARISH": 75.0,
@@ -21,13 +21,16 @@ CONFIG = {
     "EMA_FAST_SPAN": 50,
     "EMA_SLOW_SPAN": 200,
     "REQUIRE_STRICT_TREND": True,
-    "BREAKOUT_MIN_PCT": 0.0002,  # 0.02%
+    "BREAKOUT_MIN_PCT": 0.0002,
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
+    # ✅ إعدادات Break-even
+    "BREAKEVEN_ACTIVATION_PCT": 0.50,  # 50% من TP
 }
 
-TIMEOUT_STATISTICAL_FLOOR = 300
+# ✅ Time Stop مخفّض
+TIMEOUT_STATISTICAL_FLOOR = 200
 TIMEOUT_DURATION_MULTIPLIER = 3
 
 
@@ -185,6 +188,7 @@ def get_chronological_pivots(df):
 
 
 def simulate_trade_outcome(pattern, df):
+    """محاكاة نتيجة الصفقة مع Break-even Stop"""
     bias = pattern["bias"]
     entry = float(pattern["entry"])
     sl = float(pattern["sl"])
@@ -209,6 +213,11 @@ def simulate_trade_outcome(pattern, df):
         pattern_duration * TIMEOUT_DURATION_MULTIPLIER
     )
 
+    # ✅ إعدادات Break-even
+    BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.50)
+    original_sl = sl
+    breakeven_activated = False
+
     stats = {
         "Result": "OPEN", "Head Result": "OPEN",
         "progress_ratio": 0.0, "candles_to_exit": 0,
@@ -217,6 +226,8 @@ def simulate_trade_outcome(pattern, df):
         "Max Reach %": 0.0, "SL Safety %": 0.0,
         "Pattern Duration": pattern_duration,
         "Timeout Used": TIMEOUT_CANDLES,
+        "Breakeven Activated": False,
+        "Breakeven Exit": False,
     }
 
     if end_idx not in df.index:
@@ -250,6 +261,19 @@ def simulate_trade_outcome(pattern, df):
         if total_sl_dist > 0:
             max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
 
+        # ✅ فحص تنشيط Break-even
+        if (not breakeven_activated) and total_tp_dist > 0:
+            if bias == "Bearish":
+                if low <= entry - BE_ACTIVATION * total_tp_dist:
+                    sl = entry  # ← حرّك SL للدخول
+                    breakeven_activated = True
+                    stats["Breakeven Activated"] = True
+            else:
+                if high >= entry + BE_ACTIVATION * total_tp_dist:
+                    sl = entry
+                    breakeven_activated = True
+                    stats["Breakeven Activated"] = True
+
         if bias == "Bearish":
             hit_sl = high >= sl
             hit_tp = low <= tp
@@ -257,17 +281,15 @@ def simulate_trade_outcome(pattern, df):
             hit_sl = low <= sl
             hit_tp = high >= tp
 
-        if hit_sl and hit_tp:
-            stats["Result"] = "LOSS"
-            stats["Head Result"] = "LOSS"
-            stats["exit_idx"] = idx
-            stats["exit_price"] = sl
-            stats["candles_to_exit"] = candle_count
-            stats["Exit Date"] = str(idx)
-            break
-        elif hit_sl:
-            stats["Result"] = "LOSS"
-            stats["Head Result"] = "LOSS"
+        # ✅ كشف BREAKEVEN exit
+        if hit_sl:
+            if breakeven_activated:
+                stats["Result"] = "BREAKEVEN"
+                stats["Head Result"] = "BREAKEVEN"
+                stats["Breakeven Exit"] = True
+            else:
+                stats["Result"] = "LOSS"
+                stats["Head Result"] = "LOSS"
             stats["exit_idx"] = idx
             stats["exit_price"] = sl
             stats["candles_to_exit"] = candle_count
@@ -283,10 +305,16 @@ def simulate_trade_outcome(pattern, df):
             break
 
         if candle_count >= TIMEOUT_CANDLES:
-            stats["Result"] = "TIMEOUT"
-            stats["Head Result"] = "TIMEOUT"
+            if breakeven_activated:
+                stats["Result"] = "BREAKEVEN"
+                stats["Head Result"] = "BREAKEVEN"
+                stats["Breakeven Exit"] = True
+                stats["exit_price"] = entry
+            else:
+                stats["Result"] = "TIMEOUT"
+                stats["Head Result"] = "TIMEOUT"
+                stats["exit_price"] = close
             stats["exit_idx"] = idx
-            stats["exit_price"] = close
             stats["candles_to_exit"] = candle_count
             stats["Exit Date"] = str(idx)
             if bias == "Bearish":
@@ -305,7 +333,7 @@ def simulate_trade_outcome(pattern, df):
 
     if stats["Result"] == "WIN":
         stats["progress_ratio"] = 100.0
-    elif stats["Result"] == "LOSS":
+    elif stats["Result"] in ["LOSS", "BREAKEVEN"]:
         stats["progress_ratio"] = 0.0
 
     return stats
@@ -324,12 +352,6 @@ class PatternValidatorPipeline:
         return True
 
     def strict_trend_filter(self, p):
-        """
-        فلتر الاتجاه — يفحص أن السعر أعلى من EMA50 و EMA200 معاً.
-
-        لا يشترط ترتيب EMA50 > EMA200، لأن أنماط H&S (انعكاسية)
-        تحدث عند تحول الاتجاه، حيث قد يكون EMA50 لا يزال تحت EMA200.
-        """
         if not CONFIG.get("REQUIRE_STRICT_TREND", True):
             return True
 
@@ -560,7 +582,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
 
-        if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
+                if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
             continue
 
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
@@ -738,367 +760,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 
-def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
-    diagnostics = {
-        "symbol": symbol or "N/A",
-        "interval": interval,
-        "total_raw_candidates": 0,
-        "stages": {},
-        "rejection_samples": {},
-        "recommendations": [],
-        "final_count": 0,
-        "error": None,
-    }
-
-    if df is None or df.empty:
-        diagnostics["error"] = "DataFrame فارغ"
-        return diagnostics
-
-    df_calc = df.copy()
-    required = ["Open", "High", "Low", "Close"]
-    for col in required:
-        if col not in df_calc.columns:
-            diagnostics["error"] = f"عمود مفقود: {col}"
-            return diagnostics
-        df_calc[col] = pd.to_numeric(df_calc[col], errors="coerce")
-
-    df_calc = df_calc.dropna(subset=required)
-    if len(df_calc) < 30:
-        diagnostics["error"] = f"بيانات غير كافية: {len(df_calc)}"
-        return diagnostics
-
-    df_calc = calculate_indicators(df_calc)
-    df_calc = calculate_zigzag(
-        df_calc,
-        CONFIG["ZIGZAG_DEPTH"],
-        CONFIG["ZIGZAG_BACKSTEP"]
-    )
-
-    pivots = get_chronological_pivots(df_calc)
-
-    max_gap = _get_max_gap(interval)
-    max_pattern_dur = _get_max_pattern_duration(interval)
-
-    raw_candidates = []
-
-    for i in range(len(pivots) - 5):
-        p = pivots[i:i + 6]
-        types = [x["type"] for x in p]
-
-        if types == ["L", "H", "L", "H", "L", "H"]:
-                        raw_candidates.append({"pivots": p, "bias": "Bearish"})
-        elif types == ["H", "L", "H", "L", "H", "L"]:
-            raw_candidates.append({"pivots": p, "bias": "Bullish"})
-
-    diagnostics["total_raw_candidates"] = len(raw_candidates)
-
-    # المرحلة 1: الفلترة الهندسية
-    geo_passed = []
-
-    for cand in raw_candidates:
-        p = cand["pivots"]
-        is_bearish = cand["bias"] == "Bearish"
-
-        try:
-            if is_bearish:
-                l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
-                if h1 <= l0 or l1 <= l0:
-                    continue
-                if h2 <= h1 or h2 <= h3:
-                    continue
-                neckline_min = min(l1, l2)
-                head_height = h2 - neckline_min
-                if head_height <= 0:
-                    continue
-                if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
-                    continue
-                max_shoulder = max(h1, h3)
-                if (h2 - max_shoulder) < (head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
-                    continue
-                if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
-                    continue
-            else:
-                h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
-                if l2 >= l1 or l2 >= l3:
-                    continue
-                neckline_max = max(h1, h2)
-                head_depth = neckline_max - l2
-                if head_depth <= 0:
-                    continue
-                if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
-                    continue
-                min_shoulder = min(l1, l3)
-                if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
-                    continue
-                if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
-                    continue
-
-            geo_passed.append(cand)
-        except (ValueError, IndexError, KeyError):
-            continue
-
-    diagnostics["stages"]["geometry"] = {
-        "before": len(raw_candidates),
-        "after": len(geo_passed),
-        "rejected": len(raw_candidates) - len(geo_passed),
-        "pass_rate": round(len(geo_passed) / max(len(raw_candidates), 1) * 100, 1),
-    }
-
-    # المرحلة 2: MAX_PATTERN_DURATION
-    size_passed = []
-    size_rejected = []
-
-    for cand in geo_passed:
-        p = cand["pivots"]
-        start_pos = p[0]["pos"]
-        end_pos = p[5]["pos"]
-        pattern_size = end_pos - start_pos
-
-        if pattern_size <= max_pattern_dur:
-            size_passed.append(cand)
-        else:
-            size_rejected.append({
-                "size": pattern_size,
-                "max_allowed": max_pattern_dur,
-                "bias": cand["bias"],
-            })
-
-    diagnostics["stages"]["max_pattern_duration"] = {
-        "before": len(geo_passed),
-        "after": len(size_passed),
-        "rejected": len(size_rejected),
-        "pass_rate": round(len(size_passed) / max(len(geo_passed), 1) * 100, 1),
-        "max_allowed": max_pattern_dur,
-    }
-
-    # المرحلة 3: STRICT_TREND
-    trend_passed = []
-    trend_rejected = []
-
-    if CONFIG.get("REQUIRE_STRICT_TREND", True):
-        for cand in size_passed:
-            p = cand["pivots"]
-            idx_end = p[5]["idx"]
-            if idx_end not in df_calc.index:
-                continue
-
-            row = df_calc.loc[idx_end]
-            ema50 = row.get("EMA50", None)
-            ema200 = row.get("EMA200", None)
-            price = row.get("Close", None)
-
-            if pd.isna(ema50) or pd.isna(ema200) or pd.isna(price):
-                continue
-
-            ema50 = float(ema50)
-            ema200 = float(ema200)
-            price = float(price)
-            is_bearish = cand["bias"] == "Bearish"
-
-            if is_bearish:
-                ok = price < ema50 and price < ema200
-            else:
-                ok = price > ema50 and price > ema200
-
-            if ok:
-                trend_passed.append(cand)
-            else:
-                trend_rejected.append({
-                    "bias": cand["bias"],
-                    "price": round(price, 5),
-                    "ema50": round(ema50, 5),
-                    "ema200": round(ema200, 5),
-                })
-    else:
-        trend_passed = size_passed
-
-    diagnostics["stages"]["strict_trend"] = {
-        "enabled": CONFIG.get("REQUIRE_STRICT_TREND", True),
-        "before": len(size_passed),
-        "after": len(trend_passed),
-        "rejected": len(size_passed) - len(trend_passed),
-        "pass_rate": round(len(trend_passed) / max(len(size_passed), 1) * 100, 1),
-    }
-    if trend_rejected:
-        diagnostics["rejection_samples"]["strict_trend"] = trend_rejected[:sample_size]
-
-    # المرحلة 4: RSI
-    rsi_passed = []
-    rsi_rejected = []
-
-    for cand in trend_passed:
-        p = cand["pivots"]
-        idx_end = p[5]["idx"]
-        if idx_end not in df_calc.index:
-            continue
-
-        rsi_val = df_calc.loc[idx_end, "RSI"]
-        if pd.isna(rsi_val):
-            continue
-        rsi_val = float(rsi_val)
-        is_bearish = cand["bias"] == "Bearish"
-
-        if is_bearish:
-            ok = CONFIG["RSI_MIN_BEARISH"] <= rsi_val <= CONFIG["RSI_MAX_BEARISH"]
-        else:
-            ok = CONFIG["RSI_MIN_BULLISH"] <= rsi_val <= CONFIG["RSI_MAX_BULLISH"]
-
-        if ok:
-            rsi_passed.append(cand)
-        else:
-            rsi_rejected.append({
-                "bias": cand["bias"],
-                "rsi": round(rsi_val, 1),
-            })
-
-    diagnostics["stages"]["rsi"] = {
-        "before": len(trend_passed),
-        "after": len(rsi_passed),
-        "rejected": len(rsi_rejected),
-        "pass_rate": round(len(rsi_passed) / max(len(trend_passed), 1) * 100, 1),
-    }
-    if rsi_rejected:
-        diagnostics["rejection_samples"]["rsi"] = rsi_rejected[:sample_size]
-
-    # المرحلة 5: BREAKOUT
-    breakout_passed = []
-    breakout_rejected = []
-
-    for cand in rsi_passed:
-        p = cand["pivots"]
-        idx_h3 = p[5]["idx"]
-        is_bearish = cand["bias"] == "Bearish"
-
-        l1, l2 = p[2]["val"], p[4]["val"]
-        neckline = (l1 + l2) / 2.0
-
-        post_h3 = df_calc.loc[idx_h3:]
-        if is_bearish:
-            breakout = post_h3[post_h3["Close"] < neckline]
-        else:
-            breakout = post_h3[post_h3["Close"] > neckline]
-
-        if not breakout.empty:
-            breakout_passed.append({
-                "pivots": p,
-                "bias": cand["bias"],
-                "breakout_idx": breakout.index[0],
-                "breakout_price": float(breakout["Close"].iloc[0]),
-                "neckline": neckline,
-            })
-        else:
-            breakout_rejected.append({
-                "bias": cand["bias"],
-                "neckline": round(neckline, 5),
-            })
-
-    diagnostics["stages"]["breakout"] = {
-        "before": len(rsi_passed),
-        "after": len(breakout_passed),
-        "rejected": len(breakout_rejected),
-        "pass_rate": round(len(breakout_passed) / max(len(rsi_passed), 1) * 100, 1),
-    }
-
-    # المرحلة 6: BREAKOUT_CONFIRM
-    confirm_passed = []
-    confirm_rejected = []
-
-    for cand in breakout_passed:
-        neckline = cand["neckline"]
-        breakout_price = cand["breakout_price"]
-        is_bearish = cand["bias"] == "Bearish"
-        min_pct = CONFIG.get("BREAKOUT_MIN_PCT", 0.001)
-
-        if is_bearish:
-            ok = breakout_price <= neckline * (1 - min_pct)
-        else:
-            ok = breakout_price >= neckline * (1 + min_pct)
-
-        if ok:
-            confirm_passed.append(cand)
-        else:
-            confirm_rejected.append({
-                "bias": cand["bias"],
-                "neckline": round(neckline, 5),
-                "breakout_price": round(breakout_price, 5),
-            })
-
-    diagnostics["stages"]["breakout_confirm"] = {
-        "before": len(breakout_passed),
-        "after": len(confirm_passed),
-        "rejected": len(confirm_rejected),
-        "pass_rate": round(len(confirm_passed) / max(len(breakout_passed), 1) * 100, 1),
-    }
-    if confirm_rejected:
-        diagnostics["rejection_samples"]["breakout_confirm"] = confirm_rejected[:sample_size]
-
-    # المرحلة 7: MAX_GAP
-    gap_passed = []
-    gap_rejected = []
-
-    for cand in confirm_passed:
-        p = cand["pivots"]
-        h3_pos = p[5]["pos"]
-        breakout_idx = cand["breakout_idx"]
-
-        if breakout_idx not in df_calc.index:
-            continue
-        breakout_pos = df_calc.index.get_loc(breakout_idx)
-        gap_size = breakout_pos - h3_pos
-
-        if gap_size <= max_gap:
-            cand["gap_size"] = gap_size
-            gap_passed.append(cand)
-        else:
-            gap_rejected.append({
-                "bias": cand["bias"],
-                "gap_size": gap_size,
-                "max_allowed": max_gap,
-            })
-
-    diagnostics["stages"]["max_gap"] = {
-        "before": len(confirm_passed),
-        "after": len(gap_passed),
-        "rejected": len(gap_rejected),
-        "pass_rate": round(len(gap_passed) / max(len(confirm_passed), 1) * 100, 1),
-        "max_allowed": max_gap,
-    }
-
-    # النتيجة النهائية
-    diagnostics["final_count"] = len(gap_passed)
-
-    # الاقتراحات التلقائية
-    rec = diagnostics["recommendations"]
-    for stage_name, stage_data in diagnostics["stages"].items():
-        if stage_name == "geometry":
-            continue
-        pass_rate = stage_data.get("pass_rate", 100)
-        before = stage_data.get("before", 0)
-        rejected = stage_data.get("rejected", 0)
-
-        if before > 0 and pass_rate < 20:
-            rec.append({
-                "filter": stage_name,
-                "severity": "حرج",
-                "pass_rate": pass_rate,
-                "rejected": rejected,
-                "message": f"الفلتر '{stage_name}' يرفض {100 - pass_rate:.0f}% - صارم جداً",
-            })
-        elif before > 0 and pass_rate < 50:
-            rec.append({
-                "filter": stage_name,
-                "severity": "متوسط",
-                "pass_rate": pass_rate,
-                "rejected": rejected,
-                "message": f"الفلتر '{stage_name}' يرفض {100 - pass_rate:.0f}% - يستحق المراجعة",
-            })
-
-    return diagnostics
-
-
-# ==============================================================================
-# [11] الباكتيست
-# ==============================================================================
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < 30:
         return []
@@ -1151,25 +812,24 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "neckline_end_idx": p["neckline_end_idx"],
             "Pattern Duration": p.get("Pattern Duration", 0),
             "Timeout Used": p.get("Timeout Used", 0),
+            "Breakeven Activated": p.get("Breakeven Activated", False),
+            "Breakeven Exit": p.get("Breakeven Exit", False),
         }
         trades.append(trade)
 
     return trades
 
 
-# ==============================================================================
-# [12] منفذ الاختبار
-# ==============================================================================
 if __name__ == "__main__":
     print("ENGINE.PY - Head & Shoulders Detector")
     print("Filters:")
     print("  1. max_gap (H3 to Breakout)")
     print("  2. max_pattern_duration (L0 to H3)")
-    print("  3. Time Stop = max(300, pattern_duration x 3)")
+    print("  3. Time Stop = max(200, pattern_duration x 3)")
     print("  4. Strict Trend: Price vs EMA50 vs EMA200")
     print("  5. RSI")
     print("  6. Breakout confirm")
+    print("  7. Break-even Stop: SL to Entry at 50% of TP")
     print("Functions:")
     print("  - run_full_analysis(df, interval, symbol)")
     print("  - backtest_strategy(df, interval, symbol)")
-    print("  - diagnose_filters(df, interval, symbol)")
