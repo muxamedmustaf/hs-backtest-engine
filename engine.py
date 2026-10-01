@@ -11,8 +11,8 @@ CONFIG = {
     "ZIGZAG_DEPTH": 12,
     "ZIGZAG_BACKSTEP": 7,
     "MIN_WAVE_CANDLES": 5,
-    "SHOULDER_DIFF_MAX_RATIO": 0.20,   # ✅ تساوي الكتفين (10%)
-    "HEAD_PROPORTION_MIN_RATIO": 0.20,
+    "SHOULDER_DIFF_MAX_RATIO": 0.40,   # ✅ تساوي الكتفين (10%)
+    "HEAD_PROPORTION_MIN_RATIO": 0.40,
     "NECKLINE_DIFF_MAX_RATIO": 0.20,   # ✅ تساوي قاعين العنق (10%)
     "LIVE_MAX_BREAKOUT_CANDLES": 15,
     # ✅ شروط RSI المصححة
