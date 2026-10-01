@@ -1,4 +1,3 @@
-l, symbol)")
 # -*- coding: utf-8 -*-
 """
 ENGINE.PY - Head & Shoulders Detector
