@@ -8,8 +8,8 @@ import pandas as pd
 import numpy as np
 
 CONFIG = {
-    "ZIGZAG_DEPTH": 8,
-    "ZIGZAG_BACKSTEP": 4,
+    "ZIGZAG_DEPTH": 12,
+    "ZIGZAG_BACKSTEP": 5,
     "MIN_WAVE_CANDLES": 3,
     "SHOULDER_DIFF_MAX_RATIO": 0.15,   # ✅ تساوي الكتفين (10%)
     "HEAD_PROPORTION_MIN_RATIO": 0.20,
