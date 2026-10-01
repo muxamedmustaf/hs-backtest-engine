@@ -8,28 +8,43 @@ import pandas as pd
 import numpy as np
 
 CONFIG = {
+CONFIG = {
     "ZIGZAG_DEPTH": 12,
     "ZIGZAG_BACKSTEP": 7,
     "MIN_WAVE_CANDLES": 5,
-    "SHOULDER_DIFF_MAX_RATIO": 0.40,   # ✅ تساوي الكتفين (10%)
-    "HEAD_PROPORTION_MIN_RATIO": 0.40,
-    "NECKLINE_DIFF_MAX_RATIO": 0.20,   # ✅ تساوي قاعين العنق (10%)
+    
+    # ✅ تساوي الكتفين — 10% (وليس 20%)
+    "SHOULDER_DIFF_MAX_RATIO": 0.10,
+    
+    # نسبة ارتفاع الرأس عن الكتفين — 20%
+    "HEAD_PROPORTION_MIN_RATIO": 0.20,
+    
+    # ✅ تساوي قاعين العنق — 10% (وليس 20%)
+    "NECKLINE_DIFF_MAX_RATIO": 0.10,
+    
     "LIVE_MAX_BREAKOUT_CANDLES": 15,
-    # ✅ شروط RSI المصححة
-    "RSI_MIN_BEARISH": 25.0,           # البيع: الحد الأدنى
-    "RSI_MAX_BEARISH": 50.0,           # البيع: الحد الأقصى
-    "RSI_MIN_BULLISH": 35.0,           # الشراء: الحد الأدنى
-    "RSI_MAX_BULLISH": 75.0,           # الشراء: الحد الأقصى
+    
+    # ✅ شروط RSI (كما هي — مثالية)
+    "RSI_MIN_BEARISH": 25.0,
+    "RSI_MAX_BEARISH": 50.0,
+    "RSI_MIN_BULLISH": 35.0,
+    "RSI_MAX_BULLISH": 75.0,
+    
     "EMA_FAST_SPAN": 50,
     "EMA_SLOW_SPAN": 200,
     "REQUIRE_STRICT_TREND": True,
+    
+    # ✅ كسر العنق — 0.02% (حساس جداً للكسر الحقيقي)
     "BREAKOUT_MIN_PCT": 0.0002,
-    "REQUIRE_VOLUME_BREAKOUT": False,
+    
+    # ✅ فلتر الحجم — مُفعّل (يرفع نسبة النجاح)
+    "REQUIRE_VOLUME_BREAKOUT": True,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
+    
+    # ✅ تفعيل التعادل عند 50% من الهدف
     "BREAKEVEN_ACTIVATION_PCT": 0.50,
 }
-
 TIMEOUT_STATISTICAL_FLOOR = 300
 TIMEOUT_DURATION_MULTIPLIER = 3
 
