@@ -1,3 +1,4 @@
+l, symbol)")
 # -*- coding: utf-8 -*-
 """
 ENGINE.PY - Head & Shoulders Detector
@@ -6,9 +7,6 @@ Merged: v4.6 pattern logic + strict filters + diagnostics
 import pandas as pd
 import numpy as np
 
-# ==============================================================================
-# [1] الإعدادات المركزية
-# ==============================================================================
 CONFIG = {
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
@@ -17,19 +15,14 @@ CONFIG = {
     "HEAD_PROPORTION_MIN_RATIO": 0.25,
     "NECKLINE_DIFF_MAX_RATIO": 0.25,
     "LIVE_MAX_BREAKOUT_CANDLES": 10,
-
     "RSI_MIN_BEARISH": 30.0,
     "RSI_MAX_BEARISH": 75.0,
     "RSI_MIN_BULLISH": 25.0,
     "RSI_MAX_BULLISH": 70.0,
-
     "EMA_FAST_SPAN": 50,
     "EMA_SLOW_SPAN": 200,
-
     "REQUIRE_STRICT_TREND": True,
-
     "BREAKOUT_MIN_PCT": 0.001,
-
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
@@ -39,9 +32,6 @@ TIMEOUT_STATISTICAL_FLOOR = 300
 TIMEOUT_DURATION_MULTIPLIER = 3
 
 
-# ==============================================================================
-# [1.b] الحد الأقصى للمسافة H3 -> نقطة الكسر
-# ==============================================================================
 def _get_max_gap(interval):
     return {
         "1m": 120, "2m": 90, "3m": 80, "4m": 70,
@@ -52,9 +42,6 @@ def _get_max_gap(interval):
     }.get(interval, 50)
 
 
-# ==============================================================================
-# [1.c] الحد الأقصى لحجم النمط (L0 -> H3)
-# ==============================================================================
 def _get_max_pattern_duration(interval):
     return {
         "1m": 600, "2m": 400, "3m": 320, "4m": 280,
@@ -65,9 +52,6 @@ def _get_max_pattern_duration(interval):
     }.get(interval, 200)
 
 
-# ==============================================================================
-# [2] حساب المؤشرات
-# ==============================================================================
 def calculate_indicators(df):
     df = df.copy()
     df["EMA50"] = df["Close"].ewm(span=CONFIG["EMA_FAST_SPAN"], adjust=False).mean()
@@ -103,9 +87,6 @@ def calculate_indicators(df):
     return df
 
 
-# ==============================================================================
-# [3] ZigZag
-# ==============================================================================
 def calculate_zigzag(df, depth=12, backstep=6):
     df = df.copy()
     df["Pivot_H"] = np.nan
@@ -142,9 +123,6 @@ def calculate_zigzag(df, depth=12, backstep=6):
     return df
 
 
-# ==============================================================================
-# [4] تنقية النقاط الزمنية
-# ==============================================================================
 def get_chronological_pivots(df):
     raw = []
 
@@ -207,9 +185,6 @@ def get_chronological_pivots(df):
     return final_clean
 
 
-# ==============================================================================
-# [5] محاكاة نتيجة الصفقة
-# ==============================================================================
 def simulate_trade_outcome(pattern, df):
     bias = pattern["bias"]
     entry = float(pattern["entry"])
@@ -337,9 +312,6 @@ def simulate_trade_outcome(pattern, df):
     return stats
 
 
-# ==============================================================================
-# [6] PatternValidatorPipeline
-# ==============================================================================
 class PatternValidatorPipeline:
 
     def __init__(self, df):
@@ -353,38 +325,36 @@ class PatternValidatorPipeline:
         return True
 
     def strict_trend_filter(self, p):
-    """
-    فلتر الاتجاه — يفحص أن السعر أعلى من EMA50 و EMA200 معاً.
-    
-    لا يشترط ترتيب EMA50 > EMA200، لأن أنماط H&S (انعكاسية)
-    تحدث عند تحول الاتجاه، حيث قد يكون EMA50 لا يزال تحت EMA200.
-    """
-    if not CONFIG.get("REQUIRE_STRICT_TREND", True):
-        return True
+        """
+        فلتر الاتجاه — يفحص أن السعر أعلى من EMA50 و EMA200 معاً.
 
-    idx_end = p[5]["idx"]
-    if idx_end not in self.df.index:
-        return False
+        لا يشترط ترتيب EMA50 > EMA200، لأن أنماط H&S (انعكاسية)
+        تحدث عند تحول الاتجاه، حيث قد يكون EMA50 لا يزال تحت EMA200.
+        """
+        if not CONFIG.get("REQUIRE_STRICT_TREND", True):
+            return True
 
-    row = self.df.loc[idx_end]
-    ema50 = row.get("EMA50", None)
-    ema200 = row.get("EMA200", None)
-    price = row.get("Close", None)
+        idx_end = p[5]["idx"]
+        if idx_end not in self.df.index:
+            return False
 
-    if pd.isna(ema50) or pd.isna(ema200) or pd.isna(price):
-        return False
+        row = self.df.loc[idx_end]
+        ema50 = row.get("EMA50", None)
+        ema200 = row.get("EMA200", None)
+        price = row.get("Close", None)
 
-    ema50 = float(ema50)
-    ema200 = float(ema200)
-    price = float(price)
-    is_bearish = (p[3]["type"] == "H")
+        if pd.isna(ema50) or pd.isna(ema200) or pd.isna(price):
+            return False
 
-    if is_bearish:
-        # H&S الهابط: السعر تحت كلا المتوسطين
-        return price < ema50 and price < ema200
-    else:
-        # Inverse H&S: السعر فوق كلا المتوسطين
-        return price > ema50 and price > ema200
+        ema50 = float(ema50)
+        ema200 = float(ema200)
+        price = float(price)
+        is_bearish = (p[3]["type"] == "H")
+
+        if is_bearish:
+            return price < ema50 and price < ema200
+        else:
+            return price > ema50 and price > ema200
 
     def invalidation_filter(self, p):
         return True
@@ -473,9 +443,6 @@ class PatternValidatorPipeline:
         return True, breakout_idx, breakout_price
 
 
-# ==============================================================================
-# [7] كشف H&S الهابط
-# ==============================================================================
 def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
                                     max_gap=50, max_pattern_duration=200):
     patterns = []
@@ -582,9 +549,6 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
     return patterns
 
 
-# ==============================================================================
-# [8] كشف Inverse H&S الصاعد
-# ==============================================================================
 def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
                                        max_gap=50, max_pattern_duration=200):
     patterns = []
@@ -699,9 +663,6 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
     return patterns
 
 
-# ==============================================================================
-# [9] دمج الاتجاهين
-# ==============================================================================
 def detect_all_head_shoulders(pivots, df, is_backtest=False,
                                max_gap=50, max_pattern_duration=200):
     normal_patterns = detect_all_head_shoulders_base(
@@ -716,9 +677,6 @@ def detect_all_head_shoulders(pivots, df, is_backtest=False,
     return all_patterns
 
 
-# ==============================================================================
-# [10] التحليل الحي
-# ==============================================================================
 def run_full_analysis(df, interval="1h", symbol=None):
     default_empty = {
         "df": df, "symbol": symbol or "N/A",
@@ -781,9 +739,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 
-# ==============================================================================
-# [10.b] دالة التشخيص الشاملة
-# ==============================================================================
 def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
     diagnostics = {
         "symbol": symbol or "N/A",
@@ -825,7 +780,6 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
     max_gap = _get_max_gap(interval)
     max_pattern_dur = _get_max_pattern_duration(interval)
 
-    # المرحلة 0: كل الأنماط الخام
     raw_candidates = []
 
     for i in range(len(pivots) - 5):
@@ -833,7 +787,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
         types = [x["type"] for x in p]
 
         if types == ["L", "H", "L", "H", "L", "H"]:
-            raw_candidates.append({"pivots": p, "bias": "Bearish"})
+                        raw_candidates.append({"pivots": p, "bias": "Bearish"})
         elif types == ["H", "L", "H", "L", "H", "L"]:
             raw_candidates.append({"pivots": p, "bias": "Bullish"})
 
@@ -884,7 +838,7 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
         except (ValueError, IndexError, KeyError):
             continue
 
-        diagnostics["stages"]["geometry"] = {
+    diagnostics["stages"]["geometry"] = {
         "before": len(raw_candidates),
         "after": len(geo_passed),
         "rejected": len(raw_candidates) - len(geo_passed),
@@ -943,9 +897,9 @@ def diagnose_filters(df, interval="5m", symbol=None, sample_size=50):
             is_bearish = cand["bias"] == "Bearish"
 
             if is_bearish:
-                ok = price < ema50 < ema200
+                ok = price < ema50 and price < ema200
             else:
-                ok = price > ema50 > ema200
+                ok = price > ema50 and price > ema200
 
             if ok:
                 trend_passed.append(cand)
