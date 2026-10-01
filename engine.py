@@ -11,9 +11,9 @@ CONFIG = {
     "ZIGZAG_DEPTH": 12,
     "ZIGZAG_BACKSTEP": 7,
     "MIN_WAVE_CANDLES": 5,
-    "SHOULDER_DIFF_MAX_RATIO": 0.15,   # ✅ تساوي الكتفين (10%)
+    "SHOULDER_DIFF_MAX_RATIO": 0.20,   # ✅ تساوي الكتفين (10%)
     "HEAD_PROPORTION_MIN_RATIO": 0.20,
-    "NECKLINE_DIFF_MAX_RATIO": 0.15,   # ✅ تساوي قاعين العنق (10%)
+    "NECKLINE_DIFF_MAX_RATIO": 0.20,   # ✅ تساوي قاعين العنق (10%)
     "LIVE_MAX_BREAKOUT_CANDLES": 15,
     # ✅ شروط RSI المصححة
     "RSI_MIN_BEARISH": 25.0,           # البيع: الحد الأدنى
