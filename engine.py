@@ -8,7 +8,6 @@ import pandas as pd
 import numpy as np
 
 CONFIG = {
-CONFIG = {
     "ZIGZAG_DEPTH": 12,
     "ZIGZAG_BACKSTEP": 7,
     "MIN_WAVE_CANDLES": 5,
