@@ -71,12 +71,28 @@ def fix_symbol(sym):
 
 
 def pip_size_for(symbol):
-    """حجم النقطة الواحدة حسب نوع الأصل."""
+    """حجم النقطة الواحدة حسب نوع الأصل — النسخة المصححة."""
     s = str(symbol).upper()
+
+    # 🥇 المعادن
     if "XAU" in s or "GOLD" in s: return 0.1
     if "XAG" in s or "SILVER" in s: return 0.01
+
+    # 🪙 العملات الرقمية والمؤشرات
+    if any(x in s for x in ["BTC", "ETH"]): return 1.0
+    if any(x in s for x in ["US30", "NAS", "SPX", "US100", "US500", "DE40", "UK100"]):
+        return 1.0
+
+    # 💴 أزواج الين
     if "JPY" in s: return 0.01
-    if any(x in s for x in ["BTC","ETH","US30","NAS","SPX","US100","US500"]): return 1.0
+
+    # 💱 عملات عالية السعر (تحتاج 0.01 بدل 0.0001)
+    high_price = ["HUF", "TRY", "SEK", "NOK", "CZK", "MXN", "ZAR",
+                  "PLN", "INR", "THB", "DKK", "HKD", "SGD", "PHP", "IDR"]
+    if any(c in s for c in high_price):
+        return 0.01
+
+    # 💵 الفوركس القياسي
     return 0.0001
 
 
@@ -149,34 +165,346 @@ def compute_pips(trades_df):
 
 def compute_dollar_pnl(trades_df, lot=0.01):
     """
-    يحسب الربح/الخسارة بالدولار بناءً على اللوت المحدد.
-    الافتراضي: 0.01 لوت → 0.1$ لكل نقطة (للفوركس).
+    حساب الربح/الخسارة بالدولار باستخدام القاعدة الصحيحة:
+    - للأزواج XXXUSD: PnL = (exit - entry) × lot × 100,000
+    - للأزواج USDXXX: PnL = (exit - entry) × lot × 100,000 ÷ exit_price
+    - للعملات الرقمية: PnL = (exit - entry) × lot
     """
-    if trades_df is None or trades_df.empty or "Pips" not in trades_df.columns:
+    if trades_df is None or trades_df.empty:
         return trades_df
 
     df = trades_df.copy()
+    usd_list, pct_list = [], []
 
-    def dollar_per_pip(sym):
-        s = str(sym).upper()
-        if "XAU" in s or "GOLD" in s:  return lot * 10
-        if "XAG" in s or "SILVER" in s: return lot * 50
-        if "JPY" in s: return lot * 10
-        if any(x in s for x in ["BTC","ETH","US30","NAS","SPX","US100","US500"]):
-            return lot * 1
-        return lot * 10
-
-    usd = []
     for _, row in df.iterrows():
-        p = row.get("Pips")
-        if pd.isna(p) or p is None:
-            usd.append(None)
-            continue
-        dpp = dollar_per_pip(row.get("symbol") or row.get("Symbol") or "")
-        usd.append(round(p * dpp, 2))
+        sym = str(row.get("symbol") or row.get("Symbol") or "").upper()
+        entry = row.get("Entry Price") or row.get("Entry")
+        exit_ = row.get("Exit Price") or row.get("Exit")
+        bias = str(row.get("bias") or row.get("Bias") or "").upper()
+        is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
 
-    df["PnL_USD"] = usd
+        try:
+            entry_f = float(entry)
+            exit_f = float(exit_)
+        except (TypeError, ValueError):
+            usd_list.append(None); pct_list.append(None); continue
+
+        # حساب الحركة (بالدولار)
+        price_move = (exit_f - entry_f) if not is_sell else (entry_f - exit_f)
+
+        # تحديد قيمة PnL حسب نوع الأصل
+        if any(x in sym for x in ["BTC", "ETH"]):
+            pnl_usd = price_move * lot * 1
+        elif any(x in sym for x in ["US30", "NAS", "SPX"]):
+            pnl_usd = price_move * lot * 1
+        elif "XAU" in sym or "GOLD" in sym:
+            pnl_usd = price_move * lot * 100
+        elif "XAG" in sym or "SILVER" in sym:
+            pnl_usd = price_move * lot * 5000
+        else:
+            if sym.endswith("USD"):
+                pnl_usd = price_move * lot * 100000
+            else:
+                if exit_f == 0:
+                    pnl_usd = None
+                else:
+                    pnl_usd = price_move * lot * 100000 / exit_f
+
+        if entry_f and entry_f != 0:
+            pct = price_move / entry_f * 100
+        else:
+            pct = None
+
+        usd_list.append(round(pnl_usd, 2) if pnl_usd is not None else None)
+        pct_list.append(round(pct, 2) if pct is not None else None)
+
+    df["PnL_USD"] = usd_list
+    df["PnL_Pct"] = pct_list
     return df
+
+
+# ==============================================================================
+# 💰 حاسبة المخاطرة المتقدمة
+# ==============================================================================
+def calculate_trade_risk_usd(entry, sl, lot, symbol):
+    """حساب المخاطرة بالدولار لصفقة معينة."""
+    try:
+        entry_f = float(entry); sl_f = float(sl); lot_f = float(lot)
+    except (TypeError, ValueError):
+        return None
+
+    if entry_f == 0:
+        return None
+
+    price_move = abs(entry_f - sl_f)
+    s = str(symbol).upper()
+
+    if any(x in s for x in ["BTC", "ETH"]):
+        return price_move * lot_f * 1
+    if any(x in s for x in ["US30", "NAS", "SPX", "US100", "US500", "DE40", "UK100"]):
+        return price_move * lot_f * 1
+    if "XAU" in s or "GOLD" in s:
+        return price_move * lot_f * 100
+    if "XAG" in s or "SILVER" in s:
+        return price_move * lot_f * 5000
+
+    if s.endswith("USD"):
+        return price_move * lot_f * 100000
+    else:
+        if entry_f == 0: return None
+        return price_move * lot_f * 100000 / entry_f
+
+
+def check_risk_limit(entry, sl, lot, symbol, capital, risk_pct):
+    """تتحقق إذا كانت الصفقة تتجاوز حد المخاطرة المسموح."""
+    risk_usd = calculate_trade_risk_usd(entry, sl, lot, symbol)
+
+    if risk_usd is None:
+        return {
+            "allowed": False, "risk_usd": None, "max_risk_usd": None,
+            "risk_pct_actual": None,
+            "message": "⚠️ لا يمكن حساب المخاطرة — بيانات ناقصة"
+        }
+
+    max_risk_usd = capital * (risk_pct / 100)
+    risk_pct_actual = (risk_usd / capital * 100) if capital > 0 else 0
+    allowed = risk_usd <= max_risk_usd
+
+    if allowed:
+        message = f"✅ مقبولة — المخاطرة {risk_usd:.2f}$ ({risk_pct_actual:.2f}%) ≤ الحد {max_risk_usd:.2f}$"
+    else:
+        message = f"❌ مرفوضة — المخاطرة {risk_usd:.2f}$ ({risk_pct_actual:.2f}%) > الحد {max_risk_usd:.2f}$"
+
+    return {
+        "allowed": allowed,
+        "risk_usd": round(risk_usd, 2),
+        "max_risk_usd": round(max_risk_usd, 2),
+        "risk_pct_actual": round(risk_pct_actual, 2),
+        "message": message
+    }
+
+
+def get_available_symbols():
+    """يجلب قائمة الرموز من الشيت + العملات النشطة."""
+    symbols_set = set()
+
+    try:
+        sheet_symbols = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]
+        for s in sheet_symbols:
+            symbols_set.add(str(s).strip())
+    except Exception:
+        pass
+
+    if "backtest_scanned_signals" in st.session_state:
+        for item in st.session_state.backtest_scanned_signals:
+            if "symbol" in item:
+                symbols_set.add(item["symbol"])
+
+    if "scanned_signals" in st.session_state:
+        for item in st.session_state.scanned_signals:
+            if "symbol" in item:
+                symbols_set.add(item["symbol"])
+
+    if not symbols_set:
+        symbols_set = {"EURUSD=X", "GBPUSD=X", "USDJPY=X", "BTC-USD", "ETH-USD"}
+
+    return sorted(list(symbols_set))
+
+
+def get_default_lot_for_symbol(symbol):
+    """يُرجع اللوت الافتراضي حسب نوع الأصل."""
+    s = str(symbol).upper()
+    if any(x in s for x in ["BTC", "ETH"]): return 0.001
+    if any(x in s for x in ["XAU", "GOLD"]): return 0.01
+    return 0.01
+
+
+def get_last_known_price(symbol):
+    """يجلب آخر سعر معروف للرمز."""
+    if "backtest_dfs" in st.session_state:
+        df = st.session_state.backtest_dfs.get(symbol)
+        if df is not None and not df.empty:
+            try:
+                return float(df["Close"].iloc[-1])
+            except Exception:
+                pass
+
+    if "scanned_signals" in st.session_state:
+        for item in st.session_state.scanned_signals:
+            if item.get("symbol") == symbol:
+                entry = item["result"].get("entry")
+                if entry:
+                    return float(entry)
+
+    return None
+
+
+def render_advanced_risk_calculator():
+    """حاسبة المخاطرة التفاعلية المتقدمة."""
+    st.markdown("### 💰 حاسبة المخاطرة المتقدمة")
+    st.caption("اختر العملة، أدخل السعر واللوت، وشاهد النتيجة فورًا")
+
+    # ═══ 1️⃣ الإعدادات العامة ═══
+    st.markdown("#### 1️⃣ الإعدادات العامة")
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        capital = st.number_input(
+            "💵 رأس المال ($):",
+            min_value=10.0, max_value=10_000_000.0, value=1000.0,
+            step=100.0, format="%.2f", key="adv_risk_capital"
+        )
+
+    with c2:
+        risk_pct = st.selectbox(
+            "📊 نسبة المخاطرة (%):",
+            options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            index=4, key="adv_risk_pct"
+        )
+
+    max_risk_usd = capital * (risk_pct / 100)
+
+    with c3:
+        st.metric("🛑 الحد الأقصى للمخاطرة", f"${max_risk_usd:,.2f}")
+
+    st.markdown("---")
+
+    # ═══ 2️⃣ اختيار العملة ═══
+    st.markdown("#### 2️⃣ اختيار العملة")
+    available_symbols = get_available_symbols()
+
+    if not available_symbols:
+        st.warning("⚠️ لا توجد رموز متاحة. تأكد من تحميل البيانات أولاً.")
+        return
+
+    col_sym, col_lot = st.columns([2, 1])
+
+    with col_sym:
+        selected_symbol = st.selectbox(
+            "🔽 اختر العملة من الشيت:",
+            options=available_symbols, index=0, key="adv_risk_symbol"
+        )
+
+    with col_lot:
+        default_lot = get_default_lot_for_symbol(selected_symbol)
+        custom_lot = st.number_input(
+            "💰 اللوت المخصص:",
+            min_value=0.0001, max_value=100.0,
+            value=default_lot, step=0.001, format="%.4f",
+            key=f"adv_risk_lot_{selected_symbol}",
+            help="يمكنك تخصيص حجم اللوت لكل عملة"
+        )
+
+    # ═══ 3️⃣ بيانات الصفقة ═══
+    st.markdown("#### 3️⃣ بيانات الصفقة")
+    last_price = get_last_known_price(selected_symbol)
+    default_entry = last_price if last_price else 1.0
+
+    c_entry, c_sl, c_tp = st.columns(3)
+
+    with c_entry:
+        entry_price = st.number_input(
+            "📈 سعر الدخول:", value=float(default_entry),
+            format="%.5f", key=f"adv_entry_{selected_symbol}",
+            help="آخر سعر معروف تم جلبه تلقائيًا"
+        )
+
+    with c_sl:
+        sl_price = st.number_input(
+            "🛑 وقف الخسارة:", value=float(default_entry * 1.01),
+            format="%.5f", key=f"adv_sl_{selected_symbol}"
+        )
+
+    with c_tp:
+        tp_price = st.number_input(
+            "🏆 الهدف:", value=float(default_entry * 0.98),
+            format="%.5f", key=f"adv_tp_{selected_symbol}"
+        )
+
+    # ═══ 4️⃣ النتيجة الفورية ═══
+    st.markdown("---")
+    st.markdown("#### 4️⃣ النتيجة الفورية")
+
+    check = check_risk_limit(
+        entry_price, sl_price, custom_lot,
+        selected_symbol, capital, risk_pct
+    )
+
+    try:
+        risk_distance = abs(float(entry_price) - float(sl_price))
+        reward_distance = abs(float(tp_price) - float(entry_price))
+        rr = round(reward_distance / risk_distance, 2) if risk_distance > 0 else "—"
+    except Exception:
+        rr = "—"
+
+    potential_profit_usd = None
+    if check["risk_usd"] is not None and isinstance(rr, (int, float)) and rr != "—":
+        potential_profit_usd = round(check["risk_usd"] * rr, 2)
+
+    if check["allowed"]:
+        st.success("### ✅ مقبولة — ضمن حد المخاطرة")
+    else:
+        st.error("### ❌ مرفوضة — تجاوزت حد المخاطرة")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("💸 المخاطرة", f"${check['risk_usd']:,.2f}" if check['risk_usd'] else "—")
+    m2.metric("📊 النسبة الفعلية", f"{check['risk_pct_actual']}%" if check['risk_pct_actual'] else "—")
+    m3.metric("⚖️ R:R", f"1:{rr}" if rr != "—" else "—")
+    m4.metric("🎯 الربح المتوقع", f"${potential_profit_usd:,.2f}" if potential_profit_usd else "—")
+
+    st.info(f"**التفاصيل:** {check['message']}")
+
+    # ═══ 5️⃣ اقتراحات ═══
+    if not check["allowed"] and check["risk_usd"]:
+        st.markdown("#### 💡 اقتراحات للتصحيح")
+
+        suggested_lot = custom_lot * (max_risk_usd / check["risk_usd"])
+        suggested_lot = round(max(0.0001, suggested_lot), 4)
+
+        sl_distance = abs(float(entry_price) - float(sl_price))
+        suggested_sl_distance = sl_distance * (max_risk_usd / check["risk_usd"])
+        is_sell = sl_price > entry_price
+        suggested_sl = entry_price + suggested_sl_distance if is_sell else entry_price - suggested_sl_distance
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.warning(f"""
+            **🔽 الخيار 1: تقليل اللوت**
+
+            - اللوت الحالي: `{custom_lot}`
+            - اللوت المقترح: `{suggested_lot}`
+            - المخاطرة الجديدة: `${max_risk_usd:.2f}`
+            """)
+
+        with c2:
+            st.warning(f"""
+            **📉 الخيار 2: تقريب SL**
+
+            - SL الحالي: `{sl_price:.5f}`
+            - SL المقترح: `{suggested_sl:.5f}`
+            - المسافة الجديدة: `{suggested_sl_distance:.5f}`
+            """)
+
+    # ═══ 6️⃣ جدول مرجعي ═══
+    with st.expander("📋 جدول مرجعي: قيمة النقطة واللوت الافتراضي"):
+        reference_data = []
+        for sym in available_symbols[:20]:
+            pip = pip_size_for(sym)
+            default_l = get_default_lot_for_symbol(sym)
+            reference_data.append({
+                "الزوج": sym,
+                "حجم النقطة": pip,
+                "اللوت الافتراضي": default_l,
+                "نوع الأصل": (
+                    "🪙 رقمية" if any(x in sym.upper() for x in ["BTC", "ETH"])
+                    else "🥇 معدن" if any(x in sym.upper() for x in ["XAU", "XAG"])
+                    else "💴 ين" if "JPY" in sym.upper()
+                    else "💱 عملة عالية" if any(c in sym.upper() for c in ["HUF", "TRY", "SEK", "NOK", "ZAR", "MXN"])
+                    else "💵 فوركس"
+                )
+            })
+        st.dataframe(pd.DataFrame(reference_data), use_container_width=True, hide_index=True)
 
 
 # ==============================================================================
@@ -354,7 +682,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         if error_log:
             with st.expander(f"⚠️ تحذيرات ({len(error_log)})"):
                 for msg in error_log: st.text(msg)
-    
+
     if st.session_state.backtest_scanned_signals:
         res_list = st.session_state.backtest_scanned_signals
         dfs_dict = st.session_state.backtest_dfs
@@ -589,7 +917,16 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         st.dataframe(trades_df[display_cols] if display_cols else trades_df,
                      use_container_width=True)
 
+        # ═══════════════════════════════════════════════════════════════════════
+        # 💰 حاسبة المخاطرة المتقدمة
+        # ═══════════════════════════════════════════════════════════════════════
         st.markdown("---")
+        render_advanced_risk_calculator()
+        st.markdown("---")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # 🔬 التقرير التشخيصي الذكي
+        # ═══════════════════════════════════════════════════════════════════════
         with st.expander("🔬 التقرير التشخيصي الذكي — تحليل النجاح والفشل", expanded=True):
             if diagnose_filters is None:
                 st.error("⚠️ دالة `diagnose_filters` غير موجودة في `engine.py` — أضفها لتشغيل التقرير.")
@@ -840,4 +1177,10 @@ else:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
-                    
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 💰 حاسبة المخاطرة المتقدمة — الوضع الحي
+    # ═══════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    render_advanced_risk_calculator()
+
