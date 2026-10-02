@@ -354,7 +354,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         if error_log:
             with st.expander(f"⚠️ تحذيرات ({len(error_log)})"):
                 for msg in error_log: st.text(msg)
-        if st.session_state.backtest_scanned_signals:
+    
+    if st.session_state.backtest_scanned_signals:
         res_list = st.session_state.backtest_scanned_signals
         dfs_dict = st.session_state.backtest_dfs
         period_display = st.session_state.get("backtest_period", "غير محدد")
@@ -369,7 +370,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             g_res_col = None
             for col in ["Result", "Head Result"]:
                 if col in combined_df.columns:
-                    g_res_col = col; break
+                    g_res_col = col
+                    break
 
             if g_res_col:
                 g_series = combined_df[g_res_col].astype(str).str.upper()
@@ -470,7 +472,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         res_col = None
         for col in ["Result", "Head Result"]:
             if col in trades_df.columns:
-                res_col = col; break
+                res_col = col
+                break
 
         if res_col:
             res_series = trades_df[res_col].astype(str).str.upper()
@@ -530,7 +533,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         conds = []
         for col in ["Entry Conditions", "Pattern", "pattern"]:
             if col in trades_df.columns:
-                conds = trades_df[col].dropna().unique().tolist(); break
+                conds = trades_df[col].dropna().unique().tolist()
+                break
         cond_str = " | ".join(map(str, conds)) if conds else "اختراق خط العنق + اكتمال هيكل النمط"
 
         st.info(f"**هـ. شروط الدخول:** {cond_str} | **🎯 دقة الهيكل (Symmetry):** {avg_symmetry}")
@@ -577,7 +581,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             )
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
 
-        # جدول الصفقات مع أعمدة النقاط
         display_cols = [c for c in [
             "Entry Date", "Exit Date", "Symbol", "symbol", "Bias", "bias", "Result",
             "Entry Price", "Entry", "Exit Price", "Stop Loss", "SL", "Take Profit", "TP",
@@ -586,9 +589,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         st.dataframe(trades_df[display_cols] if display_cols else trades_df,
                      use_container_width=True)
 
-        # ═══════════════════════════════════════════════════════════════════════
-        # 🔬 التقرير التشخيصي الذكي
-        # ═══════════════════════════════════════════════════════════════════════
         st.markdown("---")
         with st.expander("🔬 التقرير التشخيصي الذكي — تحليل النجاح والفشل", expanded=True):
             if diagnose_filters is None:
@@ -717,9 +717,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     st.error(f"⚠️ خطأ في التقرير التشخيصي: {type(e).__name__}: {e}")
                     st.code(traceback.format_exc())
 
-# ==============================================================================
-# ================= LIVE SCAN MODE =================
-# ==============================================================================
 else:
 
     scan_mode = st.radio(
@@ -791,7 +788,6 @@ else:
         e2.metric("🛑 وقف الخسارة", f"{active_res.get('sl', 0)}")
         e3.metric("🏆 الهدف",       f"{active_res.get('tp', 0)}")
 
-        # حساب النقاط لحظيًا للصفقة النشطة
         _live_entry = active_res.get('entry') or 0
         _live_sl    = active_res.get('sl')    or 0
         _live_tp    = active_res.get('tp')    or 0
@@ -844,4 +840,4 @@ else:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
-        
+                    
