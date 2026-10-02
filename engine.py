@@ -1,28 +1,24 @@
 # -*- coding: utf-8 -*-
 """
 ENGINE.PY - Head & Shoulders Detector
-Merged: v4.6 pattern logic + strict filters + diagnostics + breakeven
-UPDATED: Realistic entry (end_val) + Equal Shoulders/Neckline + Correct RSI
+No EMA / No RSI / Break-even + Time Stop 700
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
     "ZIGZAG_DEPTH": 8,
-    "ZIGZAG_BACKSTEP": 3,
+    "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 3,
-    "SHOULDER_DIFF_MAX_RATIO": 0.10,
-    "HEAD_PROPORTION_MIN_RATIO": 0.20,
-    "NECKLINE_DIFF_MAX_RATIO": 0.10,
-    "LIVE_MAX_BREAKOUT_CANDLES": 15,
-    "EMA_FAST_SPAN": 50,
-    "EMA_SLOW_SPAN": 200,
-    "REQUIRE_STRICT_TREND": False,
+    "SHOULDER_DIFF_MAX_RATIO": 0.50,
+    "HEAD_PROPORTION_MIN_RATIO": 0.15,
+    "NECKLINE_DIFF_MAX_RATIO": 0.40,
+    "LIVE_MAX_BREAKOUT_CANDLES": 10,
     "BREAKOUT_MIN_PCT": 0.0002,
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
-    "BREAKEVEN_ACTIVATION_PCT": 1.00,
+    "BREAKEVEN_ACTIVATION_PCT": 0.50,
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 700
@@ -50,15 +46,9 @@ def _get_max_pattern_duration(interval):
 
 
 def calculate_indicators(df):
+    """حساب ATR و Dynamic_Swing فقط (بدون EMA/RSI)"""
     df = df.copy()
-    df["EMA50"] = df["Close"].ewm(span=CONFIG["EMA_FAST_SPAN"], adjust=False).mean()
-    df["EMA200"] = df["Close"].ewm(span=CONFIG["EMA_SLOW_SPAN"], adjust=False).mean()
 
-    delta = df["Close"].diff()
-    gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
-    loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
-    loss_safe = loss.replace(0, 1e-9)
-    rs = gain / loss_safe
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -180,7 +170,7 @@ def get_chronological_pivots(df):
 
 
 def simulate_trade_outcome(pattern, df):
-    """محاكاة نتيجة الصفقة مع Break-even Stop"""
+    """محاكاة مع Break-even + Time Stop 700"""
     bias = pattern["bias"]
     entry = float(pattern["entry"])
     sl = float(pattern["sl"])
@@ -206,7 +196,6 @@ def simulate_trade_outcome(pattern, df):
     )
 
     BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.50)
-    original_sl = sl
     breakeven_activated = False
 
     stats = {
@@ -252,6 +241,7 @@ def simulate_trade_outcome(pattern, df):
         if total_sl_dist > 0:
             max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
 
+        # Break-even
         if (not breakeven_activated) and total_tp_dist > 0:
             if bias == "Bearish":
                 if low <= entry - BE_ACTIVATION * total_tp_dist:
@@ -329,6 +319,7 @@ def simulate_trade_outcome(pattern, df):
 
 
 class PatternValidatorPipeline:
+    """فلاتر بدون EMA و بدون RSI"""
 
     def __init__(self, df):
         self.df = df
@@ -340,49 +331,8 @@ class PatternValidatorPipeline:
                 return False
         return True
 
-    def strict_trend_filter(self, p):
-        if not CONFIG.get("REQUIRE_STRICT_TREND", True):
-            return True
-
-        idx_end = p[5]["idx"]
-        if idx_end not in self.df.index:
-            return False
-
-        row = self.df.loc[idx_end]
-        ema50 = row.get("EMA50", None)
-        ema200 = row.get("EMA200", None)
-        price = row.get("Close", None)
-
-        if pd.isna(ema50) or pd.isna(ema200) or pd.isna(price):
-            return False
-
-        ema50 = float(ema50)
-        ema200 = float(ema200)
-        price = float(price)
-        is_bearish = (p[3]["type"] == "H")
-
-        if is_bearish:
-            return price < ema50 and price < ema200
-        else:
-            return price > ema50 and price > ema200
-
     def invalidation_filter(self, p):
         return True
-
-    def indicator_filter(self, p):
-        idx_end = p[5]["idx"]
-        if idx_end not in self.df.index:
-            return False
-        rsi_val = self.df.loc[idx_end, "RSI"]
-        if pd.isna(rsi_val):
-            return False
-        rsi_val = float(rsi_val)
-
-        is_bearish = (p[3]["type"] == "H")
-        if is_bearish:
-            return CONFIG["RSI_MIN_BEARISH"] <= rsi_val <= CONFIG["RSI_MAX_BEARISH"]
-        else:
-            return CONFIG["RSI_MIN_BULLISH"] <= rsi_val <= CONFIG["RSI_MAX_BULLISH"]
 
     def breakout_filter(self, p):
         idx_h3 = p[5]["idx"]
@@ -431,11 +381,7 @@ class PatternValidatorPipeline:
     def run(self, p):
         if not self.time_filter(p):
             return False, None, None
-        if not self.strict_trend_filter(p):
-            return False, None, None
         if not self.invalidation_filter(p):
-            return False, None, None
-        if not self.indicator_filter(p):
             return False, None, None
 
         result = self.breakout_filter(p)
@@ -517,7 +463,7 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         neckline_avg = (l1 + l2) / 2.0
         actual_head_length = h2 - neckline_avg
 
-        entry = float(end_val)
+        entry = neckline_avg
         sl = h2
         tp = entry - actual_head_length
 
@@ -549,7 +495,7 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Head and Shoulders",
-            "Entry Conditions": "Strict Trend + RSI(25-50) + Breakout + Equal Shoulders/Neckline",
+            "Entry Conditions": "Breakout Only",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -570,6 +516,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
+
         if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
             continue
 
@@ -630,7 +577,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         neckline_avg = (h1 + h2) / 2.0
         actual_head_length = neckline_avg - l2
 
-        entry = float(end_val)
+        entry = neckline_avg
         sl = l2
         tp = entry + actual_head_length
 
@@ -662,7 +609,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
             "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Inverse Head and Shoulders",
-            "Entry Conditions": "Strict Trend + RSI(35-75) + Breakout + Equal Shoulders/Neckline",
+            "Entry Conditions": "Breakout Only",
         }
 
         sim = simulate_trade_outcome(pattern, df)
@@ -808,397 +755,14 @@ def backtest_strategy(df, interval="1h", symbol=None):
     return trades
 
 
-# ==============================================================================
-# 🔬 DIAGNOSE FILTERS — تقرير تشخيصي ذكي (بدون Streamlit)
-# ==============================================================================
-def diagnose_filters(df, interval="1h", symbol=None):
-    """
-    تقرير تشخيصي كامل:
-      - أي فلتر يرفض أكثر
-      - عينات من الأنماط المرفوضة
-      - توصيات ذكية
-      - تحليل كل صفقة: نجاح / فشل / لا مفر منه
-    """
-    result = {
-        "total_raw_candidates": 0,
-        "final_count": 0,
-        "stages": {},
-        "recommendations": [],
-        "rejection_samples": {},
-        "error": None,
-        "trade_analysis": [],
-        "smart_diagnosis": {},
-    }
-
-    if df is None or df.empty:
-        result["error"] = "بيانات فارغة"
-        return result
-
-    try:
-        df = df.copy()
-        df = calculate_indicators(df)
-        df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-        pivots = get_chronological_pivots(df)
-
-        if len(pivots) < 6:
-            result["error"] = f"عدد القمم/القيعان غير كافٍ ({len(pivots)})"
-            return result
-
-        # ─── المرشحون الخام ───
-        raw_candidates = []
-        for i in range(len(pivots) - 5):
-            p = pivots[i:i + 6]
-            if [x["type"] for x in p] == ["L", "H", "L", "H", "L", "H"]:
-                raw_candidates.append({"type": "Bearish", "pivots": p})
-            elif [x["type"] for x in p] == ["H", "L", "H", "L", "H", "L"]:
-                raw_candidates.append({"type": "Bullish", "pivots": p})
-
-        result["total_raw_candidates"] = len(raw_candidates)
-
-        # ─── تشغيل الفلاتر مرحلة بمرحلة ───
-        validator = PatternValidatorPipeline(df)
-        stages = {
-            "1. Time Filter (MIN_WAVE_CANDLES)": {"before": 0, "after": 0, "rejected": []},
-            "2. Strict Trend (EMA50/200)": {"before": 0, "after": 0, "rejected": []},
-            "3. RSI Filter": {"before": 0, "after": 0, "rejected": []},
-            "4. Breakout + Confirm": {"before": 0, "after": 0, "rejected": []},
-            "5. Volume Filter": {"before": 0, "after": 0, "rejected": []},
-        }
-
-        for cand in raw_candidates:
-            p = cand["pivots"]
-            bias = cand["type"]
-
-            # 1) Time
-            stages["1. Time Filter (MIN_WAVE_CANDLES)"]["before"] += 1
-            if not validator.time_filter(p):
-                stages["1. Time Filter (MIN_WAVE_CANDLES)"]["rejected"].append({
-                    "bias": bias, "head_val": p[3]["val"],
-                    "reason": "موجات قصيرة جداً"
-                })
-                continue
-            stages["1. Time Filter (MIN_WAVE_CANDLES)"]["after"] += 1
-
-            # 2) Trend
-            stages["2. Strict Trend (EMA50/200)"]["before"] += 1
-            if not validator.strict_trend_filter(p):
-                stages["2. Strict Trend (EMA50/200)"]["rejected"].append({
-                    "bias": bias, "head_val": p[3]["val"],
-                    "reason": "السعر ليس في الاتجاه الصحيح مقابل EMA50/EMA200"
-                })
-                continue
-            stages["2. Strict Trend (EMA50/200)"]["after"] += 1
-
-            # 3) RSI
-            stages["3. RSI Filter"]["before"] += 1
-            if not validator.indicator_filter(p):
-                idx_end = p[5]["idx"]
-                rsi_val = float(df.loc[idx_end, "RSI"]) if idx_end in df.index else None
-                stages["3. RSI Filter"]["rejected"].append({
-                    "bias": bias, "head_val": p[3]["val"],
-                    "reason": f"RSI={round(rsi_val,1) if rsi_val else 'N/A'} خارج النطاق"
-                })
-                continue
-            stages["3. RSI Filter"]["after"] += 1
-
-            # 4) Breakout
-            stages["4. Breakout + Confirm"]["before"] += 1
-            br = validator.breakout_filter(p)
-            if br is None:
-                stages["4. Breakout + Confirm"]["rejected"].append({
-                    "bias": bias, "head_val": p[3]["val"],
-                    "reason": "لم يحدث كسر لخط العنق"
-                })
-                continue
-            br_idx, br_price = br
-            if not validator.breakout_confirm_filter(p, br_price):
-                stages["4. Breakout + Confirm"]["rejected"].append({
-                    "bias": bias, "head_val": p[3]["val"],
-                    "reason": "كسر ضعيف (< BREAKOUT_MIN_PCT)"
-                })
-                continue
-            stages["4. Breakout + Confirm"]["after"] += 1
-
-            # 5) Volume
-            stages["5. Volume Filter"]["before"] += 1
-            if not validator.volume_filter(br_idx):
-                stages["5. Volume Filter"]["rejected"].append({
-                    "bias": bias, "head_val": p[3]["val"],
-                    "reason": "حجم الكسر أقل من المتوسط"
-                })
-                continue
-            stages["5. Volume Filter"]["after"] += 1
-
-        # ─── تجميع نتائج المراحل ───
-        for name, data in stages.items():
-            before = data["before"]
-            after = data["after"]
-            result["stages"][name] = {
-                "before": before,
-                "after": after,
-                "rejected": before - after,
-                "pass_rate": f"{round(after / max(before, 1) * 100, 1)}%" if before else "0%",
-            }
-            if data["rejected"]:
-                result["rejection_samples"][name] = data["rejected"][:5]
-
-        # ─── التشغيل النهائي ───
-        max_gap = _get_max_gap(interval)
-        max_dur = _get_max_pattern_duration(interval)
-        patterns = detect_all_head_shoulders(
-            pivots, df, is_backtest=True,
-            max_gap=max_gap, max_pattern_duration=max_dur
-        )
-        result["final_count"] = len(patterns)
-
-        # ─── تحليل كل صفقة ───
-        result["trade_analysis"] = _analyze_trades(patterns, df)
-
-        # ─── التشخيص الذكي الشامل ───
-        result["smart_diagnosis"] = _build_smart_diagnosis(
-            result, patterns, df, raw_candidates
-        )
-
-        # ─── توصيات عامة ───
-        result["recommendations"] = _build_recommendations(result)
-
-    except Exception as e:
-        import traceback
-        result["error"] = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-
-    return result
-
-
-def _analyze_trades(patterns, df):
-    analysis = []
-    for i, pat in enumerate(patterns):
-        entry = float(pat["entry"])
-        sl = float(pat["sl"])
-        tp = float(pat["tp"])
-        bias = pat["bias"]
-        result_status = pat.get("Result", "OPEN")
-
-        max_reach = pat.get("Max Reach %", 0.0)
-        sl_safety = pat.get("SL Safety %", 100.0)
-
-        failure_category = None
-        failure_reason = None
-        is_unavoidable = False
-        recommendation = None
-
-        if result_status == "WIN":
-            failure_category = "success"
-            failure_reason = f"✅ تحقق الهدف (وصل السعر إلى {max_reach}% من الطريق)"
-            recommendation = "استمر بنفس الإعدادات"
-
-        elif result_status == "LOSS":
-            if max_reach < 20:
-                failure_category = "immediate_rejection"
-                failure_reason = (
-                    f"❌ رفض فوري: السعر لم يتحرك سوى {max_reach}% "
-                    f"ثم انعكس مباشرة إلى SL (Fake Breakout)."
-                )
-                recommendation = "ارفع BREAKOUT_MIN_PCT إلى 0.0005 + ألزم فلتر الحجم"
-                is_unavoidable = False
-
-            elif max_reach >= 70:
-                failure_category = "late_reversal"
-                failure_reason = (
-                    f"❌ انعكاس متأخر: السعر وصل إلى {max_reach}% "
-                    f"ثم انعكس إلى SL (إحصائي طبيعي)."
-                )
-                recommendation = "Break-even مُفعّل — لا تغيير مطلوب"
-                is_unavoidable = True
-
-            elif max_reach >= 40:
-                failure_category = "mid_reversal"
-                failure_reason = (
-                    f"⚠️ انعكاس متوسط: السعر وصل إلى {max_reach}% ثم ارتد."
-                )
-                recommendation = "استخدم Trailing Stop بدل TP ثابت"
-                is_unavoidable = True
-
-            else:
-                failure_category = "early_reversal"
-                failure_reason = (
-                    f"❌ انعكاس مبكر: السعر وصل إلى {max_reach}% فقط."
-                )
-                recommendation = "شدّد فلتر Trend + انتظر إعادة اختبار خط العنق"
-                is_unavoidable = False
-
-        elif result_status == "BREAKEVEN":
-            failure_category = "breakeven"
-            failure_reason = (
-                f"⚖️ تعادل: تم تفعيل Break-even عند 50% "
-                f"(وصل السعر إلى {max_reach}% قبل الانعكاس)."
-            )
-            recommendation = "أداء ممتاز — تم حماية رأس المال"
-            is_unavoidable = True
-
-        elif result_status == "TIMEOUT":
-            failure_category = "timeout"
-            failure_reason = (
-                f"⏰ انتهاء الوقت: لم يصل للهدف ولا لـ SL خلال "
-                f"{pat.get('Timeout Used', 0)} شمعة (وصل إلى {max_reach}%)."
-            )
-            recommendation = "زد TIMEOUT_DURATION_MULTIPLIER أو تصفية يدوية"
-            is_unavoidable = False
-
-        else:
-            failure_category = "open"
-            failure_reason = "⏳ صفقة مفتوحة — لم تُحسم بعد"
-            recommendation = None
-
-        risk = abs(entry - sl)
-        reward = abs(tp - entry)
-        rr_ratio = round(reward / risk, 2) if risk > 0 else 0
-
-        analysis.append({
-            "trade_num": i + 1,
-            "bias": bias,
-            "result": result_status,
-            "category": failure_category,
-            "reason": failure_reason,
-            "is_unavoidable": is_unavoidable,
-            "recommendation": recommendation,
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "rr_ratio": rr_ratio,
-            "max_reach_%": max_reach,
-            "sl_safety_%": sl_safety,
-            "breakeven_activated": pat.get("Breakeven Activated", False),
-            "candles_to_exit": pat.get("candles_to_exit", 0),
-            "pattern_duration": pat.get("Pattern Duration", 0),
-        })
-
-    return analysis
-
-
-def _build_smart_diagnosis(result, patterns, df, raw_candidates):
-    diag = {
-        "verdict": "",
-        "win_breakdown": {},
-        "loss_breakdown": {},
-        "unavoidable_losses": 0,
-        "avoidable_losses": 0,
-        "top_blocker": None,
-        "action_plan": [],
-    }
-
-    trades = result.get("trade_analysis", [])
-    if not trades:
-        diag["verdict"] = "لا توجد صفقات لتحليلها"
-        return diag
-
-    wins = [t for t in trades if t["result"] == "WIN"]
-    losses = [t for t in trades if t["result"] == "LOSS"]
-    breakevens = [t for t in trades if t["result"] == "BREAKEVEN"]
-    timeouts = [t for t in trades if t["result"] == "TIMEOUT"]
-
-    closed = len(wins) + len(losses)
-    win_rate = round(len(wins) / closed * 100, 1) if closed else 0
-
-    unavoidable = [t for t in losses if t["is_unavoidable"]]
-    avoidable = [t for t in losses if not t["is_unavoidable"]]
-
-    diag["unavoidable_losses"] = len(unavoidable)
-    diag["avoidable_losses"] = len(avoidable)
-
-    diag["win_breakdown"] = {
-        "total_wins": len(wins),
-        "win_rate_%": win_rate,
-        "avg_max_reach": round(sum(t["max_reach_%"] for t in wins) / max(len(wins), 1), 1),
-    }
-
-    diag["loss_breakdown"] = {
-        "immediate_rejection": len([t for t in losses if t["category"] == "immediate_rejection"]),
-        "early_reversal": len([t for t in losses if t["category"] == "early_reversal"]),
-        "mid_reversal": len([t for t in losses if t["category"] == "mid_reversal"]),
-        "late_reversal": len([t for t in losses if t["category"] == "late_reversal"]),
-        "unavoidable": len(unavoidable),
-        "avoidable": len(avoidable),
-    }
-
-    if win_rate >= 65:
-        diag["verdict"] = f"🟢 ممتاز — نسبة نجاح {win_rate}% ({len(wins)}/{closed})"
-    elif win_rate >= 50:
-        diag["verdict"] = f"🟡 مقبول — نسبة نجاح {win_rate}% — يحتاج تحسين"
-    else:
-        diag["verdict"] = f"🔴 ضعيف — نسبة نجاح {win_rate}% — يحتاج مراجعة عاجلة"
-
-    blockers = []
-    for name, data in result["stages"].items():
-        if data["rejected"] > 0:
-            blockers.append((name, data["rejected"]))
-    if blockers:
-        top = max(blockers, key=lambda x: x[1])
-        diag["top_blocker"] = {"name": top[0], "rejected": top[1]}
-
-    plan = []
-    if diag["loss_breakdown"]["immediate_rejection"] >= 2:
-        plan.append("🔴 رفض فوري متكرر → ارفع BREAKOUT_MIN_PCT وألزم فلتر الحجم")
-    if diag["loss_breakdown"]["early_reversal"] >= 2:
-        plan.append("🟡 انعكاس مبكر متكرر → شدّد فلتر EMA")
-    if diag["loss_breakdown"]["mid_reversal"] >= 2:
-        plan.append("🟡 انعكاس متوسط → فعّل Trailing Stop عند 40% من الهدف")
-    if len(unavoidable) > 0:
-        plan.append(f"⚪ {len(unavoidable)} خسارة لا مفر منها إحصائياً — لا تحاول تجنبها")
-    if len(breakevens) > len(losses) / 2:
-        plan.append("🟢 Break-even يعمل بكفاءة — يستحق الإبقاء")
-    if not plan:
-        plan.append("✅ الأداء متوازن — لا توجد توصيات عاجلة")
-
-    diag["action_plan"] = plan
-    return diag
-
-
-def _build_recommendations(result):
-    recs = []
-    total_raw = result["total_raw_candidates"]
-    final = result["final_count"]
-    acceptance = (final / total_raw * 100) if total_raw else 0
-
-    if acceptance < 5:
-        recs.append({
-            "severity": "حرج",
-            "message": f"نسبة القبول منخفضة جداً ({round(acceptance,1)}%) — الفلاتر صارمة أكثر من اللازم"
-        })
-    elif acceptance < 15:
-        recs.append({
-            "severity": "متوسط",
-            "message": f"نسبة القبول منخفضة ({round(acceptance,1)}%) — قد تحتاج تخفيف فلتر"
-        })
-
-    for name, data in result["stages"].items():
-        if data["before"] > 0:
-            reject_rate = data["rejected"] / data["before"] * 100
-            if reject_rate > 70:
-                recs.append({
-                    "severity": "حرج",
-                    "message": f"الفلتر '{name}' يرفض {round(reject_rate,1)}% — أهم عائق"
-                })
-            elif reject_rate > 50:
-                recs.append({
-                    "severity": "متوسط",
-                    "message": f"الفلتر '{name}' يرفض {round(reject_rate,1)}% — يستحق مراجعة"
-                })
-
-    return recs
-
-
 if __name__ == "__main__":
-    print("ENGINE.PY - Head & Shoulders Detector")
+    print("ENGINE.PY - H&S Detector (No EMA / No RSI)")
     print("Filters:")
     print("  1. max_gap (H3 to Breakout)")
     print("  2. max_pattern_duration (L0 to H3)")
-    print("  3. Time Stop = max(300, pattern_duration x 3)")
-    print("  4. Strict Trend: Price vs EMA50 vs EMA200")
-    print("  5. RSI Bearish: 25-50 | RSI Bullish: 35-75")
-    print("  6. Breakout confirm")
-    print("  7. Break-even Stop: SL to Entry at 50% of TP")
-    print("  8. Equal Shoulders (10%) + Equal Neckline (10%)")
+    print("  3. Time Stop = max(700, pattern_duration x 3)")
+    print("  4. Breakout confirm (0.02%)")
+    print("  5. Break-even Stop: SL to Entry at 50% of TP")
     print("Functions:")
     print("  - run_full_analysis(df, interval, symbol)")
     print("  - backtest_strategy(df, interval, symbol)")
-    print("  - diagnose_filters(df, interval, symbol)")
