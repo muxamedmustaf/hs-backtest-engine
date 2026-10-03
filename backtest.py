@@ -1314,6 +1314,27 @@ else:
     # ═══════════════════════════════════════════════════════════════════════
     # 💰 حاسبة المخاطرة المتقدمة — الوضع الحي
     # ═══════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    render_advanced_risk_calculator()
+# ═══════════════════════════════════════════════════════════════════
+# 🎯 التصرفات المطلوبة الآن
+# ═══════════════════════════════════════════════════════════════════
+st.markdown("---")
 
+if st.session_state.scanned_signals:
+    with st.expander("🎯 التصرفات المطلوبة الآن", expanded=True):
+        live_df = pd.DataFrame([{
+            "symbol": i["symbol"],
+            "Entry Price": i["result"].get("entry"),
+            "Stop Loss": i["result"].get("sl"),
+            "Take Profit": i["result"].get("tp"),
+            "bias": i["result"].get("bias"),
+            "Result": "OPEN",
+            "Max Reach %": i["result"].get("Max Reach %", 0),
+            "Lot": 0.01,
+        } for i in st.session_state.scanned_signals])
+        render_realtime_actions(live_df, is_live=True)
+
+# ═══════════════════════════════════════════════════════════════════
+# 💰 حاسبة المخاطرة المتقدمة
+# ═══════════════════════════════════════════════════════════════════
+with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
+    render_advanced_risk_calculator()
