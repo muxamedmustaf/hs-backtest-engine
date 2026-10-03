@@ -339,6 +339,139 @@ def get_last_known_price(symbol):
     return None
 
 
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 التصرفات الفورية (Realtime Actions)
+# ═══════════════════════════════════════════════════════════
+def render_realtime_actions(trades_df, is_live=False, live_prices=None):
+    """تنبيهات فورية للتصرفات الحالية — فقط الصفقات التي تحتاج تدخل."""
+    st.markdown("### 🎯 التصرفات المطلوبة الآن")
+    st.caption("إجراءات محدّدة لصفقاتك — لا تاريخية")
+
+    if trades_df is None or trades_df.empty:
+        st.info("ℹ️ لا توجد صفقات للتحليل")
+        return
+
+    actions = []
+
+    if is_live:
+        relevant = trades_df.index.tolist()
+    else:
+        relevant = trades_df.tail(5).index.tolist() if len(trades_df) > 5 else trades_df.index.tolist()
+
+    for idx in relevant:
+        row = trades_df.loc[idx]
+        sym = row.get("symbol") or row.get("Symbol") or "?"
+        result = str(row.get("Result", "")).upper()
+
+        if not is_live and result in ["WIN", "LOSS", "TIMEOUT", "BREAKEVEN"]:
+            continue
+
+        try:
+            entry_f = float(row.get("Entry Price") or row.get("Entry") or 0)
+            sl_f = float(row.get("Stop Loss") or row.get("SL") or 0)
+            tp_f = float(row.get("Take Profit") or row.get("TP") or 0)
+        except (TypeError, ValueError):
+            continue
+
+        if entry_f == 0 or sl_f == 0 or tp_f == 0:
+            continue
+
+        bias = str(row.get("bias") or row.get("Bias") or "").upper()
+        is_bearish = "BEAR" in bias or "SELL" in bias
+        progress = row.get("Max Reach %", 0) or 0
+
+        if is_live and live_prices and sym in live_prices:
+            current_price = live_prices[sym]
+            progress = ((entry_f - current_price) if is_bearish else (current_price - entry_f)) / abs(tp_f - entry_f) * 100
+            progress = max(0, min(progress, 200))
+
+        if progress < 15:
+            continue
+
+        total_tp = abs(tp_f - entry_f)
+
+        if progress >= 80:
+            priority = "🔴 عاجل"
+            action = "إغلاق 50% + Trailing 60%"
+            new_sl = entry_f + (0.6 * total_tp * (-1 if is_bearish else 1))
+            guaranteed = "60%"
+        elif progress >= 50:
+            priority = "🟠 عالي"
+            action = "تفعيل Trailing 30%"
+            new_sl = entry_f + (0.3 * total_tp * (-1 if is_bearish else 1))
+            guaranteed = "30%"
+        elif progress >= 25:
+            priority = "🟡 متوسط"
+            action = "نقل SL إلى التعادل"
+            new_sl = entry_f
+            guaranteed = "0%"
+        else:
+            continue
+
+        try:
+            lot = row.get("Lot") or 0.01
+            if any(x in sym.upper() for x in ["BTC", "ETH"]):
+                dollar_profit = abs(entry_f - new_sl) * float(lot)
+            elif is_bearish:
+                dollar_profit = (entry_f - new_sl) * float(lot) * 100000 / entry_f
+            else:
+                dollar_profit = (new_sl - entry_f) * float(lot) * 100000 / entry_f
+        except Exception:
+            dollar_profit = None
+
+        actions.append({
+            "الأولوية": priority, "الزوج": sym, "الوصول": f"{progress:.1f}%",
+            "الإجراء": action, "SL الحالي": f"{sl_f:.5f}", "SL الجديد": f"{new_sl:.5f}",
+            "الربح المضمون": guaranteed,
+            "بالدولار": f"+${dollar_profit:.2f}" if dollar_profit else "—",
+            "_priority": {"🔴 عاجل": 0, "🟠 عالي": 1, "🟡 متوسط": 2}.get(priority, 99),
+        })
+
+    if not actions:
+        st.success("✅ لا توجد صفقات تحتاج تصرفًا الآن")
+        st.caption("الصفقات لم تتجاوز 15% من الهدف بعد — انتظر")
+        return
+
+    actions.sort(key=lambda x: x["_priority"])
+
+    urgent = sum(1 for a in actions if a["الأولوية"] == "🔴 عاجل")
+    high = sum(1 for a in actions if a["الأولوية"] == "🟠 عالي")
+    medium = sum(1 for a in actions if a["الأولوية"] == "🟡 متوسط")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🔴 عاجل", urgent)
+    c2.metric("🟠 عالي", high)
+    c3.metric("🟡 متوسط", medium)
+
+    for action in actions:
+        priority = action["الأولوية"]
+        msg = f"""
+**{priority} | {action['الزوج']}**
+
+🎯 **الإجراء:** {action['الإجراء']}
+📊 **الوصول:** {action['الوصول']} من الهدف
+🛑 **SL:** `{action['SL الحالي']}` → **`{action['SL الجديد']}`**
+💰 **الربح المضمون:** {action['الربح المضمون']} ({action['بالدولار']})
+        """
+        if priority == "🔴 عاجل":
+            st.error(msg)
+        elif priority == "🟠 عالي":
+            st.warning(msg)
+        else:
+            st.info(msg)
+
+    with st.expander("📋 جدول مختصر"):
+        df_display = pd.DataFrame([{
+            "الأولوية": a["الأولوية"], "الزوج": a["الزوج"], "الوصول": a["الوصول"],
+            "الإجراء": a["الإجراء"], "SL الجديد": a["SL الجديد"],
+            "الربح المضمون": a["الربح المضمون"],
+        } for a in actions])
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+
+
+
 def render_advanced_risk_calculator():
     """حاسبة المخاطرة التفاعلية المتقدمة."""
     st.markdown("### 💰 حاسبة المخاطرة المتقدمة")
