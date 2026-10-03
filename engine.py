@@ -195,10 +195,11 @@ def get_chronological_pivots(df):
 
 
 def simulate_trade_outcome(pattern, df):
-    """محاكاة مع Break-even + Time Stop، مع تصنيف سبب الخسارة"""
+    """محاكاة مع Break-even + Trailing Stop تدريجي + Time Stop."""
     bias = pattern["bias"]
     entry = float(pattern["entry"])
-    sl = float(pattern["sl"])
+    initial_sl = float(pattern["sl"])
+    sl = initial_sl
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
 
@@ -215,9 +216,21 @@ def simulate_trade_outcome(pattern, df):
     else:
         pattern_duration = 50
 
-    TIMEOUT_CANDLES = max(TIMEOUT_STATISTICAL_FLOOR, pattern_duration * TIMEOUT_DURATION_MULTIPLIER)
-    BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.50)
+    TIMEOUT_CANDLES = max(
+        TIMEOUT_STATISTICAL_FLOOR,
+        pattern_duration * TIMEOUT_DURATION_MULTIPLIER
+    )
+    BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.30)
+
+    TRAILING_LEVELS = [
+        (BE_ACTIVATION, 0.00),
+        (0.50, 0.30),
+        (0.70, 0.50),
+        (0.90, 0.70),
+    ]
+
     breakeven_activated = False
+    trailing_stage = 0
 
     stats = {
         "Result": "OPEN", "Head Result": "OPEN",
@@ -229,6 +242,9 @@ def simulate_trade_outcome(pattern, df):
         "Timeout Used": TIMEOUT_CANDLES,
         "Breakeven Activated": False,
         "Breakeven Exit": False,
+        "Trailing Stage": 0,
+        "Initial SL": initial_sl,
+        "Final SL": initial_sl,
         "Loss Category": None,
     }
 
@@ -242,12 +258,14 @@ def simulate_trade_outcome(pattern, df):
     stats["Entry Date"] = str(end_idx)
 
     total_tp_dist = abs(tp - entry)
-    total_sl_dist = abs(sl - entry)
+    total_sl_dist = abs(initial_sl - entry)
     max_favorable = 0.0
     max_adverse = 0.0
 
     for candle_count, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
-        high = float(row["High"]); low = float(row["Low"]); close = float(row["Close"])
+        high = float(row["High"])
+        low = float(row["Low"])
+        close = float(row["Close"])
 
         if bias == "Bearish":
             favorable = max(0.0, entry - low)
@@ -256,34 +274,73 @@ def simulate_trade_outcome(pattern, df):
             favorable = max(0.0, high - entry)
             adverse = max(0.0, entry - low)
 
+        progress = (favorable / total_tp_dist) if total_tp_dist > 0 else 0.0
+
         if total_tp_dist > 0:
-            max_favorable = max(max_favorable, favorable / total_tp_dist * 100)
+            max_favorable = max(max_favorable, progress * 100)
         if total_sl_dist > 0:
             max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
 
-        if (not breakeven_activated) and total_tp_dist > 0:
-            if bias == "Bearish":
-                if low <= entry - BE_ACTIVATION * total_tp_dist:
-                    sl = entry; breakeven_activated = True
-                    stats["Breakeven Activated"] = True
+        # Trailing Stop تدريجي
+        for stage_idx, (threshold, profit_ratio) in enumerate(TRAILING_LEVELS):
+            if stage_idx < trailing_stage:
+                continue
+            if progress < threshold:
+                break
+
+            if profit_ratio == 0.0:
+                new_sl = entry
             else:
-                if high >= entry + BE_ACTIVATION * total_tp_dist:
-                    sl = entry; breakeven_activated = True
-                    stats["Breakeven Activated"] = True
+                if bias == "Bearish":
+                    new_sl = entry - profit_ratio * total_tp_dist
+                else:
+                    new_sl = entry + profit_ratio * total_tp_dist
+
+            if bias == "Bearish":
+                if new_sl < sl:
+                    sl = new_sl
+                    trailing_stage = stage_idx + 1
+                    if profit_ratio == 0.0:
+                        breakeven_activated = True
+                        stats["Breakeven Activated"] = True
+            else:
+                if new_sl > sl:
+                    sl = new_sl
+                    trailing_stage = stage_idx + 1
+                    if profit_ratio == 0.0:
+                        breakeven_activated = True
+                        stats["Breakeven Activated"] = True
+
+        stats["Trailing Stage"] = trailing_stage
+        stats["Final SL"] = sl
 
         if bias == "Bearish":
-            hit_sl = high >= sl; hit_tp = low <= tp
+            hit_sl = high >= sl
+            hit_tp = low <= tp
         else:
-            hit_sl = low <= sl; hit_tp = high >= tp
+            hit_sl = low <= sl
+            hit_tp = high >= tp
 
         if hit_sl:
-            if breakeven_activated:
-                stats["Result"] = "BREAKEVEN"; stats["Head Result"] = "BREAKEVEN"
+            if bias == "Bearish":
+                is_profit = sl < entry - 1e-9
+                is_breakeven = abs(sl - entry) < 1e-9
+            else:
+                is_profit = sl > entry + 1e-9
+                is_breakeven = abs(sl - entry) < 1e-9
+
+            if is_breakeven:
+                stats["Result"] = "BREAKEVEN"
+                stats["Head Result"] = "BREAKEVEN"
                 stats["Breakeven Exit"] = True
                 stats["Loss Category"] = "breakeven"
+            elif is_profit:
+                stats["Result"] = "WIN"
+                stats["Head Result"] = "WIN"
+                stats["Loss Category"] = "trailing_win"
             else:
-                stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
-                # تصنيف الخسارة حسب نسبة الوصول
+                stats["Result"] = "LOSS"
+                stats["Head Result"] = "LOSS"
                 reach = max_favorable
                 if reach < 5:
                     stats["Loss Category"] = "immediate_rejection"
@@ -293,31 +350,40 @@ def simulate_trade_outcome(pattern, df):
                     stats["Loss Category"] = "mid_reversal"
                 else:
                     stats["Loss Category"] = "late_reversal"
-            stats["exit_idx"] = idx; stats["exit_price"] = sl
+
+            stats["exit_idx"] = idx
+            stats["exit_price"] = sl
             stats["candles_to_exit"] = candle_count
             stats["Exit Date"] = str(idx)
             break
+
         elif hit_tp:
-            stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
+            stats["Result"] = "WIN"
+            stats["Head Result"] = "WIN"
             stats["Loss Category"] = "success"
-            stats["exit_idx"] = idx; stats["exit_price"] = tp
+            stats["exit_idx"] = idx
+            stats["exit_price"] = tp
             stats["candles_to_exit"] = candle_count
             stats["Exit Date"] = str(idx)
             break
 
         if candle_count >= TIMEOUT_CANDLES:
             if breakeven_activated:
-                stats["Result"] = "BREAKEVEN"; stats["Head Result"] = "BREAKEVEN"
+                stats["Result"] = "BREAKEVEN"
+                stats["Head Result"] = "BREAKEVEN"
                 stats["Breakeven Exit"] = True
                 stats["Loss Category"] = "breakeven"
                 stats["exit_price"] = entry
             else:
-                stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
+                stats["Result"] = "TIMEOUT"
+                stats["Head Result"] = "TIMEOUT"
                 stats["Loss Category"] = "timeout"
                 stats["exit_price"] = close
+
             stats["exit_idx"] = idx
             stats["candles_to_exit"] = candle_count
             stats["Exit Date"] = str(idx)
+
             if bias == "Bearish":
                 moved = max(0.0, entry - close)
             else:
@@ -339,7 +405,6 @@ def simulate_trade_outcome(pattern, df):
         stats["progress_ratio"] = 0.0
 
     return stats
-
 
 class PatternValidatorPipeline:
     def __init__(self, df):
