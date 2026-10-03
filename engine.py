@@ -710,6 +710,9 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Breakeven Activated": p.get("Breakeven Activated", False),
             "Breakeven Exit": p.get("Breakeven Exit", False),
             "Loss Category": p.get("Loss Category"),
+            "Trailing Stage": p.get("Trailing Stage", 0),
+            "Initial SL":     p.get("Initial SL"),
+            "Final SL":       p.get("Final SL"),
         }
         trades.append(trade)
     return trades
