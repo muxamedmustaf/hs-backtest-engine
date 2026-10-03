@@ -1333,8 +1333,3 @@ if st.session_state.scanned_signals:
         } for i in st.session_state.scanned_signals])
         render_realtime_actions(live_df, is_live=True)
 
-# ═══════════════════════════════════════════════════════════════════
-# 💰 حاسبة المخاطرة المتقدمة
-# ═══════════════════════════════════════════════════════════════════
-with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
-    render_advanced_risk_calculator()
