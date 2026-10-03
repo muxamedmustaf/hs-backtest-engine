@@ -97,10 +97,7 @@ def pip_size_for(symbol):
 
 
 def compute_pips(trades_df):
-    """
-    يحسب النقاط (Pips) لكل صفقة، إضافة إلى Risk/Reward/RR.
-    يدعم عدة تسميات للأعمدة لضمان التوافق.
-    """
+    """يحسب النقاط (Pips) لكل صفقة، إضافة إلى Risk/Reward/RR."""
     if trades_df is None or trades_df.empty:
         return trades_df
 
@@ -164,12 +161,7 @@ def compute_pips(trades_df):
 
 
 def compute_dollar_pnl(trades_df, lot=0.01):
-    """
-    حساب الربح/الخسارة بالدولار باستخدام القاعدة الصحيحة:
-    - للأزواج XXXUSD: PnL = (exit - entry) × lot × 100,000
-    - للأزواج USDXXX: PnL = (exit - entry) × lot × 100,000 ÷ exit_price
-    - للعملات الرقمية: PnL = (exit - entry) × lot
-    """
+    """حساب الربح/الخسارة بالدولار باستخدام القاعدة الصحيحة."""
     if trades_df is None or trades_df.empty:
         return trades_df
 
@@ -189,10 +181,8 @@ def compute_dollar_pnl(trades_df, lot=0.01):
         except (TypeError, ValueError):
             usd_list.append(None); pct_list.append(None); continue
 
-        # حساب الحركة (بالدولار)
         price_move = (exit_f - entry_f) if not is_sell else (entry_f - exit_f)
 
-        # تحديد قيمة PnL حسب نوع الأصل
         if any(x in sym for x in ["BTC", "ETH"]):
             pnl_usd = price_move * lot * 1
         elif any(x in sym for x in ["US30", "NAS", "SPX"]):
@@ -339,12 +329,11 @@ def get_last_known_price(symbol):
     return None
 
 
-
 # ═══════════════════════════════════════════════════════════
 # 🎯 التصرفات الفورية (Realtime Actions)
 # ═══════════════════════════════════════════════════════════
 def render_realtime_actions(trades_df, is_live=False, live_prices=None):
-    """تنبيهات فورية للتصرفات الحالية — فقط الصفقات التي تحتاج تدخل."""
+    """تنبيهات فورية للتصرفات الحالية."""
     st.markdown("### 🎯 التصرفات المطلوبة الآن")
     st.caption("إجراءات محدّدة لصفقاتك — لا تاريخية")
 
@@ -468,9 +457,7 @@ def render_realtime_actions(trades_df, is_live=False, live_prices=None):
             "الربح المضمون": a["الربح المضمون"],
         } for a in actions])
         st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-
-
+        
 
 def render_advanced_risk_calculator():
     """حاسبة المخاطرة التفاعلية المتقدمة."""
@@ -1051,13 +1038,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                      use_container_width=True)
 
         # ═══════════════════════════════════════════════════════════════════════
-        # 💰 حاسبة المخاطرة المتقدمة
-        # ═══════════════════════════════════════════════════════════════════════
-        st.markdown("---")
-        render_advanced_risk_calculator()
-        st.markdown("---")
-
-        # ═══════════════════════════════════════════════════════════════════════
         # 🔬 التقرير التشخيصي الذكي
         # ═══════════════════════════════════════════════════════════════════════
         with st.expander("🔬 التقرير التشخيصي الذكي — تحليل النجاح والفشل", expanded=True):
@@ -1186,7 +1166,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     import traceback
                     st.error(f"⚠️ خطأ في التقرير التشخيصي: {type(e).__name__}: {e}")
                     st.code(traceback.format_exc())
-
+                    
 else:
 
     scan_mode = st.radio(
@@ -1311,25 +1291,39 @@ else:
             )
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # 💰 حاسبة المخاطرة المتقدمة — الوضع الحي
-    # ═══════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════
-# 🎯 التصرفات المطلوبة الآن
-# ═══════════════════════════════════════════════════════════════════
+
+# ==============================================================================
+# 🎯 التصرفات المطلوبة الآن — تعمل في كل الأوضاع
+# ==============================================================================
 st.markdown("---")
 
-if st.session_state.scanned_signals:
-    with st.expander("🎯 التصرفات المطلوبة الآن", expanded=True):
-        live_df = pd.DataFrame([{
-            "symbol": i["symbol"],
-            "Entry Price": i["result"].get("entry"),
-            "Stop Loss": i["result"].get("sl"),
-            "Take Profit": i["result"].get("tp"),
-            "bias": i["result"].get("bias"),
-            "Result": "OPEN",
-            "Max Reach %": i["result"].get("Max Reach %", 0),
-            "Lot": 0.01,
-        } for i in st.session_state.scanned_signals])
-        render_realtime_actions(live_df, is_live=True)
+if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
+    if st.session_state.backtest_scanned_signals:
+        _bt_item = st.session_state.backtest_scanned_signals[-1]
+        _bt_trades = _bt_item["trades_df"].copy()
+        _bt_trades = compute_pips(_bt_trades)
+        _bt_trades = compute_dollar_pnl(_bt_trades, lot=st.session_state.get("bt_lot_size", 0.01))
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
+            render_realtime_actions(_bt_trades, is_live=False)
+else:
+    if st.session_state.scanned_signals:
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=True):
+            _live_df = pd.DataFrame([{
+                "symbol": i["symbol"],
+                "Entry Price": i["result"].get("entry"),
+                "Stop Loss": i["result"].get("sl"),
+                "Take Profit": i["result"].get("tp"),
+                "bias": i["result"].get("bias"),
+                "Result": "OPEN",
+                "Max Reach %": i["result"].get("Max Reach %", 0),
+                "Lot": 0.01,
+            } for i in st.session_state.scanned_signals])
+            render_realtime_actions(_live_df, is_live=True)
 
+
+# ==============================================================================
+# 💰 حاسبة المخاطرة المتقدمة — تعمل في كل الأوضاع
+# ==============================================================================
+st.markdown("---")
+with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
+    render_advanced_risk_calculator()
