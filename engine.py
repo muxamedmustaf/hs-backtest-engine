@@ -223,11 +223,11 @@ def simulate_trade_outcome(pattern, df):
     BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.30)
 
     TRAILING_LEVELS = [
-        (BE_ACTIVATION, 0.00),
-        (0.50, 0.30),
-        (0.70, 0.50),
-        (0.90, 0.70),
-    ]
+    (BE_ACTIVATION, 0.00),   # 30% → التعادل
+    (0.50, 0.20),            # 50% → 20% ربح
+    (0.75, 0.45),            # 75% → 45% ربح
+    (0.95, 0.80),            # 95% → 80% ربح (بدل 70%)
+]
 
     breakeven_activated = False
     trailing_stage = 0
