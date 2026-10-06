@@ -60,9 +60,67 @@ INTERVAL_LIMITS = {
     "60m": 730, "90m": 60, "1h": 730,
 }
 
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# 📋 IC Markets Standard — Specs 50 Pairs
+# ══════════════════════════════════════════════════════════════════════════════
+IC_MARKETS_SPECS = {
+    # Crypto
+    "BTC-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "ETH-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    # Majors
+    "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 JPY"},
+    "USDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "AUDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "NZDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "EURGBP=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "EURCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURAUD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "GBPCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPAUD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "AUDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "NZDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "NZDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "NZDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "CADJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "CHFJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "USDTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "USDCNH=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "⚠️ Exotic"},
+    "USDNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
+    "USDSGD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "EURDKK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "⚠️ Scandinavian"},
+    "CHFSGD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "🔀 Cross"},
+    "SGDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "USDHKD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "⚠️ Exotic"},
+    "GBPADY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "⚠️ Verify"},
+    "NZDGBP=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDSGD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURHKD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "⚠️ Exotic"},
+    "EURNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
+    "EURPLN=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "EURSGD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
+    "GBPSGD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "NOKSEK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "⚠️ Scandinavian"},
+    "USDTHB=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # دوال مساعدة
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
 def fix_symbol(sym):
     sym = str(sym).strip().upper()
     if len(sym) == 6 and sym.isalpha():
@@ -71,33 +129,39 @@ def fix_symbol(sym):
 
 
 def pip_size_for(symbol):
-    """حجم النقطة الواحدة حسب نوع الأصل — النسخة المصححة."""
+    """حجم النقطة الواحدة — IC Markets specs."""
     s = str(symbol).upper()
-
-    # 🥇 المعادن
+    # Iska eeg IC_MARKETS_SPECS marka hore
+    for key, spec in IC_MARKETS_SPECS.items():
+        if key.upper() == s:
+            return spec["pip"]
+    # Fallback
     if "XAU" in s or "GOLD" in s: return 0.1
     if "XAG" in s or "SILVER" in s: return 0.01
-
-    # 🪙 العملات الرقمية والمؤشرات
     if any(x in s for x in ["BTC", "ETH"]): return 1.0
-    if any(x in s for x in ["US30", "NAS", "SPX", "US100", "US500", "DE40", "UK100"]):
-        return 1.0
-
-    # 💴 أزواج الين
+    if any(x in s for x in ["US30", "NAS", "SPX", "US100", "US500"]): return 1.0
     if "JPY" in s: return 0.01
-
-    # 💱 عملات عالية السعر (تحتاج 0.01 بدل 0.0001)
     high_price = ["HUF", "TRY", "SEK", "NOK", "CZK", "MXN", "ZAR",
                   "PLN", "INR", "THB", "DKK", "HKD", "SGD", "PHP", "IDR"]
     if any(c in s for c in high_price):
         return 0.01
-
-    # 💵 الفوركس القياسي
     return 0.0001
 
 
+def get_default_lot_for_symbol(symbol):
+    """IC Markets Standard — Min lot per symbol."""
+    s = str(symbol).upper()
+    for key, spec in IC_MARKETS_SPECS.items():
+        if key.upper() == s:
+            return spec["min_lot"]
+    # Fallback
+    if any(x in s for x in ["BTC", "ETH"]): return 0.01
+    if any(x in s for x in ["US30", "NAS", "SPX"]): return 0.1
+    return 0.01
+
+
 def compute_pips(trades_df):
-    """يحسب النقاط (Pips) لكل صفقة، إضافة إلى Risk/Reward/RR."""
+    """Xisaabi pips + Risk/Reward."""
     if trades_df is None or trades_df.empty:
         return trades_df
 
@@ -123,12 +187,12 @@ def compute_pips(trades_df):
         sym = row.get("symbol") or row.get("Symbol") or ""
         pip = pip_size_for(sym)
 
-        entry  = pick(row, ["Entry Price","Entry","entry","Entry_Price","entry_price"])
-        exit_  = pick(row, ["Exit Price","Exit","exit","Exit_Price","exit_price","Close Price"])
-        sl     = pick(row, ["Stop Loss","SL","sl","Stop_Loss","stop_loss"])
-        tp     = pick(row, ["Take Profit","TP","tp","Take_Profit","take_profit"])
+        entry  = pick(row, ["Entry Price", "Entry", "entry"])
+        exit_  = pick(row, ["Exit Price", "Exit", "exit", "Close Price"])
+        sl     = pick(row, ["Stop Loss", "SL", "sl"])
+        tp     = pick(row, ["Take Profit", "TP", "tp"])
 
-        bias = str(row.get("bias") or row.get("Bias") or row.get("Direction") or row.get("Type") or "").upper()
+        bias = str(row.get("bias") or row.get("Bias") or "").upper()
         is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
 
         pips = None
@@ -161,7 +225,7 @@ def compute_pips(trades_df):
 
 
 def compute_dollar_pnl(trades_df, lot=0.01):
-    """حساب الربح/الخسارة بالدولار باستخدام القاعدة الصحيحة."""
+    """PnL USD — IC Markets contract sizes."""
     if trades_df is None or trades_df.empty:
         return trades_df
 
@@ -183,14 +247,18 @@ def compute_dollar_pnl(trades_df, lot=0.01):
 
         price_move = (exit_f - entry_f) if not is_sell else (entry_f - exit_f)
 
+        # Crypto
         if any(x in sym for x in ["BTC", "ETH"]):
             pnl_usd = price_move * lot * 1
-        elif any(x in sym for x in ["US30", "NAS", "SPX"]):
+        # Indices
+        elif any(x in sym for x in ["US30", "NAS", "SPX", "US100", "US500"]):
             pnl_usd = price_move * lot * 1
-        elif "XAU" in sym or "GOLD" in sym:
+        # Gold / Silver
+        elif "XAU" in sym:
             pnl_usd = price_move * lot * 100
-        elif "XAG" in sym or "SILVER" in sym:
+        elif "XAG" in sym:
             pnl_usd = price_move * lot * 5000
+        # Forex
         else:
             if sym.endswith("USD"):
                 pnl_usd = price_move * lot * 100000
@@ -213,16 +281,15 @@ def compute_dollar_pnl(trades_df, lot=0.01):
     return df
 
 
-# ==============================================================================
-# 💰 حاسبة المخاطرة المتقدمة
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# 💰 Risk Calculator functions
+# ══════════════════════════════════════════════════════════════════════════════
 def calculate_trade_risk_usd(entry, sl, lot, symbol):
-    """حساب المخاطرة بالدولار لصفقة معينة."""
+    """Risk USD — per symbol."""
     try:
         entry_f = float(entry); sl_f = float(sl); lot_f = float(lot)
     except (TypeError, ValueError):
         return None
-
     if entry_f == 0:
         return None
 
@@ -231,12 +298,10 @@ def calculate_trade_risk_usd(entry, sl, lot, symbol):
 
     if any(x in s for x in ["BTC", "ETH"]):
         return price_move * lot_f * 1
-    if any(x in s for x in ["US30", "NAS", "SPX", "US100", "US500", "DE40", "UK100"]):
+    if any(x in s for x in ["US30", "NAS", "SPX"]):
         return price_move * lot_f * 1
-    if "XAU" in s or "GOLD" in s:
-        return price_move * lot_f * 100
-    if "XAG" in s or "SILVER" in s:
-        return price_move * lot_f * 5000
+    if "XAU" in s: return price_move * lot_f * 100
+    if "XAG" in s: return price_move * lot_f * 5000
 
     if s.endswith("USD"):
         return price_move * lot_f * 100000
@@ -246,7 +311,7 @@ def calculate_trade_risk_usd(entry, sl, lot, symbol):
 
 
 def check_risk_limit(entry, sl, lot, symbol, capital, risk_pct):
-    """تتحقق إذا كانت الصفقة تتجاوز حد المخاطرة المسموح."""
+    """Check if trade is within risk limit."""
     risk_usd = calculate_trade_risk_usd(entry, sl, lot, symbol)
 
     if risk_usd is None:
@@ -275,8 +340,8 @@ def check_risk_limit(entry, sl, lot, symbol, capital, risk_pct):
 
 
 def get_available_symbols():
-    """يجلب قائمة الرموز من الشيت + العملات النشطة."""
-    symbols_set = set()
+    """Liiska symbols — laga soo qaato Sheet + cached."""
+    symbols_set = set(IC_MARKETS_SPECS.keys())
 
     try:
         sheet_symbols = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]
@@ -295,22 +360,11 @@ def get_available_symbols():
             if "symbol" in item:
                 symbols_set.add(item["symbol"])
 
-    if not symbols_set:
-        symbols_set = {"EURUSD=X", "GBPUSD=X", "USDJPY=X", "BTC-USD", "ETH-USD"}
-
     return sorted(list(symbols_set))
 
 
-def get_default_lot_for_symbol(symbol):
-    """يُرجع اللوت الافتراضي حسب نوع الأصل."""
-    s = str(symbol).upper()
-    if any(x in s for x in ["BTC", "ETH"]): return 0.001
-    if any(x in s for x in ["XAU", "GOLD"]): return 0.01
-    return 0.01
-
-
 def get_last_known_price(symbol):
-    """يجلب آخر سعر معروف للرمز."""
+    """Qiimaha ugu dambeeya ee symbol-ka."""
     if "backtest_dfs" in st.session_state:
         df = st.session_state.backtest_dfs.get(symbol)
         if df is not None and not df.empty:
@@ -329,13 +383,13 @@ def get_last_known_price(symbol):
     return None
 
 
-# ═══════════════════════════════════════════════════════════
-# 🎯 التصرفات الفورية (Realtime Actions)
-# ═══════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 Realtime Actions — Trailing alerts
+# ══════════════════════════════════════════════════════════════════════════════
 def render_realtime_actions(trades_df, is_live=False, live_prices=None):
-    """تنبيهات فورية للتصرفات الحالية."""
+    """Tilmaamaha degdegga ah — Trailing Stop."""
     st.markdown("### 🎯 التصرفات المطلوبة الآن")
-    st.caption("إجراءات محدّدة لصفقاتك — لا تاريخية")
+    st.caption("إجراءات محدّدة لصفقاتك")
 
     if trades_df is None or trades_df.empty:
         st.info("ℹ️ لا توجد صفقات للتحليل")
@@ -456,15 +510,17 @@ def render_realtime_actions(trades_df, is_live=False, live_prices=None):
             "الإجراء": a["الإجراء"], "SL الجديد": a["SL الجديد"],
             "الربح المضمون": a["الربح المضمون"],
         } for a in actions])
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-        
 
-def render_advanced_risk_calculator():
-    """حاسبة المخاطرة التفاعلية المتقدمة."""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 💰 Advanced Risk Calculator — Auto-connect + IC Markets specs
+# ══════════════════════════════════════════════════════════════════════════════
+def render_advanced_risk_calculator(unique_id="main"):
+    """Xisaabiyaha Khatarta — isku xirka signal-ka + IC Markets specs."""
     st.markdown("### 💰 حاسبة المخاطرة المتقدمة")
-    st.caption("اختر العملة، أدخل السعر واللوت، وشاهد النتيجة فورًا")
+    st.caption("اختر العملة، أدخل السعر واللوت — التحليل يتصل تلقائيًا")
 
-    # ═══ 1️⃣ الإعدادات العامة ═══
+    # ═══ 1️⃣ Agaasinka Guud ═══
     st.markdown("#### 1️⃣ الإعدادات العامة")
     c1, c2, c3 = st.columns(3)
 
@@ -472,14 +528,14 @@ def render_advanced_risk_calculator():
         capital = st.number_input(
             "💵 رأس المال ($):",
             min_value=10.0, max_value=10_000_000.0, value=1000.0,
-            step=100.0, format="%.2f", key="adv_risk_capital"
+            step=100.0, format="%.2f", key=f"{unique_id}_adv_risk_capital"
         )
 
     with c2:
         risk_pct = st.selectbox(
             "📊 نسبة المخاطرة (%):",
             options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            index=4, key="adv_risk_pct"
+            index=4, key=f"{unique_id}_adv_risk_pct"
         )
 
     max_risk_usd = capital * (risk_pct / 100)
@@ -489,20 +545,33 @@ def render_advanced_risk_calculator():
 
     st.markdown("---")
 
-    # ═══ 2️⃣ اختيار العملة ═══
+    # ═══ 2️⃣ Dooro Symbol ═══
     st.markdown("#### 2️⃣ اختيار العملة")
     available_symbols = get_available_symbols()
 
     if not available_symbols:
-        st.warning("⚠️ لا توجد رموز متاحة. تأكد من تحميل البيانات أولاً.")
+        st.warning("⚠️ لا توجد رموز متاحة.")
         return
+
+    # Hubi signal-ka hadda jira
+    active_signal_sym   = st.session_state.get("active_signal_symbol")
+    active_signal_entry = st.session_state.get("active_signal_entry")
+    active_signal_sl    = st.session_state.get("active_signal_sl")
+    active_signal_tp    = st.session_state.get("active_signal_tp")
+    active_signal_bias  = st.session_state.get("active_signal_bias")
+
+    # Haddii symbol-ka signal-ku jiro, dooro isaga
+    default_idx = 0
+    if active_signal_sym and active_signal_sym in available_symbols:
+        default_idx = available_symbols.index(active_signal_sym)
 
     col_sym, col_lot = st.columns([2, 1])
 
     with col_sym:
         selected_symbol = st.selectbox(
-            "🔽 اختر العملة من الشيت:",
-            options=available_symbols, index=0, key="adv_risk_symbol"
+            "🔽 اختر العملة:",
+            options=available_symbols, index=default_idx,
+            key=f"{unique_id}_adv_risk_symbol"
         )
 
     with col_lot:
@@ -510,38 +579,77 @@ def render_advanced_risk_calculator():
         custom_lot = st.number_input(
             "💰 اللوت المخصص:",
             min_value=0.0001, max_value=100.0,
-            value=default_lot, step=0.001, format="%.4f",
-            key=f"adv_risk_lot_{selected_symbol}",
-            help="يمكنك تخصيص حجم اللوت لكل عملة"
+            value=default_lot, step=0.01, format="%.2f",
+            key=f"{unique_id}_adv_risk_lot_{selected_symbol}",
+            help="IC Markets Standard: min 0.01"
         )
 
-    # ═══ 3️⃣ بيانات الصفقة ═══
+    # ═══ 3️⃣ Xogta Signal-ka ═══
     st.markdown("#### 3️⃣ بيانات الصفقة")
-    last_price = get_last_known_price(selected_symbol)
-    default_entry = last_price if last_price else 1.0
+
+    # Haddii symbol-ku signal-ka yahay, isticmaal qiimaha signal-ka
+    if active_signal_sym == selected_symbol and active_signal_entry:
+        default_entry = float(active_signal_entry)
+        default_sl    = float(active_signal_sl) if active_signal_sl else default_entry * 1.01
+        default_tp    = float(active_signal_tp) if active_signal_tp else default_entry * 0.98
+        st.info(f"🔗 **Xogta laga soo qaatay signal-ka:** {active_signal_bias}")
+    else:
+        last_price = get_last_known_price(selected_symbol)
+        default_entry = float(last_price) if last_price else 1.0
+        default_sl    = default_entry * 1.01
+        default_tp    = default_entry * 0.98
 
     c_entry, c_sl, c_tp = st.columns(3)
 
     with c_entry:
         entry_price = st.number_input(
             "📈 سعر الدخول:", value=float(default_entry),
-            format="%.5f", key=f"adv_entry_{selected_symbol}",
-            help="آخر سعر معروف تم جلبه تلقائيًا"
+            format="%.5f", key=f"{unique_id}_adv_entry_{selected_symbol}"
         )
 
     with c_sl:
         sl_price = st.number_input(
-            "🛑 وقف الخسارة:", value=float(default_entry * 1.01),
-            format="%.5f", key=f"adv_sl_{selected_symbol}"
+            "🛑 وقف الخسارة:", value=float(default_sl),
+            format="%.5f", key=f"{unique_id}_adv_sl_{selected_symbol}"
         )
 
     with c_tp:
         tp_price = st.number_input(
-            "🏆 الهدف:", value=float(default_entry * 0.98),
-            format="%.5f", key=f"adv_tp_{selected_symbol}"
+            "🏆 الهدف:", value=float(default_tp),
+            format="%.5f", key=f"{unique_id}_adv_tp_{selected_symbol}"
         )
 
-    # ═══ 4️⃣ النتيجة الفورية ═══
+    # ⚡ Badhanka Xisaabi TP (R:R = 1:2)
+    c1_btn, c2_btn, c3_btn = st.columns(3)
+    with c1_btn:
+        if st.button("⚡ TP (R:R = 1:2)", key=f"{unique_id}_tp_2x_{selected_symbol}",
+                     use_container_width=True):
+            if sl_price > entry_price:  # SELL
+                new_tp = entry_price - 2 * (sl_price - entry_price)
+            else:  # BUY
+                new_tp = entry_price + 2 * (entry_price - sl_price)
+            st.session_state[f"{unique_id}_adv_tp_{selected_symbol}"] = round(new_tp, 5)
+            st.rerun()
+    with c2_btn:
+        if st.button("⚡ TP (R:R = 1:3)", key=f"{unique_id}_tp_3x_{selected_symbol}",
+                     use_container_width=True):
+            if sl_price > entry_price:
+                new_tp = entry_price - 3 * (sl_price - entry_price)
+            else:
+                new_tp = entry_price + 3 * (entry_price - sl_price)
+            st.session_state[f"{unique_id}_adv_tp_{selected_symbol}"] = round(new_tp, 5)
+            st.rerun()
+    with c3_btn:
+        if st.button("⚡ TP (R:R = 1:1)", key=f"{unique_id}_tp_1x_{selected_symbol}",
+                     use_container_width=True):
+            if sl_price > entry_price:
+                new_tp = entry_price - (sl_price - entry_price)
+            else:
+                new_tp = entry_price + (entry_price - sl_price)
+            st.session_state[f"{unique_id}_adv_tp_{selected_symbol}"] = round(new_tp, 5)
+            st.rerun()
+
+    # ═══ 4️⃣ Natiijada Degdegga ═══
     st.markdown("---")
     st.markdown("#### 4️⃣ النتيجة الفورية")
 
@@ -574,7 +682,7 @@ def render_advanced_risk_calculator():
 
     st.info(f"**التفاصيل:** {check['message']}")
 
-    # ═══ 5️⃣ اقتراحات ═══
+    # ═══ 5️⃣ Talooyin ═══
     if not check["allowed"] and check["risk_usd"]:
         st.markdown("#### 💡 اقتراحات للتصحيح")
 
@@ -587,49 +695,66 @@ def render_advanced_risk_calculator():
         suggested_sl = entry_price + suggested_sl_distance if is_sell else entry_price - suggested_sl_distance
 
         c1, c2 = st.columns(2)
-
         with c1:
             st.warning(f"""
             **🔽 الخيار 1: تقليل اللوت**
-
             - اللوت الحالي: `{custom_lot}`
             - اللوت المقترح: `{suggested_lot}`
             - المخاطرة الجديدة: `${max_risk_usd:.2f}`
             """)
-
         with c2:
             st.warning(f"""
             **📉 الخيار 2: تقريب SL**
-
             - SL الحالي: `{sl_price:.5f}`
             - SL المقترح: `{suggested_sl:.5f}`
-            - المسافة الجديدة: `{suggested_sl_distance:.5f}`
             """)
 
-    # ═══ 6️⃣ جدول مرجعي ═══
-    with st.expander("📋 جدول مرجعي: قيمة النقطة واللوت الافتراضي"):
-        reference_data = []
-        for sym in available_symbols[:20]:
-            pip = pip_size_for(sym)
-            default_l = get_default_lot_for_symbol(sym)
-            reference_data.append({
+    # ═══ 6️⃣ Jadwalka IC Markets ═══
+    with st.expander("📋 جدول IC Markets Standard — Contract & Lot specs"):
+        ic_data = []
+        for sym in available_symbols:
+            s = str(sym).upper()
+            spec = None
+            for key, sp in IC_MARKETS_SPECS.items():
+                if key.upper() == s:
+                    spec = sp
+                    break
+            if spec is None:
+                # Fallback
+                spec = {"contract": 100000, "min_lot": 0.01, "step": 0.01,
+                        "pip": pip_size_for(sym), "cat": "—"}
+            ic_data.append({
                 "الزوج": sym,
-                "حجم النقطة": pip,
-                "اللوت الافتراضي": default_l,
-                "نوع الأصل": (
-                    "🪙 رقمية" if any(x in sym.upper() for x in ["BTC", "ETH"])
-                    else "🥇 معدن" if any(x in sym.upper() for x in ["XAU", "XAG"])
-                    else "💴 ين" if "JPY" in sym.upper()
-                    else "💱 عملة عالية" if any(c in sym.upper() for c in ["HUF", "TRY", "SEK", "NOK", "ZAR", "MXN"])
-                    else "💵 فوركس"
-                )
+                "النوع": spec["cat"],
+                "حجم العقد": f"{spec['contract']:,}",
+                "أقل لوت": spec["min_lot"],
+                "خطوة اللوت": spec["step"],
+                "حجم النقطة": spec["pip"],
             })
-        st.dataframe(pd.DataFrame(reference_data), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(ic_data),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # ═══ 7️⃣ Isticmaalka Xisaabiyaha ═══
+    with st.expander("ℹ️ كيف تستخدم الحاسبة؟"):
+        st.markdown("""
+        **1. أدخل رأس المال** (مثال: $1000)  
+        **2. اختر نسبة المخاطرة** (مثال: 5%)  
+        **3. اختر العملة** — الحاسبة تقرأ القيم تلقائيًا إذا كان هناك signal  
+        **4. اضغط زر TP (R:R = 1:2)** لتوليد هدف مناسب  
+        **5. راجع النتيجة:**
+        - ✅ **مقبولة** → يمكنك فتح الصفقة
+        - ❌ **مرفوضة** → عدّل اللوت أو SL
+
+        **قاعدة مهمة**: المخاطرة لكل صفقة **≤ 5%** من رأس المال.
+        """)
 
 
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
 # Session State
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
 for k, v in [
     ("current_symbol", "NZDCAD=X"),
     ("status_summary", "⚡ Live Scan & Backtest Lab • جاهز"),
@@ -639,21 +764,26 @@ for k, v in [
     ("backtest_period", ""),
     ("backtest_start", ""),
     ("backtest_end", ""),
+    ("active_signal_symbol", None),
+    ("active_signal_entry", None),
+    ("active_signal_sl", None),
+    ("active_signal_tp", None),
+    ("active_signal_bias", None),
 ]:
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ==============================================================================
-# الشريط العلوي
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# Sharipta Sare
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown(f'''<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;direction:rtl;">
     <div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📈 {st.session_state.current_symbol}</div>
     <div style="border:1px solid #DADCE0;background:#FFF;border-radius:30px;padding:8px 14px;font-weight:700;color:#0B57D0;">{st.session_state.status_summary}</div>
 </div>''', unsafe_allow_html=True)
 
-# ==============================================================================
-# اختيار الوضع
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# Dooro Habka
+# ══════════════════════════════════════════════════════════════════════════════
 app_mode = st.radio(
     "وضع التطبيق:",
     ["🚀 الماسح الحي للأسواق", "🧪 مختبر الاختبار الرجعي (Backtest)"],
@@ -661,9 +791,10 @@ app_mode = st.radio(
 )
 st.markdown("---")
 
-# ==============================================================================
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ================= BACKTEST MODE =================
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
 if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
     st.markdown("### 🧪 مختبر تحليل الأداء التاريخي")
@@ -680,7 +811,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         try:
             bt_symbols = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]
         except Exception as e:
-            st.error(f"⚠️ فشل جلب الرموز من Google Sheets: {e}")
+            st.error(f"⚠️ فشل جلب الرموز: {e}")
             bt_symbols = ["EURUSD=X"]
 
     now = datetime.datetime.now()
@@ -760,7 +891,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
     if start_date and end_date:
         st.success(f"✅ الفترة: **{period_label}**")
-        st.caption(f"📅 من `{start_date}` إلى `{end_date}` | ⏱️ الإطار: `{selected_interval}` | 💰 اللوت: `{lot_size}`")
+        st.caption(f"📅 من `{start_date}` إلى `{end_date}` | ⏱️ `{selected_interval}` | 💰 لوت `{lot_size}`")
         max_days = INTERVAL_LIMITS.get(selected_interval)
         if max_days:
             actual_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
@@ -803,6 +934,9 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             with st.expander(f"⚠️ تحذيرات ({len(error_log)})"):
                 for msg in error_log: st.text(msg)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Natiijada Backtest
+    # ══════════════════════════════════════════════════════════════════════════
     if st.session_state.backtest_scanned_signals:
         res_list = st.session_state.backtest_scanned_signals
         dfs_dict = st.session_state.backtest_dfs
@@ -842,20 +976,23 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             wins_usd    = combined_df.loc[g_series.str.contains("WIN"),  "PnL_USD"].dropna().sum() if g_res_col else 0
             losses_usd  = combined_df.loc[g_series.str.contains("LOSS"), "PnL_USD"].dropna().sum() if g_res_col else 0
 
+            # Profit Factor
+            profit_factor = round(abs(wins_usd / losses_usd), 2) if losses_usd != 0 else float("inf")
+
             st.markdown(f"#### 🌍 الملخص الإجمالي — **{period_display}**")
 
             gm1, gm2, gm3, gm4 = st.columns(4)
             gm1.metric("📊 إجمالي الصفقات", g_total)
-            gm2.metric("✅ ناجحة", g_wins, delta=f"{g_win_rate}% Win Rate")
-            gm3.metric("❌ خاسرة", g_losses, delta=f"{g_loss_rate}% Loss Rate", delta_color="inverse")
+            gm2.metric("✅ ناجحة", g_wins, delta=f"{g_win_rate}%")
+            gm3.metric("❌ خاسرة", g_losses, delta=f"{g_loss_rate}%", delta_color="inverse")
             gm4.metric("⏳ مفتوحة", g_opens)
 
             gm5, gm6, gm7, gm8 = st.columns(4)
             gm5.metric("📏 إجمالي النقاط", f"{total_pips:+.1f}")
-            gm6.metric("📐 متوسط النقاط/صفقة", f"{avg_pips:+.1f}" if pd.notna(avg_pips) else "—")
+            gm6.metric("📐 متوسط النقاط", f"{avg_pips:+.1f}" if pd.notna(avg_pips) else "—")
             gm7.metric(f"💰 صافي الربح (لوت {lot_size})", f"{total_usd:+.2f} $")
-            gm8.metric("⚖️ نسبة الربح/الخسارة",
-                       f"{abs(wins_usd/losses_usd):.2f}" if losses_usd != 0 else "∞")
+            gm8.metric("⚖️ Profit Factor",
+                       f"{profit_factor:.2f}" if profit_factor != float("inf") else "∞")
 
             st.markdown("##### 📊 تفصيل النقاط والأرباح")
             detail = pd.DataFrame([
@@ -894,6 +1031,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     "Wins_Pips": round(wins_pips, 1),
                     "Losses_Pips": round(losses_pips, 1),
                     "Net_PnL_USD": round(wins_usd + losses_usd, 2),
+                    "Profit_Factor": round(profit_factor, 2) if profit_factor != float("inf") else "inf",
                 }])
                 csv_stats = stats_summary.to_csv(index=False).encode('utf-8-sig')
                 st.download_button(
@@ -905,6 +1043,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
             st.markdown("---")
 
+        # Dooro symbol
         if bt_scan_mode == "مسح كلي لشيت الأصول":
             opts = [f"{i['symbol']} | الصفقات: {i['total_signals']}" for i in res_list]
             active_item = res_list[opts.index(st.selectbox("👇 اختر الأصل:", opts))]
@@ -916,6 +1055,15 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         trades_df = compute_pips(trades_df)
         trades_df = compute_dollar_pnl(trades_df, lot=lot_size)
         st.session_state.current_symbol = active_sym
+
+        # Hubi signals — u rar calculator-ka
+        if len(trades_df) > 0:
+            last_row = trades_df.iloc[-1]
+            st.session_state["active_signal_symbol"] = active_sym
+            st.session_state["active_signal_entry"]  = last_row.get("Entry Price") or last_row.get("Entry")
+            st.session_state["active_signal_sl"]     = last_row.get("Stop Loss") or last_row.get("SL")
+            st.session_state["active_signal_tp"]     = last_row.get("Take Profit") or last_row.get("TP")
+            st.session_state["active_signal_bias"]   = last_row.get("bias") or last_row.get("Bias")
 
         res_col = None
         for col in ["Result", "Head Result"]:
@@ -945,21 +1093,22 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             exit_dt  = pd.to_datetime(trades_df["Exit Date"], errors="coerce")
             days = (exit_dt - entry_dt).dt.days.dropna()
             if len(days) > 0:
-                dur_str = f"{days.mean():.1f} يوم (متوسط)"
+                dur_str = f"{days.mean():.1f} يوم"
 
         st.markdown(f"### 📊 نتائج **{active_sym}** — {period_display}")
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("✅ أ. ناجحة", wins, delta=f"{win_rate}% Win Rate")
-        m2.metric("❌ ب. خاسرة", losses, delta=f"{loss_rate}% Loss Rate", delta_color="inverse")
+        m1.metric("✅ أ. ناجحة", wins, delta=f"{win_rate}%")
+        m2.metric("❌ ب. خاسرة", losses, delta=f"{loss_rate}%", delta_color="inverse")
         m3.metric("⏳ ج. مفتوحة", opens)
         m4.metric("⏱️ د. مدة المركز", dur_str)
 
         m5, m6, m7 = st.columns(3)
         m5.metric("📏 إجمالي النقاط", f"{sym_total_pips:+.1f}")
         m6.metric("📐 متوسط النقاط", f"{sym_avg_pips:+.1f}" if pd.notna(sym_avg_pips) else "—")
-        m7.metric(f"💰 صافي الربح (لوت {lot_size})", f"{sym_total_usd:+.2f} $")
+        m7.metric(f"💰 صافي الربح", f"{sym_total_usd:+.2f} $")
 
+        # Symmetry
         sym_scores = []
         if "nodes" in trades_df.columns:
             for _, row in trades_df.iterrows():
@@ -974,30 +1123,30 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     n_sym = max(0, 100 - (neck_diff / head_range) * 100)
                     sym_scores.append((s_sym + n_sym) / 2)
 
-        avg_symmetry = f"{round(sum(sym_scores)/len(sym_scores), 1)}%" if sym_scores else "94.2% (ممتاز)"
-        avg_mfe = f"{round(trades_df['Max Reach %'].mean(), 1)}%" if "Max Reach %" in trades_df.columns else "86.5%"
-        avg_mae_safety = f"{round(trades_df['SL Safety %'].mean(), 1)}%" if "SL Safety %" in trades_df.columns else "82.0%"
+        avg_symmetry = f"{round(sum(sym_scores)/len(sym_scores), 1)}%" if sym_scores else "—"
+        avg_mfe = f"{round(trades_df['Max Reach %'].mean(), 1)}%" if "Max Reach %" in trades_df.columns else "—"
+        avg_mae_safety = f"{round(trades_df['SL Safety %'].mean(), 1)}%" if "SL Safety %" in trades_df.columns else "—"
 
         conds = []
         for col in ["Entry Conditions", "Pattern", "pattern"]:
             if col in trades_df.columns:
                 conds = trades_df[col].dropna().unique().tolist()
                 break
-        cond_str = " | ".join(map(str, conds)) if conds else "اختراق خط العنق + اكتمال هيكل النمط"
+        cond_str = " | ".join(map(str, conds)) if conds else "اختراق خط العنق"
 
-        st.info(f"**هـ. شروط الدخول:** {cond_str} | **🎯 دقة الهيكل (Symmetry):** {avg_symmetry}")
-        st.success(f"📈 **متوسط الحركة:** يصل السوق إلى **{avg_mfe}** من الهدف قبل الارتداد، بينما منطقة الأمان لـ SL بنسبة **{avg_mae_safety}**.")
+        st.info(f"**شروط الدخول:** {cond_str} | **دقة الهيكل:** {avg_symmetry}")
+        st.success(f"📈 **متوسط الحركة:** السوق يصل إلى **{avg_mfe}** قبل الارتداد، SL Safety: **{avg_mae_safety}**")
 
-        dl_sym_col1, dl_sym_col2 = st.columns(2)
-        with dl_sym_col1:
-            csv_symbol = trades_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label=f"📥 تنزيل صفقات {active_sym} (CSV)",
-                data=csv_symbol,
-                file_name=f"backtest_{active_sym.replace('=', '_')}_{period_display.replace(' ', '_').replace('/', '-')}.csv",
-                mime="text/csv", use_container_width=True
-            )
+        # Download
+        csv_symbol = trades_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label=f"📥 تنزيل صفقات {active_sym} (CSV)",
+            data=csv_symbol,
+            file_name=f"backtest_{active_sym.replace('=', '_')}_{period_display.replace(' ', '_').replace('/', '-')}.csv",
+            mime="text/csv", use_container_width=True
+        )
 
+        # Chart
         if active_sym in dfs_dict and not dfs_dict[active_sym].empty:
             df_res = dfs_dict[active_sym].copy()
             df_res['EMA50']  = df_res['Close'].ewm(span=50,  adjust=False).mean()
@@ -1021,14 +1170,20 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                             mode="lines+markers", name=f"نمط #{idx+1}"
                         ))
 
+            # ⚡ Y-axis LEFT + Margin balaaran
             fig.update_layout(
                 template="plotly_white", height=600, autosize=True,
-                margin=dict(l=10, r=10, t=30, b=10),
+                margin=dict(l=80, r=20, t=40, b=40),
                 xaxis_rangeslider_visible=False,
+                yaxis=dict(side="left", automargin=True,
+                           tickfont=dict(size=12, color="#333"),
+                           showgrid=True, gridcolor="#E5E5E5"),
+                xaxis=dict(automargin=True, tickfont=dict(size=10)),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
 
+        # Table
         display_cols = [c for c in [
             "Entry Date", "Exit Date", "Symbol", "symbol", "Bias", "bias", "Result",
             "Entry Price", "Entry", "Exit Price", "Stop Loss", "SL", "Take Profit", "TP",
@@ -1037,23 +1192,29 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         st.dataframe(trades_df[display_cols] if display_cols else trades_df,
                      use_container_width=True)
 
-        # ═══════════════════════════════════════════════════════════════════════
-        # 🔬 التقرير التشخيصي الذكي
-        # ═══════════════════════════════════════════════════════════════════════
-        with st.expander("🔬 التقرير التشخيصي الذكي — تحليل النجاح والفشل", expanded=True):
+        # Talo — signal u rar calculator
+        if st.button(f"🔗 Isticmaal xogta {active_sym} xisaabiyaha", use_container_width=True):
+            st.session_state["active_signal_symbol"] = active_sym
+            if len(trades_df) > 0:
+                last_row = trades_df.iloc[-1]
+                st.session_state["active_signal_entry"] = last_row.get("Entry Price") or last_row.get("Entry")
+                st.session_state["active_signal_sl"]    = last_row.get("Stop Loss") or last_row.get("SL")
+                st.session_state["active_signal_tp"]    = last_row.get("Take Profit") or last_row.get("TP")
+                st.session_state["active_signal_bias"]  = last_row.get("bias") or last_row.get("Bias")
+            st.success("✅ Xogta la raray xisaabiyaha — hoos u eeg")
+
+        # Report
+        with st.expander("🔬 التقرير التشخيصي الذكي", expanded=False):
             if diagnose_filters is None:
-                st.error("⚠️ دالة `diagnose_filters` غير موجودة في `engine.py` — أضفها لتشغيل التقرير.")
+                st.error("⚠️ `diagnose_filters` oo maqan — ku dar `engine.py`")
             else:
                 try:
                     df_for_diag = dfs_dict.get(active_sym)
-                    if df_for_diag is None or df_for_diag.empty:
-                        st.warning("⚠️ لا توجد بيانات خام لهذا الرمز")
-                    else:
-                        with st.spinner("جاري التشخيص الذكي..."):
+                    if df_for_diag is not None and not df_for_diag.empty:
+                        with st.spinner("جاري التشخيص..."):
                             diag = diagnose_filters(df_for_diag,
                                                     interval=selected_interval,
                                                     symbol=active_sym)
-
                         if diag.get("error"):
                             st.error(f"❌ {diag['error']}")
                         else:
@@ -1065,18 +1226,18 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
                             smart = diag.get("smart_diagnosis", {})
                             if smart.get("verdict"):
-                                st.markdown(f"### 🎯 الحكم النهائي: {smart['verdict']}")
+                                st.markdown(f"### 🎯 الحكم: {smart['verdict']}")
 
                             wb = smart.get("win_breakdown", {})
                             if wb.get("total_wins", 0) > 0:
-                                st.markdown("#### ✅ تفصيل الصفقات الناجحة")
+                                st.markdown("#### ✅ الصفقات الناجحة")
                                 w1, w2 = st.columns(2)
-                                w1.metric("عدد الصفقات الناجحة", wb["total_wins"])
-                                w2.metric("متوسط الوصول للهدف", f"{wb['avg_max_reach']}%")
+                                w1.metric("العدد", wb["total_wins"])
+                                w2.metric("متوسط الوصول", f"{wb['avg_max_reach']}%")
 
                             lb = smart.get("loss_breakdown", {})
                             if any(v > 0 for v in lb.values()):
-                                st.markdown("#### ❌ تفصيل الصفقات الخاسرة")
+                                st.markdown("#### ❌ الخاسرة")
                                 f1, f2, f3, f4 = st.columns(4)
                                 f1.metric("رفض فوري", lb.get("immediate_rejection", 0))
                                 f2.metric("انعكاس مبكر", lb.get("early_reversal", 0))
@@ -1084,13 +1245,11 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                                 f4.metric("انعكاس متأخر", lb.get("late_reversal", 0))
 
                                 u1, u2 = st.columns(2)
-                                u1.metric("⚪ لا مفر منها", lb.get("unavoidable", 0),
-                                          help="خسائر إحصائية طبيعية — لا تحاول تجنبها")
-                                u2.metric("🔴 قابلة للتجنب", lb.get("avoidable", 0),
-                                          help="خسائر يمكن تقليلها بتحسين الفلاتر")
+                                u1.metric("⚪ لا مفر", lb.get("unavoidable", 0))
+                                u2.metric("🔴 قابلة للتجنب", lb.get("avoidable", 0))
 
                             if smart.get("action_plan"):
-                                st.markdown("#### 🎯 خطة العمل الذكية")
+                                st.markdown("#### 🎯 خطة العمل")
                                 for item in smart["action_plan"]:
                                     if item.startswith("🔴"):   st.error(item)
                                     elif item.startswith("🟡"): st.warning(item)
@@ -1099,7 +1258,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
                             trades_analysis = diag.get("trade_analysis", [])
                             if trades_analysis:
-                                st.markdown("#### 📋 تحليل كل صفقة على حدة")
+                                st.markdown("#### 📋 تحليل كل صفقة")
                                 trade_table = pd.DataFrame([{
                                     "#": t["trade_num"],
                                     "الاتجاه": t["bias"],
@@ -1116,26 +1275,12 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                                     }.get(t["category"], t["category"]),
                                     "الوصول %": f"{t['max_reach_%']}%",
                                     "R:R": t["rr_ratio"],
-                                    "لا مفر منها": "نعم" if t["is_unavoidable"] else "لا",
+                                    "لا مفر": "نعم" if t["is_unavoidable"] else "لا",
                                     "السبب": t["reason"][:80] + "..." if len(t["reason"]) > 80 else t["reason"],
-                                    "التصرف المناسب": t.get("action", "—"),
+                                    "التصرف": t.get("action", "—"),
                                     "الوقاية": t.get("prevention", "—"),
                                 } for t in trades_analysis])
                                 st.dataframe(trade_table, use_container_width=True)
-
-                                with st.expander("💡 توصيات لكل صفقة"):
-                                    for t in trades_analysis:
-                                        if t.get("recommendation"):
-                                            badge = "✅" if t["result"] == "WIN" else (
-                                                "⚪" if t["is_unavoidable"] else "🔴"
-                                            )
-                                            st.markdown(
-                                                f"**{badge} صفقة #{t['trade_num']}** — "
-                                                f"{t['result']} | الوصول: {t['max_reach_%']}%\n\n"
-                                                f"- **السبب:** {t['reason']}\n"
-                                                f"- **التصرف المناسب:** {t.get('action','—')}\n"
-                                                f"- **الوقاية:** {t.get('prevention','—')}"
-                                            )
 
                             st.markdown("#### 📊 مراحل الفلترة")
                             stages_data = []
@@ -1155,19 +1300,17 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                                     if "حرج" in r["severity"]:   st.error(f"🔴 {r['message']}")
                                     elif "متوسط" in r["severity"]: st.warning(f"🟡 {r['message']}")
                                     else:                          st.info(f"ℹ️ {r['message']}")
-
-                            if diag["rejection_samples"]:
-                                st.markdown("#### 🔍 عينات من الأنماط المرفوضة")
-                                for filter_name, samples in diag["rejection_samples"].items():
-                                    with st.expander(f"{filter_name} ({len(samples)} عينة)"):
-                                        st.dataframe(pd.DataFrame(samples), use_container_width=True)
-
                 except Exception as e:
                     import traceback
-                    st.error(f"⚠️ خطأ في التقرير التشخيصي: {type(e).__name__}: {e}")
+                    st.error(f"⚠️ خطأ: {type(e).__name__}: {e}")
                     st.code(traceback.format_exc())
-                    
+    
+
 else:
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ================= LIVE SCAN MODE =================
+    # ══════════════════════════════════════════════════════════════════════════
 
     scan_mode = st.radio(
         "طريقة الفحص:",
@@ -1231,7 +1374,15 @@ else:
         else:
             active_res = sigs[0]['result']
 
-        st.session_state.current_symbol = active_res.get("symbol", symbols[0] if symbols else "N/A")
+        active_sym = active_res.get("symbol", symbols[0] if symbols else "N/A")
+        st.session_state.current_symbol = active_sym
+
+        # ── Isku xir signal-ka xisaabiyaha ──
+        st.session_state["active_signal_symbol"] = active_sym
+        st.session_state["active_signal_entry"]  = active_res.get("entry")
+        st.session_state["active_signal_sl"]     = active_res.get("sl")
+        st.session_state["active_signal_tp"]     = active_res.get("tp")
+        st.session_state["active_signal_bias"]   = active_res.get("bias")
 
         e1, e2, e3 = st.columns(3)
         e1.metric("🎯 سعر الدخول", f"{active_res.get('entry', 0)}")
@@ -1241,7 +1392,7 @@ else:
         _live_entry = active_res.get('entry') or 0
         _live_sl    = active_res.get('sl')    or 0
         _live_tp    = active_res.get('tp')    or 0
-        _pip = pip_size_for(active_res.get("symbol") or "")
+        _pip = pip_size_for(active_sym)
         _risk_pips   = round(abs(_live_entry - _live_sl) / _pip, 1) if _live_entry and _live_sl else 0
         _reward_pips = round(abs(_live_tp - _live_entry) / _pip, 1) if _live_entry and _live_tp else 0
         _rr = round(_reward_pips / _risk_pips, 2) if _risk_pips > 0 else "—"
@@ -1283,18 +1434,71 @@ else:
                 if val:
                     fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
 
+            # ⚡ Y-axis LEFT + Margin balaaran
             fig.update_layout(
                 template="plotly_white", height=600, autosize=True,
-                margin=dict(l=10, r=10, t=30, b=10),
+                margin=dict(l=80, r=20, t=40, b=40),
                 xaxis_rangeslider_visible=False,
+                yaxis=dict(side="left", automargin=True,
+                           tickfont=dict(size=12, color="#333"),
+                           showgrid=True, gridcolor="#E5E5E5"),
+                xaxis=dict(automargin=True, tickfont=dict(size=10)),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
 
+        # ══════════════════════════════════════════════════════════════════════
+        # 🔬 Smart Diagnosis — Live
+        # ══════════════════════════════════════════════════════════════════════
+        with st.expander("🔬 تشخيص النمط الحالي — Live", expanded=False):
+            df_for_live = active_res.get("df")
+            if df_for_live is not None and not df_for_live.empty and diagnose_filters is not None:
+                try:
+                    with st.spinner("جاري التشخيص..."):
+                        diag_live = diagnose_filters(df_for_live,
+                                                    interval=selected_interval,
+                                                    symbol=active_sym)
+                    if not diag_live.get("error"):
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("أنماط خام", diag_live["total_raw_candidates"])
+                        col2.metric("بعد الفلاتر", diag_live["final_count"])
+                        col3.metric("نسبة القبول",
+                            f"{round(diag_live['final_count'] / max(diag_live['total_raw_candidates'], 1) * 100, 1)}%")
 
-# ==============================================================================
-# 🎯 التصرفات المطلوبة الآن — تعمل في كل الأوضاع
-# ==============================================================================
+                        smart = diag_live.get("smart_diagnosis", {})
+                        if smart.get("verdict"):
+                            st.markdown(f"### 🎯 {smart['verdict']}")
+
+                        if smart.get("action_plan"):
+                            st.markdown("#### 🎯 خطة العمل")
+                            for item in smart["action_plan"]:
+                                if item.startswith("🔴"):   st.error(item)
+                                elif item.startswith("🟡"): st.warning(item)
+                                elif item.startswith("🟢"): st.success(item)
+                                else:                       st.info(item)
+
+                        st.markdown("#### 📊 مراحل الفلترة")
+                        stages_data = []
+                        for stage_name, stage_data in diag_live["stages"].items():
+                            stages_data.append({
+                                "الفلتر": stage_name,
+                                "قبل": stage_data.get("before", 0),
+                                "بعد": stage_data.get("after", 0),
+                                "مرفوض": stage_data.get("rejected", 0),
+                                "نسبة القبول": stage_data.get("pass_rate", "0%"),
+                            })
+                        st.dataframe(pd.DataFrame(stages_data), use_container_width=True)
+                except Exception as e:
+                    st.error(f"⚠️ خطأ: {type(e).__name__}: {e}")
+            elif diagnose_filters is None:
+                st.warning("⚠️ `diagnose_filters` oo maqan")
+            else:
+                st.info("ℹ️ Xog ku filan ma jirto")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 TILMAAMAHA DEGDEGGA — Isku xirka labada nooc
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 
 if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
@@ -1305,6 +1509,9 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         _bt_trades = compute_dollar_pnl(_bt_trades, lot=st.session_state.get("bt_lot_size", 0.01))
         with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
             render_realtime_actions(_bt_trades, is_live=False)
+    else:
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
+            st.info("ℹ️ Bilow backtest si aad u aragto tilmaamaha")
 else:
     if st.session_state.scanned_signals:
         with st.expander("🎯 التصرفات المطلوبة الآن", expanded=True):
@@ -1319,11 +1526,38 @@ else:
                 "Lot": 0.01,
             } for i in st.session_state.scanned_signals])
             render_realtime_actions(_live_df, is_live=True)
+    else:
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
+            st.info("ℹ️ Bilow scan-ka si aad u aragto tilmaamaha")
 
 
-# ==============================================================================
-# 💰 حاسبة المخاطرة المتقدمة — تعمل في كل الأوضاع
-# ==============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# 💰 XISAABIYAHA KHATARTA — Wuxuu shaqeeyaa labada nooc
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
-    render_advanced_risk_calculator()
+    render_advanced_risk_calculator(unique_id="end")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📊 JADWALKA GUUD — Marka la doorto symbol
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+st.markdown("### 📊 Jadwalka IC Markets Standard — 50 Pairs")
+
+ic_display = []
+for key, spec in IC_MARKETS_SPECS.items():
+    ic_display.append({
+        "Zoug": key,
+        "Nooca": spec["cat"],
+        "Contract": f"{spec['contract']:,}",
+        "Min Lot": spec["min_lot"],
+        "Step": spec["step"],
+        "Pip Size": spec["pip"],
+    })
+
+st.dataframe(
+    pd.DataFrame(ic_display),
+    use_container_width=True,
+    hide_index=True
+)
