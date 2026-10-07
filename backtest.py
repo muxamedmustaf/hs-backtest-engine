@@ -24,7 +24,7 @@ st.set_page_config(
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
-    .main .block-container { max-width: 100% !important; padding: 0.2rem !important; }
+    .main .block-container { max-width: 100% !important; padding: 0.15rem !important; }
     div[data-testid='stPlotlyChart'] { width: 100% !important; }
     iframe { width: 100% !important; }
     html, body, [class*="css"] { direction: rtl; text-align: right; }
