@@ -16,7 +16,6 @@ PROVIDER = "twelve_data"  # <--- "yahoo" ama "twelve_data"
 # ==============================================================================
 # 🔑 API KEY — Twelve Data
 # ==============================================================================
-# Talo: Haddii aad GitHub public u gelisay, key-gaan waa inaad beddeshaa!
 TWELVE_DATA_API_KEY = "951d7884292c4734aee5e4fc82878dc3" 
 
 # ==============================================================================
@@ -167,9 +166,6 @@ def _fetch_twelve(symbol, interval="1h", period="3mo",
 # ==============================================================================
 # 🚀 MAIN WRAPPER FUNCTION (Kani waa kii backtest.py raadinayay)
 # ==============================================================================
-# ==============================================================================
-# 🚀 MAIN WRAPPER FUNCTION (Kani waa kii backtest.py raadinayay)
-# ==============================================================================
 def fetch_data(symbol, interval="1h", period="3mo",
                start_date=None, end_date=None, 
                cache_hours=None, **kwargs):  # <--- Ku dar cache_hours iyo **kwargs halkan
@@ -185,3 +181,11 @@ def fetch_data(symbol, interval="1h", period="3mo",
         df = adjust_timezone(df)
     
     return df
+
+def get_provider_info():
+    """Soo celi macluumaadka ku saabsan provider-ka hadda shaqaynaya."""
+    return {
+        "provider": PROVIDER,
+        "api_key_used": TWELVE_DATA_API_KEY if PROVIDER == "twelve_data" else "N/A",
+        "timezone": TARGET_TIMEZONE
+    }
