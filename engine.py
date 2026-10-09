@@ -202,14 +202,6 @@ def simulate_trade_outcome(pattern, df):
     sl = initial_sl
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
-    def simulate_trade_outcome(pattern, df):
-    """محاكاة مع Break-even + Trailing Stop تدريجي + Time Stop."""
-    bias = pattern["bias"]
-    entry = float(pattern["entry"])
-    initial_sl = float(pattern["sl"])
-    sl = initial_sl
-    tp = float(pattern["tp"])
-    end_idx = pattern["neckline_end_idx"]
     
     # ══════════════════════════════════════════════════════════════════
     # 🚫 FILTER: Head height check
