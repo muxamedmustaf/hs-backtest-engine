@@ -15,7 +15,7 @@ PROVIDER = "twelve_data"  # ← "yahoo" ama "twelve_data"
 # ══════════════════════════════════════════════════════════════════════════════
 # 🔑 API KEY — Twelve Data
 # ══════════════════════════════════════════════════════════════════════════════
-TWELVE_DATA_API_KEY = "HALKAN_GELI_KEY_GAAGA"  # ← Copy key-gaaga halkan
+TWELVE_DATA_API_KEY = "951d7884292c4734aee5e4fc82878dc3"  # ← Copy key-gaaga halkan
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 🕐 TIMEZONE CONFIG — Isku mid dhigista saacadda MT5
