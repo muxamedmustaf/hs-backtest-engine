@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import calendar, datetime
 import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
+from data_provider import fetch_data, get_provider_info, PROVIDER
 from engine import run_full_analysis, backtest_strategy
 try:
     from engine import diagnose_filters
