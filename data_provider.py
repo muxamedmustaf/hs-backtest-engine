@@ -103,28 +103,25 @@ def _symbol_twelve(symbol):
 # ══════════════════════════════════════════════════════════════════════════════
 # 📡 YAHOO FINANCE
 # ══════════════════════════════════════════════════════════════════════════════
-def _fetch_yahoo(symbol, interval="1h", period="3mo",
-                 start_date=None, end_date=None):
-    """Yahoo Finance."""
+# Tusaale ahaan, koodhkaaga ayaa u eg sidan:
+symbols = ["NZDUSD=X", "EURGBP=X", "EURJPY=X", "EURCHF=X"] # Liiska lammaanayaasha
+
+for symbol in symbols:
     try:
-        import yfinance as yf
-    except ImportError:
-        raise ImportError("Ku shub: pip install yfinance")
+        # 1. Halkan ayaa xogta laga soo qaadayaa
+        df = _fetch_yahoo(symbol, interval="5m", period="1mo") 
+        
+        # 2. Halkan ayaad ku shaqayn kartaa xogta (backtest, chart, iwm)
+        if df is not None:
+            # ... koodhkaaga kale ...
+            pass
 
-    tf = _timeframe_yahoo(interval)
-
-    if start_date and end_date:
-        df = yf.download(symbol, start=start_date, end=end_date,
-                         interval=tf, progress=False, auto_adjust=False)
-    else:
-        df = yf.download(symbol, period=period,
-                         interval=tf, progress=False, auto_adjust=False)
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    if df is None or df.empty:
-        return None
+    except Exception as e:
+        st.error(f"Khalad ayaa ka dhacay {symbol}: {e}")
+    
+    # 3. TANI WAA MEESHA AAD KU DARTO TIME.SLEEP
+    # Sug 8 ilbiriqsi ka hor inta aadan lammaanaha xigta soo qaadin
+    time.sleep(8) 
 
     df.rename(columns={
         "open": "Open", "high": "High", "low": "Low",
