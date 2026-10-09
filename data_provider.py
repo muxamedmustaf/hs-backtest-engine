@@ -167,23 +167,21 @@ def _fetch_twelve(symbol, interval="1h", period="3mo",
 # ==============================================================================
 # 🚀 MAIN WRAPPER FUNCTION (Kani waa kii backtest.py raadinayay)
 # ==============================================================================
+# ==============================================================================
+# 🚀 MAIN WRAPPER FUNCTION (Kani waa kii backtest.py raadinayay)
+# ==============================================================================
 def fetch_data(symbol, interval="1h", period="3mo",
-               start_date=None, end_date=None):
+               start_date=None, end_date=None, 
+               cache_hours=None, **kwargs):  # <--- Ku dar cache_hours iyo **kwargs halkan
     """Function-ka ugu weyn ee xogta soo qaada."""
+    
     if PROVIDER == "twelve_data":
         df = _fetch_twelve(symbol, interval, period, start_date, end_date)
     else:
         df = _fetch_yahoo(symbol, interval, period, start_date, end_date)
     
     # Halkan ayaa timezone-ka loo beddelaa GMT+2
-    df = adjust_timezone(df)
+    if df is not None:
+        df = adjust_timezone(df)
     
     return df
-
-def get_provider_info():
-    """Soo celi macluumaadka ku saabsan provider-ka hadda shaqaynaya."""
-    return {
-        "provider": PROVIDER,
-        "api_key_used": TWELVE_DATA_API_KEY if PROVIDER == "twelve_data" else "N/A",
-        "timezone": TARGET_TIMEZONE
-    }
