@@ -1,33 +1,31 @@
 # -*- coding: utf-8 -*-
 """
 DATA PROVIDER — Yahoo Finance ama Twelve Data
-Timezone Adjustment: UTC → GMT+2 (IC Markets)
+Timezone Adjustment: UTC -> GMT+2 (IC Markets)
 """
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
+import time  # <--- Waa muhiim inuu halkan ku jiro
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎛️ DOORASHADA PROVIDER
-# ══════════════════════════════════════════════════════════════════════════════
-PROVIDER = "twelve_data"  # ← "yahoo" ama "twelve_data"
+# ==============================================================================
+# 🚪 DOORASHADA PROVIDER
+# ==============================================================================
+PROVIDER = "twelve_data"  # <--- "yahoo" ama "twelve_data"
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # 🔑 API KEY — Twelve Data
-# ══════════════════════════════════════════════════════════════════════════════
-TWELVE_DATA_API_KEY = "951d7884292c4734aee5e4fc82878dc3"  # ← Copy key-gaaga halkan
+# ==============================================================================
+# Talo: Haddii aad GitHub public u gelisay, key-gaan waa inaad beddeshaa!
+TWELVE_DATA_API_KEY = "951d7884292c4734aee5e4fc82878dc3" 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 🕐 TIMEZONE CONFIG — Isku mid dhigista saacadda MT5
-# ══════════════════════════════════════════════════════════════════════════════
-# Dooro:
-#   "UTC"    → Yahoo/Twelve Data default (ma beddelna)
-#   "GMT+2"  → IC Markets Winter (Nov-Mar)
-#   "GMT+3"  → IC Markets Summer (Apr-Oct)
+# ==============================================================================
+# ⏱️ TIMEZONE CONFIG
+# ==============================================================================
 TARGET_TIMEZONE = "GMT+2"
 
 TIMEZONE_OFFSET_HOURS = {
-    "UTC":   0,
+    "UTC": 0,
     "GMT+1": 1,
     "GMT+2": 2,
     "GMT+3": 3,
@@ -39,38 +37,32 @@ TIMEZONE_OFFSET_HOURS = {
     "GMT-5": -5,
 }
 
-
 def adjust_timezone(df, target_tz=None):
-    """
-    U beddel saacadda DataFrame-ka — isku mid dhigista MT5.
-    UTC → GMT+2 (ama GMT+3) automatically.
-    """
+    """U beddel saacadda DataFrame-ka — isku mid dhigista MT5."""
     if df is None or df.empty:
         return df
-    
+
     if target_tz is None:
         target_tz = TARGET_TIMEZONE
-    
+
     offset = TIMEZONE_OFFSET_HOURS.get(target_tz, 0)
-    
+
     if offset == 0:
         return df
-    
+
     df = df.copy()
     df.index = df.index + pd.Timedelta(hours=offset)
-    
+
     return df
 
-
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # 🛠️ HELPERS — Timeframe + Symbol Conversion
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 def _timeframe_yahoo(tf):
     return {
         "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
         "1h": "1h", "4h": "4h", "1d": "1d",
     }.get(tf, "1h")
-
 
 def _timeframe_twelve(tf):
     return {
@@ -78,9 +70,8 @@ def _timeframe_twelve(tf):
         "1h": "1h", "4h": "4h", "1d": "1day",
     }.get(tf, "1h")
 
-
 def _symbol_twelve(symbol):
-    """Yahoo → Twelve Data format."""
+    """Yahoo -> Twelve Data format."""
     s = str(symbol).upper().strip()
     if "-USD" in s:
         return s.replace("-USD", "/USD")
@@ -99,29 +90,31 @@ def _symbol_twelve(symbol):
         return f"{s[:3]}/{s[3:]}"
     return s
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 📡 YAHOO FINANCE
-# ══════════════════════════════════════════════════════════════════════════════
-# Tusaale ahaan, koodhkaaga ayaa u eg sidan:
-symbols = ["NZDUSD=X", "EURGBP=X", "EURJPY=X", "EURCHF=X"] # Liiska lammaanayaasha
-
-for symbol in symbols:
+# ==============================================================================
+# 🤖 YAHOO FINANCE
+# ==============================================================================
+def _fetch_yahoo(symbol, interval="1h", period="3mo",
+                 start_date=None, end_date=None):
+    """Yahoo Finance."""
     try:
-        # 1. Halkan ayaa xogta laga soo qaadayaa
-        df = _fetch_yahoo(symbol, interval="5m", period="1mo") 
-        
-        # 2. Halkan ayaad ku shaqayn kartaa xogta (backtest, chart, iwm)
-        if df is not None:
-            # ... koodhkaaga kale ...
-            pass
+        import yfinance as yf
+    except ImportError:
+        raise ImportError("Ku shub: pip install yfinance")
 
-    except Exception as e:
-        st.error(f"Khalad ayaa ka dhacay {symbol}: {e}")
-    
-    # 3. TANI WAA MEESHA AAD KU DARTO TIME.SLEEP
-    # Sug 8 ilbiriqsi ka hor inta aadan lammaanaha xigta soo qaadin
-    time.sleep(8) 
+    tf = _timeframe_yahoo(interval)
+
+    if start_date and end_date:
+        df = yf.download(symbol, start=start_date, end=end_date,
+                         interval=tf, progress=False, auto_adjust=False)
+    else:
+        df = yf.download(symbol, period=period,
+                         interval=tf, progress=False, auto_adjust=False)
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    if df is None or df.empty:
+        return None
 
     df.rename(columns={
         "open": "Open", "high": "High", "low": "Low",
@@ -130,151 +123,67 @@ for symbol in symbols:
 
     return df
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 📡 TWELVE DATA
-# ══════════════════════════════════════════════════════════════════════════════
-def _fetch_twelve_data(symbol, interval="1h", period="3mo",
-                       start_date=None, end_date=None, count=5000):
-    """Twelve Data (bilaash: 800 calls/maalin, 8 calls/daqiiqo)."""
+# ==============================================================================
+# 🟡 TWELVE DATA
+# ==============================================================================
+def _fetch_twelve(symbol, interval="1h", period="3mo",
+                  start_date=None, end_date=None):
+    """Twelve Data API."""
     try:
-        import requests
+        from twelvedata import TDClient
     except ImportError:
-        raise ImportError("Ku shub: pip install requests")
+        raise ImportError("Ku shub: pip install twelvedata")
 
-    if TWELVE_DATA_API_KEY == "HALKAN_GELI_KEY_GAAGA":
-        raise ValueError("❌ Geli TWELVE_DATA_API_KEY ee data_provider.py")
-
-    td_symbol = _symbol_twelve(symbol)
+    td = TDClient(apikey=TWELVE_DATA_API_KEY)
+    
     tf = _timeframe_twelve(interval)
+    sym = _symbol_twelve(symbol)
 
-    url = "https://api.twelvedata.com/time_series"
+    ts = td.time_series(
+        symbol=sym,
+        interval=tf,
+        outputsize=5000,
+        timezone="UTC"
+    )
 
-    params = {
-        "symbol": td_symbol,
-        "interval": tf,
-        "outputsize": count,
-        "apikey": TWELVE_DATA_API_KEY,
-        "order": "ASC",
-        "timezone": "UTC",
-    }
+    df = ts.as_pandas()
 
-    if start_date and end_date:
-        params["start_date"] = start_date
-        params["end_date"] = end_date
-        params.pop("outputsize", None)
+    if df is None or df.empty:
+        return None
 
-    try:
-        r = requests.get(url, params=params, timeout=30)
-        data = r.json()
+    # Twelve Data wuxuu soo celiyaa xogta kor ilaa hoos, marka waa in la rogaa
+    df = df.iloc[::-1]
 
-        if data.get("status") == "error":
-            msg = data.get("message", "Unknown error")
-            if "API key" in msg or "apikey" in msg.lower():
-                raise ValueError(f"🔑 API key khalad: {msg}")
-            if "limit" in msg.lower() or "credits" in msg.lower():
-                raise ValueError(f"⚠️ Rate limit: {msg}")
-            raise ValueError(f"Twelve Data: {msg}")
+    df.rename(columns={
+        "open": "Open", "high": "High", "low": "Low",
+        "close": "Close", "volume": "Volume",
+    }, inplace=True)
 
-        if "values" not in data:
-            return None
+    # XALKII DIHBAATADA RATE LIMIT
+    time.sleep(8)  # Sug 8 ilbiriqsi ka hor inta aadan lammaanaha xigta soo qaadin
 
-        df = pd.DataFrame(data["values"])
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df.set_index("datetime", inplace=True)
-        df.rename(columns={
-            "open": "Open", "high": "High", "low": "Low",
-            "close": "Close", "volume": "Volume",
-        }, inplace=True)
+    return df
 
-        for col in ["Open", "High", "Low", "Close"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        if "Volume" in df.columns:
-            df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
-        else:
-            df["Volume"] = 0
-
-        df = df.sort_index()
-        return df
-
-    except requests.exceptions.Timeout:
-        raise ValueError("⏱️ Twelve Data timeout")
-    except requests.exceptions.RequestException as e:
-        raise ValueError(f"🌐 Network: {e}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎯 MAIN — Isticmaal tan
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# 🚀 MAIN WRAPPER FUNCTION (Kani waa kii backtest.py raadinayay)
+# ==============================================================================
 def fetch_data(symbol, interval="1h", period="3mo",
-               start_date=None, end_date=None,
-               cache_hours=1, live=False):
-    """
-    Soo qaado xogta — Provider-ka la doortay.
-    Timezone: UTC → GMT+2 (IC Markets) automatic.
-
-    Args:
-        symbol: Yahoo format (EURUSD=X, BTC-USD)
-        interval: 1m, 5m, 15m, 30m, 1h, 4h, 1d
-        period: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
-        start_date, end_date: YYYY-MM-DD (optional)
-        cache_hours: Cache duration (0 = no cache)
-        live: True = real-time mode (skip cache)
-    """
-    cache_key = f"data_{symbol}_{interval}_{period}_{start_date}_{end_date}_{PROVIDER}"
-    time_key = f"data_time_{symbol}_{interval}_{period}_{start_date}_{end_date}_{PROVIDER}"
-
-    if not live and cache_hours > 0 and cache_key in st.session_state:
-        cache_time = st.session_state.get(time_key)
-        if cache_time:
-            age = datetime.now() - cache_time
-            if age < timedelta(hours=cache_hours):
-                return st.session_state[cache_key]
-
-    try:
-        if PROVIDER == "twelve_data":
-            df = _fetch_twelve_data(symbol, interval, period, start_date, end_date)
-        else:
-            df = _fetch_yahoo(symbol, interval, period, start_date, end_date)
-
-        # ═══ 🕐 TIMEZONE ADJUST ═══
-        if df is not None and not df.empty:
-            df = adjust_timezone(df, TARGET_TIMEZONE)
-
-        if df is not None and cache_hours > 0:
-            st.session_state[cache_key] = df
-            st.session_state[time_key] = datetime.now()
-
-        return df
-
-    except Exception as e:
-        if cache_key in st.session_state:
-            st.warning(f"⚠️ Provider fashilmay, cache ayaa la isticmaalayaa: {e}")
-            return st.session_state[cache_key]
-        raise e
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ℹ️ Provider Info
-# ══════════════════════════════════════════════════════════════════════════════
-def get_provider_info():
-    """Xogta provider-ka hadda."""
+               start_date=None, end_date=None):
+    """Function-ka ugu weyn ee xogta soo qaada."""
     if PROVIDER == "twelve_data":
-        return {
-            "name": "Twelve Data",
-            "status": "🟢 Active",
-            "api_key": "✅" if TWELVE_DATA_API_KEY != "HALKAN_GELI_KEY_GAAGA" else "❌ Maqan",
-            "rate_limit": "800 calls/maalin | 8 calls/daqiiqo",
-            "timezone": f"{TARGET_TIMEZONE} (adjusted)",
-            "quality": "~70% MT5",
-        }
+        df = _fetch_twelve(symbol, interval, period, start_date, end_date)
+    else:
+        df = _fetch_yahoo(symbol, interval, period, start_date, end_date)
+    
+    # Halkan ayaa timezone-ka loo beddelaa GMT+2
+    df = adjust_timezone(df)
+    
+    return df
+
+def get_provider_info():
+    """Soo celi macluumaadka ku saabsan provider-ka hadda shaqaynaya."""
     return {
-        "name": "Yahoo Finance",
-        "status": "🟢 Active",
-        "api_key": "N/A (bilaash)",
-        "rate_limit": "Xad aan la garanayn",
-        "timezone": f"{TARGET_TIMEZONE} (adjusted)",
-        "quality": "~50% MT5",
+        "provider": PROVIDER,
+        "api_key_used": TWELVE_DATA_API_KEY if PROVIDER == "twelve_data" else "N/A",
+        "timezone": TARGET_TIMEZONE
     }
