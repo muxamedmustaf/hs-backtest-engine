@@ -202,6 +202,47 @@ def simulate_trade_outcome(pattern, df):
     sl = initial_sl
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
+    def simulate_trade_outcome(pattern, df):
+    """محاكاة مع Break-even + Trailing Stop تدريجي + Time Stop."""
+    bias = pattern["bias"]
+    entry = float(pattern["entry"])
+    initial_sl = float(pattern["sl"])
+    sl = initial_sl
+    tp = float(pattern["tp"])
+    end_idx = pattern["neckline_end_idx"]
+    
+    # ══════════════════════════════════════════════════════════════════
+    # 🚫 FILTER: Head height check
+    # ══════════════════════════════════════════════════════════════════
+    head_distance = abs(tp - entry)
+    head_pct = (head_distance / entry * 100) if entry > 0 else 0
+    
+    MIN_HEAD_PCT = 0.10
+    MAX_HEAD_PCT = 1.00
+    
+    if head_pct < MIN_HEAD_PCT:
+        return {
+            "Result": "SKIPPED",
+            "Head Result": "SKIPPED",
+            "Loss Category": "too_small",
+            "Skip Reason": f"Head too small ({head_pct:.3f}% < {MIN_HEAD_PCT}%)",
+            "Max Reach %": 0, "SL Safety %": 0,
+            "Entry Date": str(end_idx), "Exit Date": None,
+            "candles_to_exit": 0, "progress_ratio": 0,
+        }
+    
+    if head_pct > MAX_HEAD_PCT:
+        return {
+            "Result": "SKIPPED",
+            "Head Result": "SKIPPED",
+            "Loss Category": "too_large",
+            "Skip Reason": f"Head too large ({head_pct:.3f}% > {MAX_HEAD_PCT}%)",
+            "Max Reach %": 0, "SL Safety %": 0,
+            "Entry Date": str(end_idx), "Exit Date": None,
+            "candles_to_exit": 0, "progress_ratio": 0,
+        }
+    
+    # ... (intaa ka dib waa code-kaaga hore)
 
     nodes = pattern.get("nodes", [])
     if len(nodes) >= 6:
