@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 DATA PROVIDER — Yahoo Finance ama Twelve Data
+Timezone Adjustment: UTC → GMT+2 (IC Markets)
 """
 import pandas as pd
 import streamlit as st
@@ -14,7 +15,51 @@ PROVIDER = "twelve_data"  # ← "yahoo" ama "twelve_data"
 # ══════════════════════════════════════════════════════════════════════════════
 # 🔑 API KEY — Twelve Data
 # ══════════════════════════════════════════════════════════════════════════════
-TWELVE_DATA_API_KEY = "951d7884292c4734aee5e4fc82878dc3 "  # ← Copy key-gaaga halkan
+TWELVE_DATA_API_KEY = "HALKAN_GELI_KEY_GAAGA"  # ← Copy key-gaaga halkan
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🕐 TIMEZONE CONFIG — Isku mid dhigista saacadda MT5
+# ══════════════════════════════════════════════════════════════════════════════
+# Dooro:
+#   "UTC"    → Yahoo/Twelve Data default (ma beddelna)
+#   "GMT+2"  → IC Markets Winter (Nov-Mar)
+#   "GMT+3"  → IC Markets Summer (Apr-Oct)
+TARGET_TIMEZONE = "GMT+2"
+
+TIMEZONE_OFFSET_HOURS = {
+    "UTC":   0,
+    "GMT+1": 1,
+    "GMT+2": 2,
+    "GMT+3": 3,
+    "GMT+4": 4,
+    "GMT-1": -1,
+    "GMT-2": -2,
+    "GMT-3": -3,
+    "GMT-4": -4,
+    "GMT-5": -5,
+}
+
+
+def adjust_timezone(df, target_tz=None):
+    """
+    U beddel saacadda DataFrame-ka — isku mid dhigista MT5.
+    UTC → GMT+2 (ama GMT+3) automatically.
+    """
+    if df is None or df.empty:
+        return df
+    
+    if target_tz is None:
+        target_tz = TARGET_TIMEZONE
+    
+    offset = TIMEZONE_OFFSET_HOURS.get(target_tz, 0)
+    
+    if offset == 0:
+        return df
+    
+    df = df.copy()
+    df.index = df.index + pd.Timedelta(hours=offset)
+    
+    return df
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -37,23 +82,19 @@ def _timeframe_twelve(tf):
 def _symbol_twelve(symbol):
     """Yahoo → Twelve Data format."""
     s = str(symbol).upper().strip()
-    # Crypto
     if "-USD" in s:
         return s.replace("-USD", "/USD")
     if s in ["BTC-USD", "ETH-USD"]:
         return s.replace("-USD", "/USD")
-    # Gold / Silver
     if s in ["GC=F", "XAUUSD", "XAUUSD=X", "GOLD"]:
         return "XAU/USD"
     if s in ["SI=F", "XAGUSD", "XAGUSD=X", "SILVER"]:
         return "XAG/USD"
-    # Forex
     if s.endswith("=X"):
         s = s.replace("=X", "")
         if len(s) == 6:
             return f"{s[:3]}/{s[3:]}"
         return s
-    # Forex without =X (EURUSD)
     if len(s) == 6 and s.isalpha():
         return f"{s[:3]}/{s[3:]}"
     return s
@@ -121,7 +162,6 @@ def _fetch_twelve_data(symbol, interval="1h", period="3mo",
         "timezone": "UTC",
     }
 
-    # Haddii taariikhda la bixiyay, isticmaal start_date/end_date
     if start_date and end_date:
         params["start_date"] = start_date
         params["end_date"] = end_date
@@ -131,7 +171,6 @@ def _fetch_twelve_data(symbol, interval="1h", period="3mo",
         r = requests.get(url, params=params, timeout=30)
         data = r.json()
 
-        # Hubi khaladaad
         if data.get("status") == "error":
             msg = data.get("message", "Unknown error")
             if "API key" in msg or "apikey" in msg.lower():
@@ -177,20 +216,19 @@ def fetch_data(symbol, interval="1h", period="3mo",
                cache_hours=1, live=False):
     """
     Soo qaado xogta — Provider-ka la doortay.
+    Timezone: UTC → GMT+2 (IC Markets) automatic.
 
     Args:
         symbol: Yahoo format (EURUSD=X, BTC-USD)
         interval: 1m, 5m, 15m, 30m, 1h, 4h, 1d
         period: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
         start_date, end_date: YYYY-MM-DD (optional)
-        cache_hours: Cache duration
+        cache_hours: Cache duration (0 = no cache)
         live: True = real-time mode (skip cache)
     """
-    # Cache key
     cache_key = f"data_{symbol}_{interval}_{period}_{start_date}_{end_date}_{PROVIDER}"
     time_key = f"data_time_{symbol}_{interval}_{period}_{start_date}_{end_date}_{PROVIDER}"
 
-    # Hubi cache (haddii aan live ahayn)
     if not live and cache_hours > 0 and cache_key in st.session_state:
         cache_time = st.session_state.get(time_key)
         if cache_time:
@@ -198,14 +236,16 @@ def fetch_data(symbol, interval="1h", period="3mo",
             if age < timedelta(hours=cache_hours):
                 return st.session_state[cache_key]
 
-    # Fetch
     try:
         if PROVIDER == "twelve_data":
             df = _fetch_twelve_data(symbol, interval, period, start_date, end_date)
         else:
             df = _fetch_yahoo(symbol, interval, period, start_date, end_date)
 
-        # Cache
+        # ═══ 🕐 TIMEZONE ADJUST ═══
+        if df is not None and not df.empty:
+            df = adjust_timezone(df, TARGET_TIMEZONE)
+
         if df is not None and cache_hours > 0:
             st.session_state[cache_key] = df
             st.session_state[time_key] = datetime.now()
@@ -213,29 +253,31 @@ def fetch_data(symbol, interval="1h", period="3mo",
         return df
 
     except Exception as e:
-        # Fallback: isticmaal cache hore
         if cache_key in st.session_state:
             st.warning(f"⚠️ Provider fashilmay, cache ayaa la isticmaalayaa: {e}")
             return st.session_state[cache_key]
         raise e
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ℹ️ Provider Info
+# ══════════════════════════════════════════════════════════════════════════════
 def get_provider_info():
-    """Xogta provider-ka."""
+    """Xogta provider-ka hadda."""
     if PROVIDER == "twelve_data":
         return {
             "name": "Twelve Data",
             "status": "🟢 Active",
             "api_key": "✅" if TWELVE_DATA_API_KEY != "HALKAN_GELI_KEY_GAAGA" else "❌ Maqan",
             "rate_limit": "800 calls/maalin | 8 calls/daqiiqo",
-            "timezone": "UTC",
+            "timezone": f"{TARGET_TIMEZONE} (adjusted)",
             "quality": "~70% MT5",
         }
     return {
         "name": "Yahoo Finance",
         "status": "🟢 Active",
-        "api_key": "N/A",
+        "api_key": "N/A (bilaash)",
         "rate_limit": "Xad aan la garanayn",
-        "timezone": "UTC",
+        "timezone": f"{TARGET_TIMEZONE} (adjusted)",
         "quality": "~50% MT5",
     }
