@@ -896,8 +896,69 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "timeouts": len([t for t in trades if "TIMEOUT" in str(t.get("Result","")).upper()]),
     }
     return result
+  
 
+# ==============================================================================
+# 🔄 دالة run_full_analysis — للتوافق مع backtest.py
+# ==============================================================================
+def run_full_analysis(df, interval="1h", symbol=None):
+    """
+    تحليل شامل — يرجع آخر نمط مكتشف + كل الأنماط.
+    """
+    default_empty = {
+        "df": df, "symbol": symbol or "N/A",
+        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
+    }
+    if df is None or df.empty:
+        return default_empty
 
+    df = df.copy()
+    required = ["Open", "High", "Low", "Close"]
+    for col in required:
+        if col not in df.columns:
+            default_empty["error"] = f"Missing column: {col}"
+            return default_empty
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=required)
+
+    if len(df) < 30:
+        default_empty["error"] = f"Insufficient data: {len(df)}"
+        return default_empty
+
+    df_active = df.tail(200).copy()
+    df_active = calculate_indicators(df_active)
+    df_active = calculate_zigzag(df_active, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    pivots = get_chronological_pivots(df_active)
+    max_gap = _get_max_gap(interval)
+    max_pattern_dur = _get_max_pattern_duration(interval)
+
+    all_patterns = detect_all_patterns(
+        pivots, df_active, is_backtest=False,
+        max_gap=max_gap,
+        max_pattern_duration=max_pattern_dur,
+    )
+    if not all_patterns:
+        default_empty["df"] = df_active
+        return default_empty
+
+    latest = all_patterns[-1]
+    signal = "STRONG BUY" if latest["bias"] == "Bullish" else "STRONG SELL"
+
+    return {
+        "df": df_active, "symbol": symbol or "N/A",
+        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
+        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
+        "sl": latest["sl"], "tp": latest["tp"],
+        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
+        "all_patterns": all_patterns, "match": latest.get("match", 100.0),
+        "Result": latest.get("Result", "OPEN"),
+        "Entry Date": latest.get("Entry Date"),
+        "Exit Date": latest.get("Exit Date"),
+        "Trade Recommendation": latest.get("Trade Recommendation", ""),
+        "error": None,
+    }
 # ==============================================================================
 if __name__ == "__main__":
     print("ENGINE_UNIFIED.PY — All-in-One Pattern Detector")
