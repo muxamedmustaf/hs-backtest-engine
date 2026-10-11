@@ -1,49 +1,38 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE_UNIFIED.PY
-=================
-محرك موحّد يكتشف 4 أنماط في دورة مسح واحدة:
-  1. Head and Shoulders (Bearish)         — انعكاسي
-  2. Inverse Head and Shoulders (Bullish) — انعكاسي
-  3. Double Top (Bearish)                 — انعكاسي
-  4. Double Bottom (Bullish)              — انعكاسي
+ENGINE_CONTINUATION_TEST.PY
+===========================
+نسخة اختبارية: تكتشف H&S الانعكاسي + الاستمراري معًا.
 
-بنفس المنطق الصارم:
-- فلتر الاتجاه السابق (موجة ≥ حجم الرأس قبل النمط)
-- وقف آمن 15% مُفعَّل في المحاكاة
-- TP = 2× الرأس
-- Trailing بوحدات الرأس
-- قياس الامتداد الكامل
-- تشخيص موحّد + تفصيل لكل نمط
+الانعكاسي (Reversal):
+  - Bearish H&S: يظهر بعد موجة صاعدة → كسر لأسفل
+  - Bullish IHS: يظهر بعد موجة هابطة → كسر لأعلى
+
+الاستمراري (Continuation):
+  - Bearish H&S: يظهر خلال موجة هابطة → يستأنف الهبوط
+  - Bullish IHS: يظهر خلال موجة صاعدة → يستأنف الصعود
+
+الهدف: مقارنة أداء النوعين على نفس البيانات.
 """
 import pandas as pd
 import numpy as np
 
-# ==============================================================================
-# ⚙️ الإعدادات الموحّدة
 # ==============================================================================
 CONFIG = {
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 3,
 
-    # ── نسب H&S ──
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "HEAD_PROPORTION_MIN_RATIO": 0.15,
     "NECKLINE_DIFF_MAX_RATIO": 0.10,
 
-    # ── نسب Double Pattern ──
-    "DOUBLE_PEAKS_MAX_DIFF_RATIO": 0.15,
-    "PRIOR_TREND_MIN_RATIO": 1.00,
-
-    # ── فلاتر الدخول ──
     "LIVE_MAX_BREAKOUT_CANDLES": 10,
     "BREAKOUT_MIN_PCT": 0.0001,
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
 
-    # ── إدارة الصفقة ──
     "TP_REACH_FACTOR": 2.0,
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
@@ -57,26 +46,24 @@ CONFIG = {
 
     "MEASURE_FULL_EXTENSION": True,
 
-    # ── تفعيل/تعطيل كل نمط ──
-    "ENABLE_HS": True,
-    "ENABLE_IHS": True,
-    "ENABLE_DOUBLE_TOP": True,
-    "ENABLE_DOUBLE_BOTTOM": True,
+    # 🆕 مفاتيح التحكم في النوعين
+    "ENABLE_REVERSAL": True,
+    "ENABLE_CONTINUATION": True,   # ← عطّلها لمقارنة الأداء
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 200
 TIMEOUT_DURATION_MULTIPLIER = 3
 
 REASON_MAP = {
-    "immediate_rejection": {"reason": "رفض فوري لخط العنق — اختراق وهمي.", "action": "انتظر إعادة اختبار.", "prevention": "لا تدخل بأول لمسة."},
-    "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل مبكرًا.", "prevention": "Trailing مبكر."},
-    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي 50%.", "prevention": "TP جزئي عند مستوى عرضي."},
-    "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing 30%.", "prevention": "راقب الأخبار."},
-    "timeout": {"reason": "انتهت المدة بدون لمس TP/SL.", "action": "أغلق يدويًا.", "prevention": "فلتر ADX."},
-    "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
-    "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
-    "trailing_win": {"reason": "خرج بـ Trailing بعد ربح.", "action": "لا شيء.", "prevention": "—"},
-    "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
+    "immediate_rejection": {"reason": "رفض فوري.", "action": "انتظر إعادة اختبار.", "prevention": "لا تدخل بأول لمسة."},
+    "early_reversal": {"reason": "انعكاس مبكر.", "action": "SL للتعادل.", "prevention": "Trailing مبكر."},
+    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي.", "prevention": "TP جزئي."},
+    "late_reversal": {"reason": "انعكاس 70%+.", "action": "Trailing 30%.", "prevention": "راقب الأخبار."},
+    "timeout": {"reason": "انتهت المدة.", "action": "أغلق يدويًا.", "prevention": "فلتر ADX."},
+    "breakeven": {"reason": "تعادل.", "action": "لا شيء.", "prevention": "استمر."},
+    "success": {"reason": "وصل الهدف.", "action": "كرر.", "prevention": "—"},
+    "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
+    "open": {"reason": "مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
 
@@ -108,28 +95,24 @@ def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size,
     rr = round(reward / risk, 2) if risk > 0 else 0.0
     factor = CONFIG["TP_REACH_FACTOR"]
     margin = round(CONFIG["SAFE_SL_MARGIN"] * 100, 0)
-
     if bias == "Bullish":
         return (
-            f"🟢 توصية {pattern_name} (Bullish):\n"
-            f"- الدخول: اختراق خط العنق ({entry}).\n"
-            f"- الوقف الآمن: ({round(sl, 5)}) = القاع ({round(structural_sl, 5)}) + هامش {margin}%.\n"
-            f"- الهدف: ({round(tp, 5)}) = {factor}× من الرأس.\n"
+            f"🟢 {pattern_name}:\n"
+            f"- الدخول: اختراق ({entry}).\n"
+            f"- SL: ({round(sl, 5)}) = القاع ({round(structural_sl, 5)}) + {margin}%.\n"
+            f"- TP: ({round(tp, 5)}) = {factor}× الرأس.\n"
             f"- R:R = 1 : {rr}."
         )
     else:
         return (
-            f"🔴 توصية {pattern_name} (Bearish):\n"
-            f"- الدخول: كسر خط العنق ({entry}).\n"
-            f"- الوقف الآمن: ({round(sl, 5)}) = القمة ({round(structural_sl, 5)}) + هامش {margin}%.\n"
-            f"- الهدف: ({round(tp, 5)}) = {factor}× من الرأس.\n"
+            f"🔴 {pattern_name}:\n"
+            f"- الدخول: كسر ({entry}).\n"
+            f"- SL: ({round(sl, 5)}) = القمة ({round(structural_sl, 5)}) + {margin}%.\n"
+            f"- TP: ({round(tp, 5)}) = {factor}× الرأس.\n"
             f"- R:R = 1 : {rr}."
         )
 
 
-# ==============================================================================
-# 📊 المؤشرات و ZigZag
-# ==============================================================================
 def calculate_indicators(df):
     df = df.copy()
     hl = df["High"] - df["Low"]
@@ -159,7 +142,6 @@ def calculate_zigzag(df, depth=12, backstep=6):
     n = len(df)
     if n < depth + backstep + 1:
         return df
-
     for i in range(depth, n - backstep):
         hw = highs[i - depth:i + backstep + 1]
         lw = lows[i - depth:i + backstep + 1]
@@ -184,7 +166,6 @@ def get_chronological_pivots(df):
                         "type": "L", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
     if not raw:
         return []
-
     clean = []
     for p in raw:
         if not clean:
@@ -201,7 +182,6 @@ def get_chronological_pivots(df):
         else:
             if p["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
             elif p["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
-
     final = []
     for p in clean:
         if not final:
@@ -215,9 +195,6 @@ def get_chronological_pivots(df):
     return final
 
 
-# ==============================================================================
-# 🎬 محاكاة الصفقة (موحّدة لكل الأنماط)
-# ==============================================================================
 def simulate_trade_outcome(pattern, df):
     bias = pattern["bias"]
     entry = float(pattern["entry"])
@@ -233,24 +210,24 @@ def simulate_trade_outcome(pattern, df):
     MAX_HEAD_PCT = 10.00
 
     if head_pct < MIN_HEAD_PCT:
-        return {"Result": "SKIPPED", "Head Result": "SKIPPED",
-                "Loss Category": "too_small", "Skip Reason": f"Head small ({head_pct:.3f}%)",
+        return {"Result": "SKIPPED", "Head Result": "SKIPPED", "Loss Category": "too_small",
+                "Skip Reason": f"Head small ({head_pct:.3f}%)",
                 "Max Reach %": 0, "Max Extension %": 0, "Extension Beyond TP %": 0,
                 "SL Safety %": 0, "Entry Date": str(end_idx), "Exit Date": None,
                 "candles_to_exit": 0, "progress_ratio": 0}
     if head_pct > MAX_HEAD_PCT:
-        return {"Result": "SKIPPED", "Head Result": "SKIPPED",
-                "Loss Category": "too_large", "Skip Reason": f"Head large ({head_pct:.3f}%)",
+        return {"Result": "SKIPPED", "Head Result": "SKIPPED", "Loss Category": "too_large",
+                "Skip Reason": f"Head large ({head_pct:.3f}%)",
                 "Max Reach %": 0, "Max Extension %": 0, "Extension Beyond TP %": 0,
                 "SL Safety %": 0, "Entry Date": str(end_idx), "Exit Date": None,
                 "candles_to_exit": 0, "progress_ratio": 0}
 
     nodes = pattern.get("nodes", [])
-    if len(nodes) >= 4:
+    if len(nodes) >= 6:
         try:
-            first_pos = df.index.get_loc(nodes[0][0])
-            last_pos = df.index.get_loc(nodes[-2][0])
-            pattern_duration = max(1, last_pos - first_pos)
+            fp = df.index.get_loc(nodes[0][0])
+            hp = df.index.get_loc(nodes[-2][0])
+            pattern_duration = max(1, hp - fp)
         except KeyError:
             pattern_duration = 50
     else:
@@ -406,14 +383,13 @@ class PatternValidatorPipeline:
         return True
 
     def breakout_filter(self, p, is_bearish, neckline):
-        idx_last = p[-1]["idx"]
-        post = self.df.loc[idx_last:]
+        idx_h3 = p[-1]["idx"]
+        post = self.df.loc[idx_h3:]
         if is_bearish:
             br = post[post["Close"] < neckline]
         else:
             br = post[post["Close"] > neckline]
-        if br.empty:
-            return None
+        if br.empty: return None
         return br.index[0], float(br["Close"].iloc[0])
 
     def breakout_confirm_filter(self, is_bearish, neckline, price):
@@ -424,7 +400,7 @@ class PatternValidatorPipeline:
 
 
 # ==============================================================================
-# 🔎 1) Head and Shoulders (Bearish)
+# 🔎 كاشف H&S (انعكاسي + استمراري)
 # ==============================================================================
 def detect_head_shoulders(pivots, df, is_backtest=False,
                            max_gap=50, max_pattern_duration=200):
@@ -444,11 +420,27 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
         head_height = h2 - neckline_min
         if head_height <= 0: continue
 
+        # 🎯 حساب الاتجاه السابق
         if i >= 2:
-            prior_h = pivots[i - 1]["val"] - pivots[i - 2]["val"]
-            if prior_h < head_height: continue
+            prev_l = pivots[i - 2]["val"]
+            prev_h = pivots[i - 1]["val"]
+            prior_trend = prev_h - prev_l   # موجب = صاعد، سالب = هابط
         else:
-            if (h2 - l0) < head_height: continue
+            prior_trend = h1 - l0
+
+        # ✅ الانعكاسي: اتجاه صاعد ≥ حجم الرأس
+        is_reversal = prior_trend >= head_height
+
+        # 🆕 الاستمراري: اتجاه هابط بقيمة ≥ حجم الرأس
+        is_continuation = (-prior_trend) >= head_height
+
+        # القرار
+        if is_reversal and CONFIG["ENABLE_REVERSAL"]:
+            pattern_type = "Reversal"
+        elif is_continuation and CONFIG["ENABLE_CONTINUATION"]:
+            pattern_type = "Continuation"
+        else:
+            continue
 
         if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
         max_sh = max(h1, h3)
@@ -458,10 +450,11 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
         l0_pos, h3_pos = p[0]["pos"], p[5]["pos"]
         if (h3_pos - l0_pos) > max_pattern_duration: continue
 
-        passed, end_idx, end_val = validator.breakout_filter(
-            p, is_bearish=True, neckline=(l1 + l2) / 2.0) or (None, None, None)
-        if not passed: continue
-        if not validator.breakout_confirm_filter(True, (l1 + l2) / 2.0, end_val): continue
+        neckline = (l1 + l2) / 2.0
+        br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
+        if br is None: continue
+        end_idx, end_val = br
+        if not validator.breakout_confirm_filter(True, neckline, end_val): continue
         if end_idx not in df.index: continue
         end_pos = df.index.get_loc(end_idx)
         if (end_pos - h3_pos) > max_gap: continue
@@ -469,17 +462,16 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
             continue
 
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
-        neckline_avg = (l1 + l2) / 2.0
-        actual_head = h2 - neckline_avg
-        entry = neckline_avg
+        actual_head = h2 - neckline
+        entry = neckline
         structural_sl = h2
-
         final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp(
             "Bearish", entry, structural_sl, actual_head)
 
         nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, float(end_val))]
         pattern = {
             "name": "Head and Shoulders", "pattern": "Head and Shoulders",
+            "pattern_type": pattern_type,
             "bias": "Bearish", "match": 100.0, "nodes": nodes,
             "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
             "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
@@ -489,19 +481,17 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
             "end_pos": p[5]["pos"],
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
-            "Pattern": "Head and Shoulders",
+            "Pattern": f"Head and Shoulders ({pattern_type})",
             "Entry Conditions": "Breakout Only",
         }
         pattern.update(simulate_trade_outcome(pattern, df))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bearish", entry, final_sl, tp, structural_sl, actual_head, "الرأس والكتفين")
+            "Bearish", entry, final_sl, tp, structural_sl, actual_head,
+            f"H&S {pattern_type}")
         patterns.append(pattern)
     return patterns
 
 
-# ==============================================================================
-# 🔎 2) Inverse Head and Shoulders (Bullish)
-# ==============================================================================
 def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
                                    max_gap=50, max_pattern_duration=200):
     patterns = []
@@ -519,11 +509,26 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
         head_depth = neckline_max - l2
         if head_depth <= 0: continue
 
+        # 🎯 حساب الاتجاه السابق
         if i >= 2:
-            prior_d = pivots[i - 2]["val"] - pivots[i - 1]["val"]
-            if prior_d < head_depth: continue
+            prev_h = pivots[i - 2]["val"]
+            prev_l = pivots[i - 1]["val"]
+            prior_trend = prev_h - prev_l   # موجب = صاعد
         else:
-            if (h0 - l2) < head_depth: continue
+            prior_trend = h0 - l1
+
+        # ✅ الانعكاسي: اتجاه هابط ≥ عمق الرأس
+        is_reversal = (-prior_trend) >= head_depth
+
+        # 🆕 الاستمراري: اتجاه صاعد ≥ عمق الرأس
+        is_continuation = prior_trend >= head_depth
+
+        if is_reversal and CONFIG["ENABLE_REVERSAL"]:
+            pattern_type = "Reversal"
+        elif is_continuation and CONFIG["ENABLE_CONTINUATION"]:
+            pattern_type = "Continuation"
+        else:
+            continue
 
         if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
         min_sh = min(l1, l3)
@@ -555,13 +560,13 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
         actual_head = neckline - l2
         entry = neckline
         structural_sl = l2
-
         final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp(
             "Bullish", entry, structural_sl, actual_head)
 
         nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, end_val)]
         pattern = {
             "name": "Inverse Head and Shoulders", "pattern": "Inverse Head and Shoulders",
+            "pattern_type": pattern_type,
             "bias": "Bullish", "match": 100.0, "nodes": nodes,
             "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
             "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
@@ -571,202 +576,28 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
             "end_pos": p[5]["pos"],
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
-            "Pattern": "Inverse Head and Shoulders",
+            "Pattern": f"Inverse Head and Shoulders ({pattern_type})",
             "Entry Conditions": "Breakout Only",
         }
         pattern.update(simulate_trade_outcome(pattern, df))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bullish", entry, final_sl, tp, structural_sl, actual_head, "الرأس والكتفين المعكوس")
+            "Bullish", entry, final_sl, tp, structural_sl, actual_head,
+            f"نموذج معكوس {pattern_type}")
         patterns.append(pattern)
     return patterns
 
 
-# ==============================================================================
-# 🔎 3) Double Top (Bearish)
-# ==============================================================================
-def detect_double_tops(pivots, df, is_backtest=False,
-                        max_gap=50, max_pattern_duration=200):
-    patterns = []
-    if len(pivots) < 4: return patterns
-    validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
-
-    for i in range(len(pivots) - 3):
-        p = pivots[i:i + 4]
-        if [x["type"] for x in p] != ["L", "H", "L", "H"]:
-            continue
-        l0, h1, l1, h2 = [x["val"] for x in p]
-        if h1 <= l0 or l1 <= l0: continue
-        if h2 <= l1: continue
-
-        neckline = l1
-        avg_peak = (h1 + h2) / 2.0
-        head_size = avg_peak - neckline
-        if head_size <= 0: continue
-
-        if abs(h1 - h2) > head_size * CONFIG["DOUBLE_PEAKS_MAX_DIFF_RATIO"]:
-            continue
-
-        if i >= 2:
-            prior_h = pivots[i - 1]["val"] - pivots[i - 2]["val"]
-            if prior_h < head_size * CONFIG["PRIOR_TREND_MIN_RATIO"]: continue
-        else:
-            if (h1 - l0) < head_size * CONFIG["PRIOR_TREND_MIN_RATIO"]: continue
-
-        positions = [x["pos"] for x in p]
-        if any((positions[j+1] - positions[j]) < CONFIG["MIN_WAVE_CANDLES"] for j in range(len(positions)-1)):
-            continue
-        l0_pos, h2_pos = p[0]["pos"], p[3]["pos"]
-        if (h2_pos - l0_pos) > max_pattern_duration: continue
-
-        br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
-        if br is None: continue
-        end_idx, end_val = br
-        if not validator.breakout_confirm_filter(True, neckline, end_val): continue
-        if end_idx not in df.index: continue
-        end_pos = df.index.get_loc(end_idx)
-        if (end_pos - h2_pos) > max_gap: continue
-        if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
-            continue
-
-        entry = neckline
-        structural_sl = max(h1, h2)
-        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp(
-            "Bearish", entry, structural_sl, head_size)
-
-        nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, float(end_val))]
-        pattern = {
-            "name": "Double Top", "pattern": "Double Top",
-            "bias": "Bearish", "match": 100.0, "nodes": nodes,
-            "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
-            "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-            "structural_sl": float(round(structural_sl, 5)),
-            "safe_sl": float(round(safe_sl, 5)),
-            "neckline_start_idx": p[2]["idx"], "neckline_end_idx": end_idx,
-            "end_pos": p[3]["pos"],
-            "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
-            "Entry": float(round(entry, 5)),
-            "Pattern": "Double Top",
-            "Entry Conditions": "Breakout Only",
-        }
-        pattern.update(simulate_trade_outcome(pattern, df))
-        pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bearish", entry, final_sl, tp, structural_sl, head_size, "القمة المزدوجة")
-        patterns.append(pattern)
-    return patterns
+def detect_all_head_shoulders(pivots, df, is_backtest=False,
+                               max_gap=50, max_pattern_duration=200):
+    a = detect_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration)
+    b = detect_inverse_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration)
+    all_p = a + b
+    all_p.sort(key=lambda x: x.get("end_pos", -1))
+    return all_p
 
 
 # ==============================================================================
-# 🔎 4) Double Bottom (Bullish)
-# ==============================================================================
-def detect_double_bottoms(pivots, df, is_backtest=False,
-                           max_gap=50, max_pattern_duration=200):
-    patterns = []
-    if len(pivots) < 4: return patterns
-    validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
-
-    for i in range(len(pivots) - 3):
-        p = pivots[i:i + 4]
-        if [x["type"] for x in p] != ["H", "L", "H", "L"]:
-            continue
-        h0, l1, h1, l2 = [x["val"] for x in p]
-        if l1 >= h0 or h1 >= h0: continue
-        if l2 >= h1: continue
-
-        neckline = h1
-        avg_trough = (l1 + l2) / 2.0
-        head_size = neckline - avg_trough
-        if head_size <= 0: continue
-
-        if abs(l1 - l2) > head_size * CONFIG["DOUBLE_PEAKS_MAX_DIFF_RATIO"]:
-            continue
-
-        if i >= 2:
-            prior_d = pivots[i - 2]["val"] - pivots[i - 1]["val"]
-            if prior_d < head_size * CONFIG["PRIOR_TREND_MIN_RATIO"]: continue
-        else:
-            if (h0 - l1) < head_size * CONFIG["PRIOR_TREND_MIN_RATIO"]: continue
-
-        positions = [x["pos"] for x in p]
-        if any((positions[j+1] - positions[j]) < CONFIG["MIN_WAVE_CANDLES"] for j in range(len(positions)-1)):
-            continue
-        h0_pos, l2_pos = p[0]["pos"], p[3]["pos"]
-        if (l2_pos - h0_pos) > max_pattern_duration: continue
-
-        idx_l2 = p[3]["idx"]
-        post_l2 = df.loc[idx_l2:]
-        if not post_l2.empty and post_l2["Low"].min() < min(l1, l2): continue
-
-        br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
-        if br is None: continue
-        end_idx, end_val = br
-        if not validator.breakout_confirm_filter(False, neckline, end_val): continue
-        if end_idx not in df.index: continue
-        end_pos = df.index.get_loc(end_idx)
-        if (end_pos - l2_pos) > max_gap: continue
-        if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
-            continue
-
-        entry = neckline
-        structural_sl = min(l1, l2)
-        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp(
-            "Bullish", entry, structural_sl, head_size)
-
-        nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, float(end_val))]
-        pattern = {
-            "name": "Double Bottom", "pattern": "Double Bottom",
-            "bias": "Bullish", "match": 100.0, "nodes": nodes,
-            "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
-            "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-            "structural_sl": float(round(structural_sl, 5)),
-            "safe_sl": float(round(safe_sl, 5)),
-            "neckline_start_idx": p[2]["idx"], "neckline_end_idx": end_idx,
-            "end_pos": p[3]["pos"],
-            "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
-            "Entry": float(round(entry, 5)),
-            "Pattern": "Double Bottom",
-            "Entry Conditions": "Breakout Only",
-        }
-        pattern.update(simulate_trade_outcome(pattern, df))
-        pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bullish", entry, final_sl, tp, structural_sl, head_size, "القاع المزدوج")
-        patterns.append(pattern)
-    return patterns
-
-
-# ==============================================================================
-# 🔀 الدالة الموحّدة — تكتشف كل الأنماط في مرور واحد
-# ==============================================================================
-def detect_all_patterns(pivots, df, is_backtest=False,
-                        max_gap=50, max_pattern_duration=200):
-    """
-    🎯 دورة مسح واحدة — كل الأنماط المفعّلة في CONFIG
-    """
-    all_patterns = []
-
-    if CONFIG.get("ENABLE_HS", True):
-        all_patterns += detect_head_shoulders(pivots, df, is_backtest,
-                                               max_gap, max_pattern_duration)
-
-    if CONFIG.get("ENABLE_IHS", True):
-        all_patterns += detect_inverse_head_shoulders(pivots, df, is_backtest,
-                                                       max_gap, max_pattern_duration)
-
-    if CONFIG.get("ENABLE_DOUBLE_TOP", True):
-        all_patterns += detect_double_tops(pivots, df, is_backtest,
-                                            max_gap, max_pattern_duration)
-
-    if CONFIG.get("ENABLE_DOUBLE_BOTTOM", True):
-        all_patterns += detect_double_bottoms(pivots, df, is_backtest,
-                                               max_gap, max_pattern_duration)
-
-    all_patterns.sort(key=lambda x: x.get("end_pos", -1))
-    return all_patterns
-
-
-# ==============================================================================
-# 📤 الباك تست الموحّد
+# 📤 الباك تست
 # ==============================================================================
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < 30:
@@ -781,15 +612,16 @@ def backtest_strategy(df, interval="1h", symbol=None):
     df = calculate_indicators(df)
     df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df)
-    patterns = detect_all_patterns(pivots, df, is_backtest=True,
-                                    max_gap=_get_max_gap(interval),
-                                    max_pattern_duration=_get_max_pattern_duration(interval))
+    patterns = detect_all_head_shoulders(pivots, df, is_backtest=True,
+                                          max_gap=_get_max_gap(interval),
+                                          max_pattern_duration=_get_max_pattern_duration(interval))
 
     trades = []
     for p in patterns:
         trades.append({
             "Symbol": symbol or "N/A", "symbol": symbol or "N/A",
             "Pattern": p["pattern"], "pattern": p["pattern"],
+            "Pattern Type": p.get("pattern_type", "Reversal"),   # 🆕
             "Bias": p["bias"], "bias": p["bias"],
             "Result": p.get("Result", "OPEN"),
             "Head Result": p.get("Head Result", "OPEN"),
@@ -827,15 +659,11 @@ def backtest_strategy(df, interval="1h", symbol=None):
 
 
 # ==============================================================================
-# 🧪 التشخيص الموحّد — مع تفصيل لكل نمط
+# 🧪 التشخيص
 # ==============================================================================
 def diagnose_filters(df, interval="1h", symbol=None):
-    result = {
-        "error": None, "final_count": 0, "trades": [],
-        "by_pattern": {},                # 🆕 تفصيل لكل نمط
-        "extension_analysis": {},
-        "smart_diagnosis": {},
-    }
+    result = {"error": None, "final_count": 0, "trades": [],
+              "by_pattern_type": {}, "smart_diagnosis": {}}
 
     if df is None or df.empty or len(df) < 30:
         result["error"] = "بيانات غير كافية"; return result
@@ -844,128 +672,44 @@ def diagnose_filters(df, interval="1h", symbol=None):
     result["final_count"] = len(trades)
     result["trades"] = trades
 
-    # 🆕 تحليل لكل نمط
-    pattern_types = ["Head and Shoulders", "Inverse Head and Shoulders",
-                     "Double Top", "Double Bottom"]
-    for ptype in pattern_types:
-        subset = [t for t in trades if t.get("Pattern") == ptype]
-        if not subset: continue
-        wins = [t for t in subset if "WIN" in str(t.get("Result","")).upper()]
-        losses = [t for t in subset if "LOSS" in str(t.get("Result","")).upper()]
-        bes = [t for t in subset if "BREAKEVEN" in str(t.get("Result","")).upper()]
-        tos = [t for t in subset if "TIMEOUT" in str(t.get("Result","")).upper()]
-        total_closed = len(wins) + len(losses)
-        wr = round(len(wins) / total_closed * 100, 1) if total_closed else 0
+    # 🆕 مقارنة Reversal vs Continuation
+    for ptype in ["Reversal", "Continuation"]:
+        subset = [t for t in trades if t.get("Pattern Type") == ptype]
+        if not subset:
+            continue
+        w = [t for t in subset if "WIN" in str(t.get("Result","")).upper()]
+        l = [t for t in subset if "LOSS" in str(t.get("Result","")).upper()]
+        be = [t for t in subset if "BREAKEVEN" in str(t.get("Result","")).upper()]
+        to = [t for t in subset if "TIMEOUT" in str(t.get("Result","")).upper()]
+        total_closed = len(w) + len(l)
+        wr = round(len(w) / total_closed * 100, 1) if total_closed else 0
 
-        win_ext = [t.get("Max Extension %", 0) for t in wins if t.get("Max Extension %") is not None]
-        total_pips = sum(t.get("Pips", 0) or 0 for t in subset)
-
-        result["by_pattern"][ptype] = {
+        result["by_pattern_type"][ptype] = {
             "count": len(subset),
-            "wins": len(wins),
-            "losses": len(losses),
-            "breakevens": len(bes),
-            "timeouts": len(tos),
+            "wins": len(w),
+            "losses": len(l),
+            "breakevens": len(be),
+            "timeouts": len(to),
             "win_rate_%": wr,
-            "median_extension_wins_%": round(float(np.median(win_ext)), 1) if win_ext else 0,
         }
 
-    # التحليل الكلي
     wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
     losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
-    win_ext = [t.get("Max Extension %", 0) for t in wins if t.get("Max Extension %") is not None]
-
-    def _pct(lst, cond):
-        return round(sum(1 for x in lst if cond(x)) / max(len(lst), 1) * 100, 1)
-
-    result["extension_analysis"] = {
-        "sample_wins": len(win_ext),
-        "median_extension_wins_%": round(float(np.median(win_ext)), 1) if win_ext else 0,
-        "pct_wins_reach_2.0x": _pct(win_ext, lambda x: x >= 200),
-        "pct_wins_reach_3.0x": _pct(win_ext, lambda x: x >= 300),
-    }
-
     total_closed = len(wins) + len(losses)
     wr = round(len(wins) / total_closed * 100, 1) if total_closed else 0
 
     result["smart_diagnosis"] = {
-        "verdict": f"نسبة نجاح {wr}%" if total_closed else "لا صفقات",
+        "verdict": f"نسبة نجاح إجمالية {wr}%" if total_closed else "لا صفقات",
         "total_trades": len(trades),
         "wins": len(wins), "losses": len(losses),
-        "breakevens": len([t for t in trades if "BREAKEVEN" in str(t.get("Result","")).upper()]),
-        "timeouts": len([t for t in trades if "TIMEOUT" in str(t.get("Result","")).upper()]),
     }
     return result
-  
 
-# ==============================================================================
-# 🔄 دالة run_full_analysis — للتوافق مع backtest.py
-# ==============================================================================
-def run_full_analysis(df, interval="1h", symbol=None):
-    """
-    تحليل شامل — يرجع آخر نمط مكتشف + كل الأنماط.
-    """
-    default_empty = {
-        "df": df, "symbol": symbol or "N/A",
-        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
-        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
-        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
-    }
-    if df is None or df.empty:
-        return default_empty
 
-    df = df.copy()
-    required = ["Open", "High", "Low", "Close"]
-    for col in required:
-        if col not in df.columns:
-            default_empty["error"] = f"Missing column: {col}"
-            return default_empty
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=required)
-
-    if len(df) < 30:
-        default_empty["error"] = f"Insufficient data: {len(df)}"
-        return default_empty
-
-    df_active = df.tail(200).copy()
-    df_active = calculate_indicators(df_active)
-    df_active = calculate_zigzag(df_active, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-    pivots = get_chronological_pivots(df_active)
-    max_gap = _get_max_gap(interval)
-    max_pattern_dur = _get_max_pattern_duration(interval)
-
-    all_patterns = detect_all_patterns(
-        pivots, df_active, is_backtest=False,
-        max_gap=max_gap,
-        max_pattern_duration=max_pattern_dur,
-    )
-    if not all_patterns:
-        default_empty["df"] = df_active
-        return default_empty
-
-    latest = all_patterns[-1]
-    signal = "STRONG BUY" if latest["bias"] == "Bullish" else "STRONG SELL"
-
-    return {
-        "df": df_active, "symbol": symbol or "N/A",
-        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
-        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
-        "sl": latest["sl"], "tp": latest["tp"],
-        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
-        "all_patterns": all_patterns, "match": latest.get("match", 100.0),
-        "Result": latest.get("Result", "OPEN"),
-        "Entry Date": latest.get("Entry Date"),
-        "Exit Date": latest.get("Exit Date"),
-        "Trade Recommendation": latest.get("Trade Recommendation", ""),
-        "error": None,
-    }
 # ==============================================================================
 if __name__ == "__main__":
-    print("ENGINE_UNIFIED.PY — All-in-One Pattern Detector")
-    print(f"Active patterns:")
-    print(f"  - H&S (Bearish):         {CONFIG['ENABLE_HS']}")
-    print(f"  - Inverse H&S (Bullish): {CONFIG['ENABLE_IHS']}")
-    print(f"  - Double Top (Bearish):  {CONFIG['ENABLE_DOUBLE_TOP']}")
-    print(f"  - Double Bottom (Bullish): {CONFIG['ENABLE_DOUBLE_BOTTOM']}")
-    print(f"TP Factor: {CONFIG['TP_REACH_FACTOR']}× head | Safe SL: {CONFIG['USE_SAFE_SL']}")
-    print("Diagnostics: diagnose_filters(df, interval, symbol)")
+    print("ENGINE_CONTINUATION_TEST.PY")
+    print(f"Reversal patterns:     {CONFIG['ENABLE_REVERSAL']}")
+    print(f"Continuation patterns: {CONFIG['ENABLE_CONTINUATION']}")
+    print(f"TP Factor: {CONFIG['TP_REACH_FACTOR']}× head")
+    print(f"Diagnostics: diagnose_filters(df, interval, symbol)")
