@@ -1,69 +1,56 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE_CONTINUATION_TEST.PY
-===========================
-نسخة اختبارية: تكتشف H&S الانعكاسي + الاستمراري معًا.
-
-الانعكاسي (Reversal):
-  - Bearish H&S: يظهر بعد موجة صاعدة → كسر لأسفل
-  - Bullish IHS: يظهر بعد موجة هابطة → كسر لأعلى
-
-الاستمراري (Continuation):
-  - Bearish H&S: يظهر خلال موجة هابطة → يستأنف الهبوط
-  - Bullish IHS: يظهر خلال موجة صاعدة → يستأنف الصعود
-
-الهدف: مقارنة أداء النوعين على نفس البيانات.
+ENGINE.PY — H&S Detector (Reversal + Continuation)
+===================================================
+- كشف H&S الانعكاسي والاستمراري
+- فلتر الاتجاه السابق لكلا النوعين
+- وقف آمن 15% + TP = 2× الرأس + Trailing بوحدات الرأس
+- قياس الامتداد الكامل
+- جميع الدوال المتوافقة مع backtest.py
 """
 import pandas as pd
 import numpy as np
 
-# ==============================================================================
 CONFIG = {
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 3,
-
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "HEAD_PROPORTION_MIN_RATIO": 0.15,
     "NECKLINE_DIFF_MAX_RATIO": 0.10,
-
     "LIVE_MAX_BREAKOUT_CANDLES": 10,
     "BREAKOUT_MIN_PCT": 0.0001,
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
-
     "TP_REACH_FACTOR": 2.0,
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
-
     "TRAILING_LEVELS_HEAD": [
         (1.00, 0.00),
         (1.40, 0.60),
         (1.70, 1.00),
         (1.90, 1.50),
     ],
-
     "MEASURE_FULL_EXTENSION": True,
-
-    # 🆕 مفاتيح التحكم في النوعين
+    # 🆕 مفاتيح النوعين
     "ENABLE_REVERSAL": True,
-    "ENABLE_CONTINUATION": True,   # ← عطّلها لمقارنة الأداء
+    "ENABLE_CONTINUATION": True,
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 200
 TIMEOUT_DURATION_MULTIPLIER = 3
 
 REASON_MAP = {
-    "immediate_rejection": {"reason": "رفض فوري.", "action": "انتظر إعادة اختبار.", "prevention": "لا تدخل بأول لمسة."},
-    "early_reversal": {"reason": "انعكاس مبكر.", "action": "SL للتعادل.", "prevention": "Trailing مبكر."},
-    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي.", "prevention": "TP جزئي."},
-    "late_reversal": {"reason": "انعكاس 70%+.", "action": "Trailing 30%.", "prevention": "راقب الأخبار."},
-    "timeout": {"reason": "انتهت المدة.", "action": "أغلق يدويًا.", "prevention": "فلتر ADX."},
-    "breakeven": {"reason": "تعادل.", "action": "لا شيء.", "prevention": "استمر."},
-    "success": {"reason": "وصل الهدف.", "action": "كرر.", "prevention": "—"},
+    "immediate_rejection": {"reason": "السعر رفض خط العنق فورًا.", "action": "انتظر إعادة اختبار.", "prevention": "لا تدخل بأول لمسة."},
+    "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
+    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي 50%.", "prevention": "TP جزئي."},
+    "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing 30%.", "prevention": "راقب الأخبار."},
+    "timeout": {"reason": "انتهت المدة دون TP/SL.", "action": "أغلق يدويًا.", "prevention": "فلتر ADX."},
+    "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
+    "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
     "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
-    "open": {"reason": "مفتوحة.", "action": "راقب.", "prevention": "—"},
+    "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
 
@@ -122,7 +109,6 @@ def calculate_indicators(df):
     df["ATR"] = tr.rolling(14).mean()
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
-
     if "Volume" in df.columns:
         v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
         df["Volume"] = v
@@ -205,7 +191,6 @@ def simulate_trade_outcome(pattern, df):
 
     head_size = abs(tp - entry) / CONFIG["TP_REACH_FACTOR"]
     head_pct = (head_size / entry * 100) if entry > 0 else 0
-
     MIN_HEAD_PCT = 0.10
     MAX_HEAD_PCT = 10.00
 
@@ -239,7 +224,6 @@ def simulate_trade_outcome(pattern, df):
 
     breakeven_activated = False
     trailing_stage = 0
-
     stats = {
         "Result": "OPEN", "Head Result": "OPEN",
         "progress_ratio": 0.0, "candles_to_exit": 0,
@@ -266,12 +250,10 @@ def simulate_trade_outcome(pattern, df):
 
     for candle_count, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
         high = float(row["High"]); low = float(row["Low"]); close = float(row["Close"])
-
         if bias == "Bearish":
             favorable = max(0.0, entry - low); adverse = max(0.0, high - entry)
         else:
             favorable = max(0.0, high - entry); adverse = max(0.0, entry - low)
-
         progress = (favorable / total_tp_dist) if total_tp_dist > 0 else 0.0
         progress_head = (favorable / head_size) if head_size > 0 else 0.0
 
@@ -282,7 +264,6 @@ def simulate_trade_outcome(pattern, df):
         if not exited:
             if total_tp_dist > 0: max_favorable = max(max_favorable, progress * 100)
             if total_sl_dist > 0: max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
-
         if exited:
             if candle_count >= TIMEOUT_CANDLES: break
             continue
@@ -399,11 +380,9 @@ class PatternValidatorPipeline:
         return price >= neckline * (1 + mp)
 
 
-# ==============================================================================
-# 🔎 كاشف H&S (انعكاسي + استمراري)
-# ==============================================================================
 def detect_head_shoulders(pivots, df, is_backtest=False,
                            max_gap=50, max_pattern_duration=200):
+    """H&S العادي (Bearish) — انعكاسي واستمراري"""
     patterns = []
     if len(pivots) < 6: return patterns
     validator = PatternValidatorPipeline(df)
@@ -420,21 +399,16 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
         head_height = h2 - neckline_min
         if head_height <= 0: continue
 
-        # 🎯 حساب الاتجاه السابق
         if i >= 2:
             prev_l = pivots[i - 2]["val"]
             prev_h = pivots[i - 1]["val"]
-            prior_trend = prev_h - prev_l   # موجب = صاعد، سالب = هابط
+            prior_trend = prev_h - prev_l
         else:
             prior_trend = h1 - l0
 
-        # ✅ الانعكاسي: اتجاه صاعد ≥ حجم الرأس
         is_reversal = prior_trend >= head_height
-
-        # 🆕 الاستمراري: اتجاه هابط بقيمة ≥ حجم الرأس
         is_continuation = (-prior_trend) >= head_height
 
-        # القرار
         if is_reversal and CONFIG["ENABLE_REVERSAL"]:
             pattern_type = "Reversal"
         elif is_continuation and CONFIG["ENABLE_CONTINUATION"]:
@@ -478,6 +452,8 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
             "structural_sl": float(round(structural_sl, 5)),
             "safe_sl": float(round(safe_sl, 5)),
             "neckline_start_idx": l1_idx, "neckline_end_idx": end_idx,
+            "neckline_nodes": [(l1_idx, l1), (l2_idx, l2)],
+            "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"],
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
@@ -494,6 +470,7 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
 
 def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
                                    max_gap=50, max_pattern_duration=200):
+    """IHS — انعكاسي واستمراري"""
     patterns = []
     if len(pivots) < 6: return patterns
     validator = PatternValidatorPipeline(df)
@@ -509,18 +486,14 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
         head_depth = neckline_max - l2
         if head_depth <= 0: continue
 
-        # 🎯 حساب الاتجاه السابق
         if i >= 2:
             prev_h = pivots[i - 2]["val"]
             prev_l = pivots[i - 1]["val"]
-            prior_trend = prev_h - prev_l   # موجب = صاعد
+            prior_trend = prev_h - prev_l
         else:
             prior_trend = h0 - l1
 
-        # ✅ الانعكاسي: اتجاه هابط ≥ عمق الرأس
         is_reversal = (-prior_trend) >= head_depth
-
-        # 🆕 الاستمراري: اتجاه صاعد ≥ عمق الرأس
         is_continuation = prior_trend >= head_depth
 
         if is_reversal and CONFIG["ENABLE_REVERSAL"]:
@@ -573,6 +546,8 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
             "structural_sl": float(round(structural_sl, 5)),
             "safe_sl": float(round(safe_sl, 5)),
             "neckline_start_idx": h1_idx, "neckline_end_idx": end_idx,
+            "neckline_nodes": [(h1_idx, h1), (h2_idx, h2)],
+            "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"],
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
@@ -597,7 +572,65 @@ def detect_all_head_shoulders(pivots, df, is_backtest=False,
 
 
 # ==============================================================================
-# 📤 الباك تست
+# 🔄 run_full_analysis — المطلوبة من الواجهة
+# ==============================================================================
+def run_full_analysis(df, interval="1h", symbol=None):
+    default_empty = {
+        "df": df, "symbol": symbol or "N/A",
+        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
+    }
+    if df is None or df.empty:
+        return default_empty
+    df = df.copy()
+    required = ["Open", "High", "Low", "Close"]
+    for col in required:
+        if col not in df.columns:
+            default_empty["error"] = f"Missing column: {col}"
+            return default_empty
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=required)
+    if len(df) < 30:
+        default_empty["error"] = f"Insufficient data: {len(df)}"
+        return default_empty
+
+    df_active = df.tail(200).copy()
+    df_active = calculate_indicators(df_active)
+    df_active = calculate_zigzag(df_active, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    pivots = get_chronological_pivots(df_active)
+    max_gap = _get_max_gap(interval)
+    max_pattern_dur = _get_max_pattern_duration(interval)
+    all_patterns = detect_all_head_shoulders(
+        pivots, df_active, is_backtest=False,
+        max_gap=max_gap, max_pattern_duration=max_pattern_dur)
+    if not all_patterns:
+        default_empty["df"] = df_active
+        return default_empty
+
+    latest = all_patterns[-1]
+    signal = "STRONG BUY" if latest["bias"] == "Bullish" else "STRONG SELL"
+
+    return {
+        "df": df_active, "symbol": symbol or "N/A",
+        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
+        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
+        "sl": latest["sl"], "tp": latest["tp"],
+        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
+        "neckline_nodes": latest.get("neckline_nodes", []),
+        "target_nodes": latest.get("target_nodes", []),
+        "all_patterns": all_patterns, "match": latest.get("match", 100.0),
+        "Result": latest.get("Result", "OPEN"),
+        "Entry Date": latest.get("Entry Date"),
+        "Exit Date": latest.get("Exit Date"),
+        "Trade Recommendation": latest.get("Trade Recommendation", ""),
+        "Max Reach %": latest.get("Max Reach %", 0),
+        "error": None,
+    }
+
+
+# ==============================================================================
+# 📤 backtest_strategy
 # ==============================================================================
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < 30:
@@ -612,16 +645,17 @@ def backtest_strategy(df, interval="1h", symbol=None):
     df = calculate_indicators(df)
     df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df)
-    patterns = detect_all_head_shoulders(pivots, df, is_backtest=True,
-                                          max_gap=_get_max_gap(interval),
-                                          max_pattern_duration=_get_max_pattern_duration(interval))
+    patterns = detect_all_head_shoulders(
+        pivots, df, is_backtest=True,
+        max_gap=_get_max_gap(interval),
+        max_pattern_duration=_get_max_pattern_duration(interval))
 
     trades = []
     for p in patterns:
         trades.append({
             "Symbol": symbol or "N/A", "symbol": symbol or "N/A",
             "Pattern": p["pattern"], "pattern": p["pattern"],
-            "Pattern Type": p.get("pattern_type", "Reversal"),   # 🆕
+            "Pattern Type": p.get("pattern_type", "Reversal"),
             "Bias": p["bias"], "bias": p["bias"],
             "Result": p.get("Result", "OPEN"),
             "Head Result": p.get("Head Result", "OPEN"),
@@ -659,57 +693,182 @@ def backtest_strategy(df, interval="1h", symbol=None):
 
 
 # ==============================================================================
-# 🧪 التشخيص
+# 🧪 diagnose_filters
 # ==============================================================================
 def diagnose_filters(df, interval="1h", symbol=None):
-    result = {"error": None, "final_count": 0, "trades": [],
-              "by_pattern_type": {}, "smart_diagnosis": {}}
+    result = {
+        "error": None, "total_raw_candidates": 0, "final_count": 0,
+        "stages": {}, "smart_diagnosis": {}, "recommendations": [],
+        "trade_analysis": [], "by_pattern_type": {},
+        "tp_distribution": {}, "extension_analysis": {},
+    }
 
     if df is None or df.empty or len(df) < 30:
         result["error"] = "بيانات غير كافية"; return result
 
+    df = df.copy()
+    for col in ["Open", "High", "Low", "Close"]:
+        if col not in df.columns:
+            result["error"] = f"مفقود: {col}"; return result
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+
+    df = calculate_indicators(df)
+    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    pivots = get_chronological_pivots(df)
+
+    raw_count = 0
+    if len(pivots) >= 6:
+        for i in range(len(pivots) - 5):
+            p = pivots[i:i + 6]
+            if [x["type"] for x in p] in (["L","H","L","H","L","H"], ["H","L","H","L","H","L"]):
+                raw_count += 1
+    result["total_raw_candidates"] = raw_count
+
+    validator = PatternValidatorPipeline(df)
+    stages = {
+        "1. فلتر الوقت": {"before": 0, "after": 0, "rejected": 0, "pass_rate": "0%"},
+        "2. فلتر الاختراق": {"before": 0, "after": 0, "rejected": 0, "pass_rate": "0%"},
+        "3. تأكيد الاختراق": {"before": 0, "after": 0, "rejected": 0, "pass_rate": "0%"},
+    }
+    result["stages"] = stages
+
     trades = backtest_strategy(df, interval=interval, symbol=symbol)
     result["final_count"] = len(trades)
-    result["trades"] = trades
+
+    wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
+    losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
+    bes = [t for t in trades if "BREAKEVEN" in str(t.get("Result","")).upper()]
+    tos = [t for t in trades if "TIMEOUT" in str(t.get("Result","")).upper()]
 
     # 🆕 مقارنة Reversal vs Continuation
     for ptype in ["Reversal", "Continuation"]:
         subset = [t for t in trades if t.get("Pattern Type") == ptype]
-        if not subset:
-            continue
+        if not subset: continue
         w = [t for t in subset if "WIN" in str(t.get("Result","")).upper()]
         l = [t for t in subset if "LOSS" in str(t.get("Result","")).upper()]
-        be = [t for t in subset if "BREAKEVEN" in str(t.get("Result","")).upper()]
-        to = [t for t in subset if "TIMEOUT" in str(t.get("Result","")).upper()]
         total_closed = len(w) + len(l)
         wr = round(len(w) / total_closed * 100, 1) if total_closed else 0
-
         result["by_pattern_type"][ptype] = {
             "count": len(subset),
-            "wins": len(w),
-            "losses": len(l),
-            "breakevens": len(be),
-            "timeouts": len(to),
+            "wins": len(w), "losses": len(l),
+            "breakevens": len([t for t in subset if "BREAKEVEN" in str(t.get("Result","")).upper()]),
+            "timeouts": len([t for t in subset if "TIMEOUT" in str(t.get("Result","")).upper()]),
             "win_rate_%": wr,
         }
 
-    wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
-    losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
+    win_ext = [t.get("Max Extension %", 0) for t in wins if t.get("Max Extension %") is not None]
+
+    def _pct(lst, cond):
+        return round(sum(1 for x in lst if cond(x)) / max(len(lst), 1) * 100, 1)
+
+    result["extension_analysis"] = {
+        "sample_wins": len(win_ext),
+        "median_extension_wins_%": round(float(np.median(win_ext)), 1) if win_ext else 0,
+        "pct_wins_reach_2.0x": _pct(win_ext, lambda x: x >= 200),
+    }
+
+    win_reach = [t.get("Max Reach %", 0) for t in wins]
+    result["tp_distribution"] = {
+        "wins_count": len(wins),
+        "pct_wins_>=60%": _pct(win_reach, lambda x: x >= 60),
+        "pct_wins_>=100%": _pct(win_reach, lambda x: x >= 100),
+    }
+
+    loss_breakdown = {"immediate_rejection": 0, "early_reversal": 0,
+                      "mid_reversal": 0, "late_reversal": 0,
+                      "unavoidable": 0, "avoidable": 0}
+    for t in losses:
+        cat = t.get("Loss Category") or ""
+        if cat in loss_breakdown:
+            loss_breakdown[cat] += 1
+        if t.get("Max Reach %", 0) >= 60:
+            loss_breakdown["unavoidable"] += 1
+        else:
+            loss_breakdown["avoidable"] += 1
+
+    win_breakdown = {"total_wins": len(wins), "avg_max_reach": 0.0}
+    if wins:
+        win_breakdown["avg_max_reach"] = round(
+            sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1)
+
     total_closed = len(wins) + len(losses)
-    wr = round(len(wins) / total_closed * 100, 1) if total_closed else 0
+    win_rate = round(len(wins) / total_closed * 100, 1) if total_closed else 0
+
+    if total_closed == 0:
+        verdict = "لا توجد صفقات كافية"
+    elif win_rate >= 70:
+        verdict = f"ممتاز — {win_rate}%"
+    elif win_rate >= 50:
+        verdict = f"جيد — {win_rate}%"
+    elif win_rate >= 35:
+        verdict = f"متوسط — {win_rate}%"
+    else:
+        verdict = f"ضعيف — {win_rate}%"
+
+    action_plan = []
+    avoidable = loss_breakdown["avoidable"]
+    unavoidable = loss_breakdown["unavoidable"]
+    if avoidable > unavoidable:
+        action_plan.append(f"🔴 خسائر قابلة للتجنب ({avoidable}) > غير قابلة ({unavoidable}).")
+    elif unavoidable > 0:
+        action_plan.append(f"🟢 معظم الخسائر ({unavoidable}) لا مفر منها.")
+
+    # 🆕 قرار النوعين
+    rev = result["by_pattern_type"].get("Reversal", {})
+    con = result["by_pattern_type"].get("Continuation", {})
+    if rev and con:
+        rev_wr = rev.get("win_rate_%", 0)
+        con_wr = con.get("win_rate_%", 0)
+        if con_wr < 50 and rev_wr >= 60:
+            action_plan.append(f"🔴 Continuation ضعيف ({con_wr}%) — أوصي بتعطيله.")
+        elif con_wr >= 60:
+            action_plan.append(f"🟢 Continuation مقبول ({con_wr}%) — يمكن دمجه.")
 
     result["smart_diagnosis"] = {
-        "verdict": f"نسبة نجاح إجمالية {wr}%" if total_closed else "لا صفقات",
-        "total_trades": len(trades),
-        "wins": len(wins), "losses": len(losses),
+        "verdict": verdict,
+        "win_breakdown": win_breakdown,
+        "loss_breakdown": loss_breakdown,
+        "action_plan": action_plan,
     }
+
+    trade_analysis = []
+    for i, t in enumerate(trades):
+        cat = t.get("Loss Category") or "open"
+        info = REASON_MAP.get(cat, REASON_MAP.get("open"))
+        entry = t.get("Entry", 0) or 0
+        sl = t.get("SL", 0) or 0
+        tp = t.get("TP", 0) or 0
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+        rr = round(reward / risk, 2) if risk > 0 else "—"
+        trade_analysis.append({
+            "trade_num": i + 1,
+            "bias": t.get("Bias", "—"),
+            "pattern": t.get("Pattern", "—"),
+            "pattern_type": t.get("Pattern Type", "—"),
+            "result": t.get("Result", "—"),
+            "category": cat,
+            "max_reach_%": t.get("Max Reach %", 0),
+            "rr_ratio": rr,
+            "is_unavoidable": t.get("Max Reach %", 0) >= 60 and "LOSS" in str(t.get("Result", "")).upper(),
+            "reason": info.get("reason", "—"),
+            "action": info.get("action", "—"),
+            "prevention": info.get("prevention", "—"),
+        })
+    result["trade_analysis"] = trade_analysis
+
+    recommendations = []
+    if len(tos) > len(wins):
+        recommendations.append({"severity": "حرج", "message": "الصفقات المنتهية بالوقت كثيرة."})
+    if len(bes) > 0:
+        recommendations.append({"severity": "منخفض", "message": f"{len(bes)} صفقة عند التعادل."})
+    result["recommendations"] = recommendations
     return result
 
 
-# ==============================================================================
 if __name__ == "__main__":
-    print("ENGINE_CONTINUATION_TEST.PY")
-    print(f"Reversal patterns:     {CONFIG['ENABLE_REVERSAL']}")
-    print(f"Continuation patterns: {CONFIG['ENABLE_CONTINUATION']}")
-    print(f"TP Factor: {CONFIG['TP_REACH_FACTOR']}× head")
-    print(f"Diagnostics: diagnose_filters(df, interval, symbol)")
+    print("ENGINE.PY — H&S Reversal + Continuation")
+    print(f"Reversal: {CONFIG['ENABLE_REVERSAL']}")
+    print(f"Continuation: {CONFIG['ENABLE_CONTINUATION']}")
+    print(f"TP: {CONFIG['TP_REACH_FACTOR']}× head | Safe SL: {CONFIG['USE_SAFE_SL']}")
