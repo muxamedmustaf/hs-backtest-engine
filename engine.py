@@ -1,7 +1,11 @@
 # --- القسم الأول: الإعدادات، خريطة الأسباب، الدوال المساعدة، المؤشرات، وتوليد التوصية ---
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY - Head & Shoulders Detector + Diagnostics (Strict Prior Trend & Safe SL)
+ENGINE.PY - Head & Shoulders Detector + Diagnostics
+- Strict Prior Trend filter
+- Strict Safe SL (applied in simulation, not just recommendation)
+- Empirical TP based on report analysis (65% of head)
+- Trailing calibrated to retracement patterns observed in backtest
 """
 import pandas as pd
 import numpy as np
@@ -18,16 +22,33 @@ CONFIG = {
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
-    "BREAKEVEN_ACTIVATION_PCT": 0.60,
+
+    # ✅ إصلاح التناقض السابق: التعادل عند 30% (كان 0.60)
+    "BREAKEVEN_ACTIVATION_PCT": 0.30,
+
+    # 🆕 هدف تجريبي بناءً على تقرير backtest_ALL_10:
+    # 100% من الرابحين وصلوا ≥ 60% من الرأس
+    # 86%  وصلوا ≥ 65%
+    # 57%  وصلوا ≥ 70%
+    # لذلك الهدف عند 65% يضمن وصول الغالبية
+    "TP_REACH_FACTOR": 0.65,
+
+    # 🆕 فرض الوقف الآمن فعلياً في المحاكاة (هامش 15%)
+    "USE_SAFE_SL": True,
+    "SAFE_SL_MARGIN": 0.15,
+
+    # 🆕 Trailing مُعايَر: تأمين الربح تدريجياً قبل الارتدادات الملحوظة
+    "TRAILING_LEVELS": [
+        (0.50, 0.00),   # 50% من الهدف الجديد → التعادل
+        (0.70, 0.30),   # 70% → تأمين 30%
+        (0.85, 0.50),   # 85% → تأمين 50%
+        (0.95, 0.75),   # 95% → تأمين 75%
+    ],
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 200
 TIMEOUT_DURATION_MULTIPLIER = 3
 
-
-# ==============================================================================
-# 🧠 خريطة أسباب الخسارة والتصرف المناسب
-# ==============================================================================
 REASON_MAP = {
     "immediate_rejection": {
         "reason": "السعر رفض خط العنق فورًا بعد الاختراق — السيولة ضعيفة أو الاختراق وهمي.",
@@ -64,6 +85,11 @@ REASON_MAP = {
         "action": "سجّل الإعداد وكرره.",
         "prevention": "—"
     },
+    "trailing_win": {
+        "reason": "الصفقة أُغلقت بواسطة Trailing Stop بعد ربح.",
+        "action": "لا شيء؛ هذا سلوك صحيح.",
+        "prevention": "—"
+    },
     "open": {
         "reason": "الصفقة ما زالت مفتوحة عند انتهاء فترة الاختبار.",
         "action": "راقبها يدويًا حتى الإغلاق.",
@@ -92,27 +118,56 @@ def _get_max_pattern_duration(interval):
     }.get(interval, 200)
 
 
-def generate_trade_recommendation(bias, entry, sl, tp, head_size):
-    """توليد توصية استنتاجية لمنطقة الهدف والوقف الآمن مع هوامش تفادي صيد السيولة"""
+def compute_safe_sl_and_tp(bias, entry, structural_sl, head_size):
+    """
+    🆕 يحسب الوقف الآمن الصارم والهدف التجريبي.
+    - الوقف الآمن: هامش 15% فوق/تحت الرأس (يُفرض فعلياً في المحاكاة إذا USE_SAFE_SL=True)
+    - الهدف: 65% من حجم الرأس (بناءً على تحليل تقرير backtest_ALL_10)
+    """
+    structural_risk = abs(entry - structural_sl)
+    if bias == "Bullish":
+        safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
+    else:
+        safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
+
+    final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
+
+    target_distance = head_size * CONFIG["TP_REACH_FACTOR"]
+    if bias == "Bullish":
+        tp = entry + target_distance
+    else:
+        tp = entry - target_distance
+
+    return final_sl, tp, safe_sl, structural_sl
+
+
+def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size):
+    """توليد توصية استنتاجية مع عرض القيم الفعلية المستخدمة في المحاكاة."""
     risk = abs(entry - sl)
     reward = abs(tp - entry)
     rr_ratio = round(reward / risk, 2) if risk > 0 else 0.0
-    
+    tp_pct = round(CONFIG["TP_REACH_FACTOR"] * 100, 0)
+    margin_pct = round(CONFIG["SAFE_SL_MARGIN"] * 100, 0)
+
     if bias == "Bullish":
-        safe_sl = sl - (risk * 0.15)  # هامش أمان إضافي تحت الوقف الهيكلي لتجنب مصائد السيولة
         recommendation = (
             f"🟢 توصية نمط إيجابي (Bullish Inverse H&S):\n"
-            f"- منطقة الدخول المثلى: عند اختراق خط العنق وإغلاق شمعة تأكيد فوق ({entry}).\n"
-            f"- الوقف الآمن المقترح: عند مستوى ({round(safe_sl, 5)}) (تحت قاع الرأس بقليل مع هامش أمان تفادياً للضرب الوهمي).\n"
-            f"- الهدف المحتمل (TP): عند ({tp}) بنسبة مخاطر للعائد تقارب (1 : {rr_ratio})."
+            f"- منطقة الدخول المثلى: عند اختراق خط العنق ({entry}).\n"
+            f"- الوقف الآمن الصارم: عند ({round(sl, 5)}) = قاع الرأس ({round(structural_sl, 5)}) "
+            f"+ هامش أمان {margin_pct}%.\n"
+            f"- الهدف التجريبي: عند ({round(tp, 5)}) = {tp_pct}% من حجم الرأس "
+            f"(مُعاير ليصل إليه ~86% من الصفقات الرابحة).\n"
+            f"- نسبة المخاطرة/العائد: 1 : {rr_ratio}."
         )
     else:
-        safe_sl = sl + (risk * 0.15)  # هامش أمان إضافي فوق الوقف الهيكلي
         recommendation = (
             f"🔴 توصية نمط سلبي (Bearish H&S):\n"
-            f"- منطقة الدخول المثلى: عند كسر خط العنق وإغلاق شمعة تأكيد تحت ({entry}).\n"
-            f"- الوقف الآمن المقترح: عند مستوى ({round(safe_sl, 5)}) (فوق قمة الرأس بقليل لتجنب مصائد السيولة).\n"
-            f"- الهدف المحتمل (TP): عند ({tp}) بنسبة مخاطر للعائد تقارب (1 : {rr_ratio})."
+            f"- منطقة الدخول المثلى: عند كسر خط العنق ({entry}).\n"
+            f"- الوقف الآمن الصارم: عند ({round(sl, 5)}) = قمة الرأس ({round(structural_sl, 5)}) "
+            f"+ هامش أمان {margin_pct}%.\n"
+            f"- الهدف التجريبي: عند ({round(tp, 5)}) = {tp_pct}% من حجم الرأس "
+            f"(مُعاير ليصل إليه ~86% من الصفقات الرابحة).\n"
+            f"- نسبة المخاطرة/العائد: 1 : {rr_ratio}."
         )
     return recommendation
 
@@ -217,7 +272,9 @@ def get_chronological_pivots(df):
                     final_clean[-1] = p
 
     return final_clean
-# --- القسم الثاني: محاكاة الصفقات، فلاتر التحقق، ودوال كشف النماذج مع فلاتر الاتجاه السابقة الجذرية ---
+
+
+# --- القسم الثاني: محاكاة الصفقات، فلاتر التحقق، ودوال كشف النماذج ---
 def simulate_trade_outcome(pattern, df):
     """محاكاة مع Break-even + Trailing Stop تدريجي + Time Stop."""
     bias = pattern["bias"]
@@ -226,28 +283,26 @@ def simulate_trade_outcome(pattern, df):
     sl = initial_sl
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
-    
+
     head_distance = abs(tp - entry)
     head_pct = (head_distance / entry * 100) if entry > 0 else 0
-    
+
     MIN_HEAD_PCT = 0.10
     MAX_HEAD_PCT = 1.00
-    
+
     if head_pct < MIN_HEAD_PCT:
         return {
-            "Result": "SKIPPED",
-            "Head Result": "SKIPPED",
+            "Result": "SKIPPED", "Head Result": "SKIPPED",
             "Loss Category": "too_small",
             "Skip Reason": f"Head too small ({head_pct:.3f}% < {MIN_HEAD_PCT}%)",
             "Max Reach %": 0, "SL Safety %": 0,
             "Entry Date": str(end_idx), "Exit Date": None,
             "candles_to_exit": 0, "progress_ratio": 0,
         }
-    
+
     if head_pct > MAX_HEAD_PCT:
         return {
-            "Result": "SKIPPED",
-            "Head Result": "SKIPPED",
+            "Result": "SKIPPED", "Head Result": "SKIPPED",
             "Loss Category": "too_large",
             "Skip Reason": f"Head too large ({head_pct:.3f}% > {MAX_HEAD_PCT}%)",
             "Max Reach %": 0, "SL Safety %": 0,
@@ -273,13 +328,9 @@ def simulate_trade_outcome(pattern, df):
         pattern_duration * TIMEOUT_DURATION_MULTIPLIER
     )
     BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.30)
-
-    TRAILING_LEVELS = [
-        (BE_ACTIVATION, 0.00),   # 30% → التعادل
-        (0.50, 0.20),            # 50% → 20% ربح
-        (0.75, 0.45),            # 75% → 45% ربح
-        (0.95, 0.80),            # 95% → 80% ربح
-    ]
+    TRAILING_LEVELS = CONFIG.get("TRAILING_LEVELS", [
+        (BE_ACTIVATION, 0.00), (0.50, 0.20), (0.75, 0.45), (0.95, 0.80),
+    ])
 
     breakeven_activated = False
     trailing_stage = 0
@@ -292,11 +343,9 @@ def simulate_trade_outcome(pattern, df):
         "Max Reach %": 0.0, "SL Safety %": 0.0,
         "Pattern Duration": pattern_duration,
         "Timeout Used": TIMEOUT_CANDLES,
-        "Breakeven Activated": False,
-        "Breakeven Exit": False,
+        "Breakeven Activated": False, "Breakeven Exit": False,
         "Trailing Stage": 0,
-        "Initial SL": initial_sl,
-        "Final SL": initial_sl,
+        "Initial SL": initial_sl, "Final SL": initial_sl,
         "Loss Category": None,
     }
 
@@ -543,11 +592,11 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         neckline_min = min(l1, l2)
         head_height = h2 - neckline_min
         if head_height <= 0: continue
-        
-        # 🛡️ الشرط الأول الصحيح (النموذج العادي سلبي): يجب أن تسبقه موجة اتجاه صاعد حقيقي قبل L0
+
+        # 🛡️ الشرط الأول الصارم: موجة صاعدة سابقة ≥ حجم الرأس
         if i >= 2:
-            prev_l = pivots[i-2]["val"]
-            prev_h = pivots[i-1]["val"]
+            prev_l = pivots[i - 2]["val"]
+            prev_h = pivots[i - 1]["val"]
             prior_trend_height = prev_h - prev_l
             if prior_trend_height < head_height:
                 continue
@@ -574,7 +623,13 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         neckline_avg = (l1 + l2) / 2.0
         actual_head_length = h2 - neckline_avg
-        entry = neckline_avg; sl = h2; tp = entry - actual_head_length
+        entry = neckline_avg
+        structural_sl = h2  # قمة الرأس
+
+        # 🆕 فرض الوقف الآمن الصارم + الهدف التجريبي 65%
+        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp(
+            "Bearish", entry, structural_sl, actual_head_length
+        )
 
         nodes = [(x["idx"], x["val"]) for x in p]
         nodes.append((end_idx, float(end_val)))
@@ -583,22 +638,24 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
             "name": "Head and Shoulders", "pattern": "Head and Shoulders",
             "bias": "Bearish", "match": 100.0, "nodes": nodes,
             "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
-            "sl": float(round(sl, 5)), "tp": float(round(tp, 5)),
+            "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
+            "structural_sl": float(round(structural_sl, 5)),
+            "safe_sl": float(round(safe_sl, 5)),
             "neckline_start_idx": l1_idx, "neckline_end_idx": end_idx,
             "neckline_nodes": [(l1_idx, l1), (l2_idx, l2)],
             "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"],
-            "SL": float(round(sl, 5)), "TP": float(round(tp, 5)),
+            "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Head and Shoulders",
             "Entry Conditions": "Breakout Only",
         }
         sim = simulate_trade_outcome(pattern, df)
         pattern.update(sim)
-        
-        # 🛡️ إدراج التوصية الاستنتاجية والوقف الآمن
+
         pattern["Trade Recommendation"] = generate_trade_recommendation(
-            pattern["bias"], pattern["entry"], pattern["sl"], pattern["tp"], head_height
+            pattern["bias"], pattern["entry"], pattern["sl"], pattern["tp"],
+            structural_sl, actual_head_length
         )
         patterns.append(pattern)
     return patterns
@@ -621,11 +678,11 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         neckline_max = max(h1, h2)
         head_depth = neckline_max - l2
         if head_depth <= 0: continue
-        
-        # 🛡️ الشرط الأول الصحيح (النموذج المعكوس إيجابي): يجب أن تسبقه موجة اتجاه هبوطي حقيقي قبل H0
+
+        # 🛡️ الشرط الأول الصارم: موجة هبوطية سابقة ≥ عمق الرأس
         if i >= 2:
-            prev_h = pivots[i-2]["val"]
-            prev_l = pivots[i-1]["val"]
+            prev_h = pivots[i - 2]["val"]
+            prev_l = pivots[i - 1]["val"]
             prior_trend_depth = prev_h - prev_l
             if prior_trend_depth < head_depth:
                 continue
@@ -638,7 +695,7 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]): continue
         if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]): continue
         positions = [x["pos"] for x in p]
-        if any((positions[j+1] - positions[j]) < CONFIG["MIN_WAVE_CANDLES"] for j in range(len(positions) - 1)):
+        if any((positions[j + 1] - positions[j]) < CONFIG["MIN_WAVE_CANDLES"] for j in range(len(positions) - 1)):
             continue
         h0_pos = p[0]["pos"]; l3_pos = p[5]["pos"]
         pattern_size = l3_pos - h0_pos
@@ -658,7 +715,13 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         neckline_avg = (h1 + h2) / 2.0
         actual_head_length = neckline_avg - l2
-        entry = neckline_avg; sl = l2; tp = entry + actual_head_length
+        entry = neckline_avg
+        structural_sl = l2  # قاع الرأس
+
+        # 🆕 فرض الوقف الآمن الصارم + الهدف التجريبي 65%
+        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp(
+            "Bullish", entry, structural_sl, actual_head_length
+        )
 
         nodes = [(x["idx"], x["val"]) for x in p]
         nodes.append((end_idx, end_val))
@@ -667,22 +730,24 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
             "name": "Inverse Head and Shoulders", "pattern": "Inverse Head and Shoulders",
             "bias": "Bullish", "match": 100.0, "nodes": nodes,
             "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
-            "sl": float(round(sl, 5)), "tp": float(round(tp, 5)),
+            "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
+            "structural_sl": float(round(structural_sl, 5)),
+            "safe_sl": float(round(safe_sl, 5)),
             "neckline_start_idx": h1_idx, "neckline_end_idx": end_idx,
             "neckline_nodes": [(h1_idx, h1), (h2_idx, h2)],
             "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"],
-            "SL": float(round(sl, 5)), "TP": float(round(tp, 5)),
+            "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": "Inverse Head and Shoulders",
             "Entry Conditions": "Breakout Only",
         }
         sim = simulate_trade_outcome(pattern, df)
         pattern.update(sim)
-        
-        # 🛡️ إدراج التوصية الاستنتاجية والوقف الآمن
+
         pattern["Trade Recommendation"] = generate_trade_recommendation(
-            pattern["bias"], pattern["entry"], pattern["sl"], pattern["tp"], head_depth
+            pattern["bias"], pattern["entry"], pattern["sl"], pattern["tp"],
+            structural_sl, actual_head_length
         )
         patterns.append(pattern)
     return patterns
@@ -695,7 +760,9 @@ def detect_all_head_shoulders(pivots, df, is_backtest=False,
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
-# --- القسم الثالث: التحليل الشامل، الباكتست، التشخيص الذكي للفلاتر، وتشغيل الملف ---
+
+
+# --- القسم الثالث: التحليل الشامل، الباكتست، التشخيص الذكي ---
 def run_full_analysis(df, interval="1h", symbol=None):
     default_empty = {
         "df": df, "symbol": symbol or "N/A",
@@ -772,8 +839,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
     trades = []
     for p in all_patterns:
         trade = {
-            "Symbol": symbol or "N/A",
-            "symbol": symbol or "N/A",
+            "Symbol": symbol or "N/A", "symbol": symbol or "N/A",
             "Pattern": p["pattern"], "pattern": p["pattern"],
             "Bias": p["bias"], "bias": p["bias"],
             "Result": p.get("Result", "OPEN"),
@@ -781,6 +847,9 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Entry": p["entry"], "Entry Price": p["entry"],
             "SL": p["sl"], "Stop Loss": p["sl"],
             "TP": p["tp"], "Take Profit": p["tp"],
+            "Structural SL": p.get("structural_sl"),
+            "Safe SL": p.get("safe_sl"),
+            "TP Factor Used": CONFIG["TP_REACH_FACTOR"],
             "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
             "Exit Price": p.get("exit_price"),
             "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
@@ -797,8 +866,8 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Breakeven Exit": p.get("Breakeven Exit", False),
             "Loss Category": p.get("Loss Category"),
             "Trailing Stage": p.get("Trailing Stage", 0),
-            "Initial SL":     p.get("Initial SL"),
-            "Final SL":       p.get("Final SL"),
+            "Initial SL": p.get("Initial SL"),
+            "Final SL": p.get("Final SL"),
             "Trade Recommendation": p.get("Trade Recommendation", ""),
         }
         trades.append(trade)
@@ -808,14 +877,10 @@ def backtest_strategy(df, interval="1h", symbol=None):
 def diagnose_filters(df, interval="1h", symbol=None):
     """يحلل الفلاتر ويكتشف أسباب الخسارة والتصرف المناسب."""
     result = {
-        "error": None,
-        "total_raw_candidates": 0,
-        "final_count": 0,
-        "stages": {},
-        "smart_diagnosis": {},
-        "recommendations": [],
-        "rejection_samples": {},
-        "trade_analysis": [],
+        "error": None, "total_raw_candidates": 0, "final_count": 0,
+        "stages": {}, "smart_diagnosis": {}, "recommendations": [],
+        "rejection_samples": {}, "trade_analysis": [],
+        "tp_distribution": {},
     }
 
     if df is None or df.empty or len(df) < 30:
@@ -839,7 +904,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
     if len(pivots) >= 6:
         for i in range(len(pivots) - 5):
             p = pivots[i:i + 6]
-            if [x["type"] for x in p] in (["L","H","L","H","L","H"], ["H","L","H","L","H","L"]):
+            if [x["type"] for x in p] in (["L", "H", "L", "H", "L", "H"], ["H", "L", "H", "L", "H", "L"]):
                 raw_count += 1
     result["total_raw_candidates"] = raw_count
 
@@ -854,7 +919,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
     if len(pivots) >= 6:
         for i in range(len(pivots) - 5):
             p = pivots[i:i + 6]
-            if [x["type"] for x in p] not in (["L","H","L","H","L","H"], ["H","L","H","L","H","L"]):
+            if [x["type"] for x in p] not in (["L", "H", "L", "H", "L", "H"], ["H", "L", "H", "L", "H", "L"]):
                 continue
 
             stages["1. فلتر الوقت (MIN_WAVE_CANDLES)"]["before"] += 1
@@ -900,6 +965,21 @@ def diagnose_filters(df, interval="1h", symbol=None):
     breakevens = [t for t in trades if "BREAKEVEN" in str(t.get("Result", "")).upper()]
     timeouts = [t for t in trades if "TIMEOUT" in str(t.get("Result", "")).upper()]
 
+    # 🆕 تحليل توزيع المسافة المقطوعة نحو الهدف
+    all_reaches = [t.get("Max Reach %", 0) for t in trades if t.get("Max Reach %") is not None]
+    win_reaches = [t.get("Max Reach %", 0) for t in wins]
+    tp_distribution = {
+        "all_trades_count": len(trades),
+        "wins_count": len(wins),
+        "median_reach_%": round(float(np.median(all_reaches)), 1) if all_reaches else 0,
+        "median_win_reach_%": round(float(np.median(win_reaches)), 1) if win_reaches else 0,
+        "pct_wins_>=60%": round(sum(1 for r in win_reaches if r >= 60) / max(len(win_reaches), 1) * 100, 1),
+        "pct_wins_>=65%": round(sum(1 for r in win_reaches if r >= 65) / max(len(win_reaches), 1) * 100, 1),
+        "pct_wins_>=70%": round(sum(1 for r in win_reaches if r >= 70) / max(len(win_reaches), 1) * 100, 1),
+        "pct_wins_>=100%": round(sum(1 for r in win_reaches if r >= 100) / max(len(win_reaches), 1) * 100, 1),
+    }
+    result["tp_distribution"] = tp_distribution
+
     win_breakdown = {"total_wins": len(wins), "avg_max_reach": 0.0}
     if wins:
         win_breakdown["avg_max_reach"] = round(
@@ -943,7 +1023,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
             "reason": info.get("reason", "—"),
             "action": info.get("action", "—"),
             "prevention": info.get("prevention", "—"),
-            "recommendation": f"{info.get('action','')} | وقاية: {info.get('prevention','')}",
+            "recommendation": f"{info.get('action', '')} | وقاية: {info.get('prevention', '')}",
         })
 
     total_closed = len(wins) + len(losses)
@@ -989,6 +1069,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY - H&S Detector + Diagnostics (Strict Prior Trend & Safe SL)")
-    print("Filters: time, breakout, confirm, volume, correct prior trend direction")
+    print("ENGINE.PY - H&S Detector + Strict Diagnostics")
+    print("Filters: time, breakout, confirm, volume, strict prior trend")
+    print("Strict Safe SL: YES | TP Reach Factor: 65% of head")
     print("Diagnostics: diagnose_filters(df, interval, symbol)")
