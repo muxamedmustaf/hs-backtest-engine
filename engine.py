@@ -1,7 +1,7 @@
 # --- القسم الأول: الإعدادات، خريطة الأسباب، الدوال المساعدة، المؤشرات، وتوليد التوصية ---
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY - Head & Shoulders Detector + Diagnostics (Updated with Strict Prior Trend & Safe SL)
+ENGINE.PY - Head & Shoulders Detector + Diagnostics (Strict Prior Trend & Safe SL)
 """
 import pandas as pd
 import numpy as np
@@ -217,7 +217,7 @@ def get_chronological_pivots(df):
                     final_clean[-1] = p
 
     return final_clean
-# --- القسم الثاني: محاكاة الصفقات، فلاتر التحقق، ودوال كشف النماذج مع الشرط الصارم ---
+# --- القسم الثاني: محاكاة الصفقات، فلاتر التحقق، ودوال كشف النماذج مع فلاتر الاتجاه السابقة الجذرية ---
 def simulate_trade_outcome(pattern, df):
     """محاكاة مع Break-even + Trailing Stop تدريجي + Time Stop."""
     bias = pattern["bias"]
@@ -544,10 +544,16 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         head_height = h2 - neckline_min
         if head_height <= 0: continue
         
-        # 🛡️ الشرط الأول الصارم: الحركة الصاعدة السابقة لا تقل عن طول الرأس
-        prior_trend_height = h2 - l0
-        if prior_trend_height < head_height:
-            continue
+        # 🛡️ الشرط الأول الصحيح (النموذج العادي سلبي): يجب أن تسبقه موجة اتجاه صاعد حقيقي قبل L0
+        if i >= 2:
+            prev_l = pivots[i-2]["val"]
+            prev_h = pivots[i-1]["val"]
+            prior_trend_height = prev_h - prev_l
+            if prior_trend_height < head_height:
+                continue
+        else:
+            if (h2 - l0) < head_height:
+                continue
 
         if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
         max_shoulder = max(h1, h3)
@@ -616,10 +622,16 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         head_depth = neckline_max - l2
         if head_depth <= 0: continue
         
-        # 🛡️ الشرط الأول الصارم: الحركة الهبوطية السابقة لا تقل عن عمق الرأس
-        prior_trend_depth = h0 - l2
-        if prior_trend_depth < head_depth:
-            continue
+        # 🛡️ الشرط الأول الصحيح (النموذج المعكوس إيجابي): يجب أن تسبقه موجة اتجاه هبوطي حقيقي قبل H0
+        if i >= 2:
+            prev_h = pivots[i-2]["val"]
+            prev_l = pivots[i-1]["val"]
+            prior_trend_depth = prev_h - prev_l
+            if prior_trend_depth < head_depth:
+                continue
+        else:
+            if (h0 - l2) < head_depth:
+                continue
 
         if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
         min_shoulder = min(l1, l3)
@@ -977,6 +989,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY - H&S Detector + Diagnostics (Updated with Strict Prior Trend & Safe SL)")
-    print("Filters: time, breakout, confirm, volume, strict prior trend")
+    print("ENGINE.PY - H&S Detector + Diagnostics (Strict Prior Trend & Safe SL)")
+    print("Filters: time, breakout, confirm, volume, correct prior trend direction")
     print("Diagnostics: diagnose_filters(df, interval, symbol)")
