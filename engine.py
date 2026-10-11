@@ -1,7 +1,7 @@
+# --- القسم الأول: الإعدادات، خريطة الأسباب، الدوال المساعدة، المؤشرات، وتوليد التوصية ---
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY - Head & Shoulders Detector + Diagnostics
-No EMA / No RSI / Break-even + Time Stop 700
+ENGINE.PY - Head & Shoulders Detector + Diagnostics (Updated with Strict Prior Trend & Safe SL)
 """
 import pandas as pd
 import numpy as np
@@ -90,6 +90,31 @@ def _get_max_pattern_duration(interval):
         "8h": 70, "12h": 65, "1d": 60, "2d": 50, "3d": 45,
         "1wk": 30, "1mo": 20,
     }.get(interval, 200)
+
+
+def generate_trade_recommendation(bias, entry, sl, tp, head_size):
+    """توليد توصية استنتاجية لمنطقة الهدف والوقف الآمن مع هوامش تفادي صيد السيولة"""
+    risk = abs(entry - sl)
+    reward = abs(tp - entry)
+    rr_ratio = round(reward / risk, 2) if risk > 0 else 0.0
+    
+    if bias == "Bullish":
+        safe_sl = sl - (risk * 0.15)  # هامش أمان إضافي تحت الوقف الهيكلي لتجنب مصائد السيولة
+        recommendation = (
+            f"🟢 توصية نمط إيجابي (Bullish Inverse H&S):\n"
+            f"- منطقة الدخول المثلى: عند اختراق خط العنق وإغلاق شمعة تأكيد فوق ({entry}).\n"
+            f"- الوقف الآمن المقترح: عند مستوى ({round(safe_sl, 5)}) (تحت قاع الرأس بقليل مع هامش أمان تفادياً للضرب الوهمي).\n"
+            f"- الهدف المحتمل (TP): عند ({tp}) بنسبة مخاطر للعائد تقارب (1 : {rr_ratio})."
+        )
+    else:
+        safe_sl = sl + (risk * 0.15)  # هامش أمان إضافي فوق الوقف الهيكلي
+        recommendation = (
+            f"🔴 توصية نمط سلبي (Bearish H&S):\n"
+            f"- منطقة الدخول المثلى: عند كسر خط العنق وإغلاق شمعة تأكيد تحت ({entry}).\n"
+            f"- الوقف الآمن المقترح: عند مستوى ({round(safe_sl, 5)}) (فوق قمة الرأس بقليل لتجنب مصائد السيولة).\n"
+            f"- الهدف المحتمل (TP): عند ({tp}) بنسبة مخاطر للعائد تقارب (1 : {rr_ratio})."
+        )
+    return recommendation
 
 
 def calculate_indicators(df):
@@ -192,8 +217,7 @@ def get_chronological_pivots(df):
                     final_clean[-1] = p
 
     return final_clean
-
-
+# --- القسم الثاني: محاكاة الصفقات، فلاتر التحقق، ودوال كشف النماذج مع الشرط الصارم ---
 def simulate_trade_outcome(pattern, df):
     """محاكاة مع Break-even + Trailing Stop تدريجي + Time Stop."""
     bias = pattern["bias"]
@@ -203,9 +227,6 @@ def simulate_trade_outcome(pattern, df):
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
     
-    # ══════════════════════════════════════════════════════════════════
-    # 🚫 FILTER: Head height check
-    # ══════════════════════════════════════════════════════════════════
     head_distance = abs(tp - entry)
     head_pct = (head_distance / entry * 100) if entry > 0 else 0
     
@@ -233,8 +254,6 @@ def simulate_trade_outcome(pattern, df):
             "Entry Date": str(end_idx), "Exit Date": None,
             "candles_to_exit": 0, "progress_ratio": 0,
         }
-    
-    # ... (intaa ka dib waa code-kaaga hore)
 
     nodes = pattern.get("nodes", [])
     if len(nodes) >= 6:
@@ -256,11 +275,11 @@ def simulate_trade_outcome(pattern, df):
     BE_ACTIVATION = CONFIG.get("BREAKEVEN_ACTIVATION_PCT", 0.30)
 
     TRAILING_LEVELS = [
-    (BE_ACTIVATION, 0.00),   # 30% → التعادل
-    (0.50, 0.20),            # 50% → 20% ربح
-    (0.75, 0.45),            # 75% → 45% ربح
-    (0.95, 0.80),            # 95% → 80% ربح (بدل 70%)
-]
+        (BE_ACTIVATION, 0.00),   # 30% → التعادل
+        (0.50, 0.20),            # 50% → 20% ربح
+        (0.75, 0.45),            # 75% → 45% ربح
+        (0.95, 0.80),            # 95% → 80% ربح
+    ]
 
     breakeven_activated = False
     trailing_stage = 0
@@ -314,7 +333,6 @@ def simulate_trade_outcome(pattern, df):
         if total_sl_dist > 0:
             max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
 
-        # Trailing Stop تدريجي
         for stage_idx, (threshold, profit_ratio) in enumerate(TRAILING_LEVELS):
             if stage_idx < trailing_stage:
                 continue
@@ -439,6 +457,7 @@ def simulate_trade_outcome(pattern, df):
 
     return stats
 
+
 class PatternValidatorPipeline:
     def __init__(self, df):
         self.df = df
@@ -524,6 +543,12 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         neckline_min = min(l1, l2)
         head_height = h2 - neckline_min
         if head_height <= 0: continue
+        
+        # 🛡️ الشرط الأول الصارم: الحركة الصاعدة السابقة لا تقل عن طول الرأس
+        prior_trend_height = h2 - l0
+        if prior_trend_height < head_height:
+            continue
+
         if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
         max_shoulder = max(h1, h3)
         if (h2 - max_shoulder) < (head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]): continue
@@ -564,6 +589,11 @@ def detect_all_head_shoulders_base(pivots, df, is_backtest=False,
         }
         sim = simulate_trade_outcome(pattern, df)
         pattern.update(sim)
+        
+        # 🛡️ إدراج التوصية الاستنتاجية والوقف الآمن
+        pattern["Trade Recommendation"] = generate_trade_recommendation(
+            pattern["bias"], pattern["entry"], pattern["sl"], pattern["tp"], head_height
+        )
         patterns.append(pattern)
     return patterns
 
@@ -585,6 +615,12 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         neckline_max = max(h1, h2)
         head_depth = neckline_max - l2
         if head_depth <= 0: continue
+        
+        # 🛡️ الشرط الأول الصارم: الحركة الهبوطية السابقة لا تقل عن عمق الرأس
+        prior_trend_depth = h0 - l2
+        if prior_trend_depth < head_depth:
+            continue
+
         if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
         min_shoulder = min(l1, l3)
         if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]): continue
@@ -631,6 +667,11 @@ def detect_all_inverse_head_shoulders(pivots, df, is_backtest=False,
         }
         sim = simulate_trade_outcome(pattern, df)
         pattern.update(sim)
+        
+        # 🛡️ إدراج التوصية الاستنتاجية والوقف الآمن
+        pattern["Trade Recommendation"] = generate_trade_recommendation(
+            pattern["bias"], pattern["entry"], pattern["sl"], pattern["tp"], head_depth
+        )
         patterns.append(pattern)
     return patterns
 
@@ -642,8 +683,7 @@ def detect_all_head_shoulders(pivots, df, is_backtest=False,
     all_patterns = normal_patterns + inverse_patterns
     all_patterns.sort(key=lambda x: x.get("end_pos", -1))
     return all_patterns
-
-
+# --- القسم الثالث: التحليل الشامل، الباكتست، التشخيص الذكي للفلاتر، وتشغيل الملف ---
 def run_full_analysis(df, interval="1h", symbol=None):
     default_empty = {
         "df": df, "symbol": symbol or "N/A",
@@ -691,6 +731,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "all_patterns": all_patterns, "match": latest.get("match", 100.0),
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"), "Exit Date": latest.get("Exit Date"),
+        "Trade Recommendation": latest.get("Trade Recommendation", ""),
         "error": None,
     }
 
@@ -746,14 +787,12 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Trailing Stage": p.get("Trailing Stage", 0),
             "Initial SL":     p.get("Initial SL"),
             "Final SL":       p.get("Final SL"),
+            "Trade Recommendation": p.get("Trade Recommendation", ""),
         }
         trades.append(trade)
     return trades
 
 
-# ==============================================================================
-# 🔬 دالة التشخيص الذكي (كانت مفقودة)
-# ==============================================================================
 def diagnose_filters(df, interval="1h", symbol=None):
     """يحلل الفلاتر ويكتشف أسباب الخسارة والتصرف المناسب."""
     result = {
@@ -784,7 +823,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
     df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df)
 
-    # 1. العدّ الخام (قبل الفلاتر)
     raw_count = 0
     if len(pivots) >= 6:
         for i in range(len(pivots) - 5):
@@ -793,7 +831,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
                 raw_count += 1
     result["total_raw_candidates"] = raw_count
 
-    # 2. تشغيل الفلاتر مرحلة بمرحلة
     validator = PatternValidatorPipeline(df)
     stages = {
         "1. فلتر الوقت (MIN_WAVE_CANDLES)": {"before": 0, "after": 0, "rejected": 0, "pass_rate": "0%"},
@@ -802,7 +839,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "4. فلتر الحجم": {"before": 0, "after": 0, "rejected": 0, "pass_rate": "0%"},
     }
 
-    # نطبق الفلاتر خطوة بخطوة لتسجيل عدد المرفوضات
     if len(pivots) >= 6:
         for i in range(len(pivots) - 5):
             p = pivots[i:i + 6]
@@ -844,7 +880,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
             v["pass_rate"] = f"{round(v['after'] / v['before'] * 100, 1)}%"
     result["stages"] = stages
 
-    # 3. تشغيل الباكتست لتحليل الصفقات
     trades = backtest_strategy(df, interval=interval, symbol=symbol)
     result["final_count"] = len(trades)
 
@@ -853,14 +888,12 @@ def diagnose_filters(df, interval="1h", symbol=None):
     breakevens = [t for t in trades if "BREAKEVEN" in str(t.get("Result", "")).upper()]
     timeouts = [t for t in trades if "TIMEOUT" in str(t.get("Result", "")).upper()]
 
-    # 4. تفصيل الرابحة
     win_breakdown = {"total_wins": len(wins), "avg_max_reach": 0.0}
     if wins:
         win_breakdown["avg_max_reach"] = round(
             sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1
         )
 
-    # 5. تفصيل الخاسرة حسب التصنيف
     loss_breakdown = {
         "immediate_rejection": 0, "early_reversal": 0,
         "mid_reversal": 0, "late_reversal": 0,
@@ -871,13 +904,11 @@ def diagnose_filters(df, interval="1h", symbol=None):
         if cat in loss_breakdown:
             loss_breakdown[cat] += 1
         reach = t.get("Max Reach %", 0)
-        # خسائر لا مفر منها: وصلت السعر إلى 60%+ ثم انعكس
         if reach >= 60:
             loss_breakdown["unavoidable"] += 1
         else:
             loss_breakdown["avoidable"] += 1
 
-    # 6. تحليل كل صفقة
     trade_analysis = []
     for i, t in enumerate(trades):
         cat = t.get("Loss Category") or "open"
@@ -903,7 +934,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
             "recommendation": f"{info.get('action','')} | وقاية: {info.get('prevention','')}",
         })
 
-    # 7. الحكم النهائي وخطة العمل
     total_closed = len(wins) + len(losses)
     win_rate = round(len(wins) / total_closed * 100, 1) if total_closed > 0 else 0
     avoidable = loss_breakdown["avoidable"]
@@ -925,14 +955,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
         action_plan.append(f"🔴 عدد الخسائر القابلة للتجنب ({avoidable}) أكبر من غير القابلة ({unavoidable}) — راجع شروط الدخول.")
     elif unavoidable > 0:
         action_plan.append(f"🟢 معظم الخسائر ({unavoidable}) لا مفر منها إحصائيًا — النظام يعمل بشكل طبيعي.")
-    if loss_breakdown["immediate_rejection"] > 0:
-        action_plan.append(f"🟡 {loss_breakdown['immediate_rejection']} صفقة رُفضت فورًا — أضف شرط إغلاق شمعة فوق خط العنق.")
-    if loss_breakdown["early_reversal"] > 0:
-        action_plan.append(f"🟡 {loss_breakdown['early_reversal']} صفقة انعكست مبكرًا — استخدم Trailing Stop بعد 20% من الهدف.")
-    if loss_breakdown["mid_reversal"] > 0:
-        action_plan.append(f"🟡 {loss_breakdown['mid_reversal']} صفقة انعكست في المنتصف — جزّئ الخروج عند 50%.")
-    if loss_breakdown["late_reversal"] > 0:
-        action_plan.append(f"🟢 {loss_breakdown['late_reversal']} صفقة وصلت 70%+ ثم عادت — ضع Trailing Stop بنسبة 30%.")
 
     result["smart_diagnosis"] = {
         "verdict": verdict,
@@ -941,7 +963,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "action_plan": action_plan,
     }
 
-    # 8. توصيات عامة
     recommendations = []
     if raw_count > 0 and result["final_count"] / max(raw_count, 1) < 0.1:
         recommendations.append({"severity": "متوسط", "message": "نسبة القبول منخفضة جدًا (< 10%) — راجع شدة الفلاتر."})
@@ -956,6 +977,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY - H&S Detector + Diagnostics")
-    print("Filters: time, breakout, confirm, volume")
+    print("ENGINE.PY - H&S Detector + Diagnostics (Updated with Strict Prior Trend & Safe SL)")
+    print("Filters: time, breakout, confirm, volume, strict prior trend")
     print("Diagnostics: diagnose_filters(df, interval, symbol)")
