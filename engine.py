@@ -1,38 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Consolidation Breakout Strategy
-============================================
-1. Consolidation (isku-duubnaan — meel kasta, muddo kasta)
-2. Breakout (baxsasho — BUY ama SELL)
-3. Confirmed Close (candle dhamaystiran + body weyn)
-4. SL inside consolidation (gudaha isku-duubnaanta)
-5. TP = 2.5× SL (R:R = 1:2.5)
+ENGINE.PY — Consolidation Breakout Strategy (v2)
+==================================================
+Consolidation detection ADAG + Visualization box cusub
 """
 import pandas as pd
 import numpy as np
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ⚙️ CONFIG
-# ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    # ZigZag
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
-    # Consolidation
-    "MIN_CONSOL_BARS": 5,
-    "MAX_CONSOL_BARS": 60,
-    "MAX_CONSOL_RANGE_PCT": 0.50,   # 0.50% max range
-    "MIN_CONSOL_BARS_SCAN": 5,      # Minimum to start scanning
-    # Breakout
-    "MIN_BREAKOUT_BODY_PCT": 0.15,  # 0.15% min body
-    "BREAKOUT_BUFFER_PCT": 0.02,    # 0.02% above/below
+    # Consolidation — ADAG
+    "MIN_CONSOL_BARS": 8,          # 5 → 8 (adag)
+    "MAX_CONSOL_BARS": 50,         # 60 → 50
+    "MAX_CONSOL_RANGE_PCT": 0.35,  # 0.50 → 0.35 (adag)
+    "CONSOL_STABILITY_PCT": 0.10,  # 0.10% — waa in uu yahay stable
+    # Breakout — CAD
+    "MIN_BREAKOUT_BODY_PCT": 0.15,
+    "BREAKOUT_BUFFER_PCT": 0.02,
+    "BREAKOUT_MIN_BARS_AFTER": 1,  # Breakout waa in uu socdaa 1 bar
     # SL/TP
-    "SL_INSIDE_PCT": 0.40,          # SL at 40% of range (inside)
-    "TP_RR": 2.5,                   # TP = 2.5× SL
+    "SL_INSIDE_PCT": 0.40,
+    "TP_RR": 2.5,
     # Filters
     "MIN_BARS_BETWEEN": 10,
     "MAX_TIMEOUT_BARS": 200,
-    # Volume
     "VOLUME_MA_PERIOD": 20,
 }
 
@@ -146,10 +138,15 @@ def get_chronological_pivots(df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1️⃣ CONSOLIDATION DETECTION — Meel kasta, muddo kasta
+# 1️⃣ CONSOLIDATION DETECTION — ADAG + SANDBUUQ
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_consolidation(df, start_idx, end_idx):
-    """Hubi in bars-ka u dhexeeya start_idx iyo end_idx yihiin consolidation."""
+    """
+    Hubi consolidation adag:
+    - Range < MAX_CONSOL_RANGE_PCT
+    - Bars 8-50
+    - Stability: wax kasta oo bars ah waa in uu range ku jiraa
+    """
     n = end_idx - start_idx + 1
     if n < CONFIG["MIN_CONSOL_BARS"] or n > CONFIG["MAX_CONSOL_BARS"]:
         return False, None
@@ -164,12 +161,24 @@ def detect_consolidation(df, start_idx, end_idx):
     if range_pct > CONFIG["MAX_CONSOL_RANGE_PCT"]:
         return False, None
 
+    # Hubi stability — bars kasta waa in uu ku jiraa range
+    stable_count = 0
+    for _, row in seg.iterrows():
+        if low <= row["Close"] <= high:
+            stable_count += 1
+    stability_pct = stable_count / len(seg) * 100
+    if stability_pct < 90:  # 90% bars waa in uu ku jiraa
+        return False, None
+
     return True, {
         "high": high, "low": low,
         "range_pct": round(range_pct, 3),
         "bars": n,
         "start_idx": start_idx,
         "end_idx": end_idx,
+        "stability_pct": round(stability_pct, 1),
+        "high_idx": df.index[start_idx + int(seg["High"].values.argmax())],
+        "low_idx": df.index[start_idx + int(seg["Low"].values.argmin())],
     }
 
 
@@ -177,24 +186,25 @@ def find_consolidation_ending_at(df, end_idx):
     """Soo hel consolidation ugu fiican ee ku dhammaanaysa end_idx."""
     best = None
     min_bars = CONFIG["MIN_CONSOL_BARS"]
-    max_bars = CONFIG["MAX_CONSOL_BARS"]
+    max_bars = min(CONFIG["MAX_CONSOL_BARS"], end_idx + 1)
 
     for lookback in range(min_bars, max_bars + 1):
         start = end_idx - lookback + 1
         if start < 0:
             break
         ok, info = detect_consolidation(df, start, end_idx)
-        if ok and (best is None or info["bars"] > best["bars"]):
-            best = info
+        if ok:
+            if best is None or info["bars"] > best["bars"]:
+                best = info
 
     return best
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2️⃣ BREAKOUT DETECTION — BUY ama SELL
+# 2️⃣ BREAKOUT — CAD + CONFIRMED
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_breakout(df, consol, idx):
-    """Hubi in breakout dhaco — BUY (kor) ama SELL (hoos)."""
+    """Hubi in breakout dhaco — oo uu yahay CONFIRMED."""
     if consol is None or idx < 1 or idx >= len(df):
         return False, None
 
@@ -219,6 +229,7 @@ def detect_breakout(df, consol, idx):
             "consol_low": consol_low,
             "body_pct": round(body_pct, 3),
             "breakout_price": float(candle["Close"]),
+            "breakout_idx": idx,
         }
 
     # Bearish Breakout (SELL)
@@ -230,22 +241,21 @@ def detect_breakout(df, consol, idx):
             "consol_low": consol_low,
             "body_pct": round(body_pct, 3),
             "breakout_price": float(candle["Close"]),
+            "breakout_idx": idx,
         }
 
     return False, None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3️⃣ SL + TP — SL inside consolidation, TP = 2.5× SL
+# 3️⃣ SL/TP
 # ══════════════════════════════════════════════════════════════════════════════
 def compute_sl_tp(entry, consol, direction):
-    """Xisaabi SL iyo TP."""
     consol_high = consol["high"]
     consol_low = consol["low"]
     range_size = consol_high - consol_low
 
     if direction == "BUY":
-        # SL inside consolidation (gudaha, 40% ka sareeya low)
         sl = consol_low + CONFIG["SL_INSIDE_PCT"] * range_size
         if sl >= entry:
             return None
@@ -254,14 +264,12 @@ def compute_sl_tp(entry, consol, direction):
             return None
         tp = entry + CONFIG["TP_RR"] * risk
         return {
-            "sl": round(sl, 5),
-            "tp": round(tp, 5),
+            "sl": round(sl, 5), "tp": round(tp, 5),
             "risk": round(risk, 5),
             "reward": round(tp - entry, 5),
             "rr": CONFIG["TP_RR"],
         }
-    else:  # SELL
-        # SL inside consolidation (gudaha, 40% ka hooseeya high)
+    else:
         sl = consol_high - CONFIG["SL_INSIDE_PCT"] * range_size
         if sl <= entry:
             return None
@@ -270,8 +278,7 @@ def compute_sl_tp(entry, consol, direction):
             return None
         tp = entry - CONFIG["TP_RR"] * risk
         return {
-            "sl": round(sl, 5),
-            "tp": round(tp, 5),
+            "sl": round(sl, 5), "tp": round(tp, 5),
             "risk": round(risk, 5),
             "reward": round(entry - tp, 5),
             "rr": CONFIG["TP_RR"],
@@ -302,7 +309,7 @@ def detect_all_patterns(df, interval="1h", symbol=None):
         if idx - last_idx < CONFIG["MIN_BARS_BETWEEN"]:
             continue
 
-        # Soo hel consolidation ku dhammaanaysa idx-1 (ka hor breakout)
+        # Soo hel consolidation ku dhammaanaysa idx-1
         consol = find_consolidation_ending_at(df, idx - 1)
         if not consol:
             continue
@@ -320,6 +327,18 @@ def detect_all_patterns(df, interval="1h", symbol=None):
         direction = br["direction"]
         bias = "Bullish" if direction == "BUY" else "Bearish"
 
+        # Nodes — SANDBUUQ 6 ah
+        # Nodes 1-4: Sanduuqa consolidation (4 corners)
+        # Nodes 5-6: Breakout + Entry
+        nodes = [
+            (consol["high_idx"], consol["high"]),   # 1: Top-left
+            (consol["low_idx"], consol["low"]),     # 2: Bottom-left
+            (consol["low_idx"], consol["high"]),    # 3: Top-right (ku soo dhaqaaq)
+            (consol["high_idx"], consol["low"]),    # 4: Bottom-right
+            (df.index[consol["end_idx"]], consol["high"] if direction == "BUY" else consol["low"]),  # 5: Consolidation end
+            (df.index[idx], br["entry"]),           # 6: Breakout
+        ]
+
         pattern = {
             "name": "Consolidation Breakout",
             "pattern": f"Consol → {direction} Breakout",
@@ -333,20 +352,22 @@ def detect_all_patterns(df, interval="1h", symbol=None):
             "SL": sltp["sl"],
             "TP": sltp["tp"],
             "Entry": round(br["entry"], 5),
-            "nodes": [
-                (df.index[consol["start_idx"]], consol["high"]),
-                (df.index[consol["start_idx"]], consol["low"]),
-                (df.index[consol["end_idx"]], consol["high"]),
-                (df.index[idx], br["entry"]),
-            ],
+            "nodes": nodes,
+            "consolidation_box": {
+                "x_start": consol["start_idx"],
+                "x_end": consol["end_idx"],
+                "high": consol["high"],
+                "low": consol["low"],
+            },
             "neckline_start_idx": df.index[consol["start_idx"]],
             "neckline_end_idx": df.index[idx],
             "end_pos": idx,
-            "Entry Conditions": "Consolidation + Breakout",
+            "Entry Conditions": "Consolidation + Confirmed Breakout",
             "consol_high": consol["high"],
             "consol_low": consol["low"],
             "consol_bars": consol["bars"],
             "consol_range_pct": consol["range_pct"],
+            "consol_stability_pct": consol["stability_pct"],
             "breakout_body_pct": br["body_pct"],
         }
         pattern.update(simulate_trade_outcome(pattern, df))
@@ -357,7 +378,7 @@ def detect_all_patterns(df, interval="1h", symbol=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🧪 SIMULATE — WIN/LOSS/TIMEOUT
+# 🧪 SIMULATE
 # ══════════════════════════════════════════════════════════════════════════════
 def simulate_trade_outcome(pattern, df):
     bias = pattern["bias"]
@@ -439,12 +460,6 @@ def simulate_trade_outcome(pattern, df):
             stats["Loss Category"] = "timeout"
             stats["exit_idx"] = idx; stats["exit_price"] = float(row["Close"])
             stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
-            if bias == "Bearish":
-                moved = max(0.0, entry - float(row["Close"]))
-            else:
-                moved = max(0.0, float(row["Close"]) - entry)
-            if total_tp > 0:
-                stats["progress_ratio"] = round(moved / total_tp * 100, 2)
             break
     else:
         stats["candles_to_exit"] = max(0, len(post) - 1)
@@ -503,6 +518,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
         "sl": latest["sl"], "tp": latest["tp"],
         "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
+        "consolidation_box": latest.get("consolidation_box"),
         "all_patterns": all_patterns, "match": 100.0,
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"),
@@ -564,6 +580,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "consol_low": p.get("consol_low"),
             "consol_bars": p.get("consol_bars"),
             "consol_range_pct": p.get("consol_range_pct"),
+            "consol_stability_pct": p.get("consol_stability_pct"),
             "breakout_body_pct": p.get("breakout_body_pct"),
         })
     return trades
@@ -632,7 +649,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
     result["stages"] = {
         "1. Consolidation": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
         "2. Breakout": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "3. Confirmed Close": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
     trade_analysis = []
@@ -667,6 +683,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Consolidation Breakout")
-    print("1. Consolidation  2. Breakout  3. Confirmed Close")
-    print("4. SL inside  5. TP = 2.5× SL")
+    print("ENGINE.PY — Consolidation Breakout v2")
+    print("Consolidation: 8-50 bars, range ≤ 0.35%, stability ≥ 90%")
+    print("Breakout: confirmed close + body ≥ 0.15%")
+    print("SL inside: 40% | TP: 2.5× SL")
