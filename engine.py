@@ -1,31 +1,36 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Consolidation Breakout Strategy (v2)
+ENGINE.PY — S/R Horizontal Breakout Strategy (v3)
 ==================================================
-Consolidation detection ADAG + Visualization box cusub
+- Detect S/R levels from swing highs/lows over the last N days (default 14).
+- A level is "strong" if price respected it >= MIN_TOUCHES times.
+- Signal is fired ONLY after a candle CLOSES beyond the level (with buffer).
+- SL just beyond the broken level, TP >= 1:2 (2× risk), optionally extended
+  to the next opposing S/R zone.
 """
 import pandas as pd
 import numpy as np
 
+
 CONFIG = {
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
-    # Consolidation — ADAG
-    "MIN_CONSOL_BARS": 8,          # 5 → 8 (adag)
-    "MAX_CONSOL_BARS": 50,         # 60 → 50
-    "MAX_CONSOL_RANGE_PCT": 0.35,  # 0.50 → 0.35 (adag)
-    "CONSOL_STABILITY_PCT": 0.10,  # 0.10% — waa in uu yahay stable
-    # Breakout — CAD
-    "MIN_BREAKOUT_BODY_PCT": 0.15,
-    "BREAKOUT_BUFFER_PCT": 0.02,
-    "BREAKOUT_MIN_BARS_AFTER": 1,  # Breakout waa in uu socdaa 1 bar
-    # SL/TP
-    "SL_INSIDE_PCT": 0.40,
-    "TP_RR": 2.5,
-    # Filters
-    "MIN_BARS_BETWEEN": 10,
+    # ── S/R level detection ──────────────────────────────────────────────
+    "LOOKBACK_DAYS": 14,             # сколько days of pivots define the levels
+    "LEVEL_TOLERANCE_PCT": 0.20,     # pivots within this % cluster together
+    "MIN_TOUCHES": 2,                # how many times price must respect a level
+    "MAX_LOOKBACK_BARS": 500,        # hard cap for perf
+    # ── Breakout confirmation ────────────────────────────────────────────
+    "BREAKOUT_BUFFER_PCT": 0.03,     # close must be >= level*(1+buffer)
+    "MIN_BREAKOUT_BODY_PCT": 0.05,   # candle body as % of price
+    # ── SL / TP ──────────────────────────────────────────────────────────
+    "SL_BUFFER_PCT": 0.10,           # SL sits this % beyond the broken level
+    "MIN_RR": 2.0,                   # target the next S/R if >= 1:2, else 1:2
+    # ── Filters ──────────────────────────────────────────────────────────
+    "MIN_BARS_BETWEEN": 5,           # min bars between two signals
     "MAX_TIMEOUT_BARS": 200,
     "VOLUME_MA_PERIOD": 20,
+    "MIN_BARS_REQUIRED": 60,
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 200
@@ -33,16 +38,19 @@ TIMEOUT_DURATION_MULTIPLIER = 3
 
 REASON_MAP = {
     "immediate_rejection": {"reason": "رفض فوري.", "action": "انتظر.", "prevention": "—"},
-    "early_reversal": {"reason": "انعكاس مبكر.", "action": "SL للتعادل.", "prevention": "Trailing."},
-    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج 50%.", "prevention": "TP جزئي."},
-    "late_reversal": {"reason": "انعكاس متأخر.", "action": "Trailing.", "prevention": "راقب."},
-    "timeout": {"reason": "انتهى الوقت.", "action": "أغلق.", "prevention": "ADX."},
-    "breakeven": {"reason": "تعادل.", "action": "—", "prevention": "—"},
-    "success": {"reason": "وصل الهدف.", "action": "كرر.", "prevention": "—"},
-    "open": {"reason": "مفتوحة.", "action": "راقب.", "prevention": "—"},
+    "early_reversal":      {"reason": "انعكاس مبكر.", "action": "SL للتعادل.", "prevention": "Trailing."},
+    "mid_reversal":        {"reason": "انعكاس متوسط.", "action": "خروج 50%.", "prevention": "TP جزئي."},
+    "late_reversal":       {"reason": "انعكاس متأخر.", "action": "Trailing.", "prevention": "راقب."},
+    "timeout":             {"reason": "انتهى الوقت.", "action": "أغلق.", "prevention": "ADX."},
+    "breakeven":           {"reason": "تعادل.", "action": "—", "prevention": "—"},
+    "success":             {"reason": "وصل الهدف.", "action": "كرر.", "prevention": "—"},
+    "open":                {"reason": "مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
 def _get_max_gap(interval):
     return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
             "4h": 15, "1d": 10}.get(interval, 50)
@@ -51,6 +59,19 @@ def _get_max_gap(interval):
 def _get_max_pattern_duration(interval):
     return {"1m": 600, "5m": 200, "15m": 150, "30m": 120, "1h": 100,
             "4h": 80, "1d": 60}.get(interval, 200)
+
+
+def _lookback_bars(interval):
+    """Bars that approximate CONFIG['LOOKBACK_DAYS'] trading days for the TF."""
+    bars_per_day = {
+        "1m": 1440, "2m": 720, "3m": 480, "4m": 360, "5m": 288, "10m": 144,
+        "15m": 96, "30m": 48, "45m": 32, "1h": 24, "2h": 12, "3h": 8,
+        "4h": 6, "6h": 4, "8h": 3, "12h": 2, "1d": 1, "2d": 0.5, "3d": 0.33,
+        "1wk": 0.2, "1mo": 0.05,
+    }
+    bpd = bars_per_day.get(interval, 24)
+    bars = int(bpd * CONFIG["LOOKBACK_DAYS"])
+    return min(max(bars, 20), CONFIG["MAX_LOOKBACK_BARS"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -138,159 +159,45 @@ def get_chronological_pivots(df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1️⃣ CONSOLIDATION DETECTION — ADAG + SANDBUUQ
+# 📐 S/R LEVEL CLUSTERING
 # ══════════════════════════════════════════════════════════════════════════════
-def detect_consolidation(df, start_idx, end_idx):
+def cluster_levels(pivots, tolerance):
     """
-    Hubi consolidation adag:
-    - Range < MAX_CONSOL_RANGE_PCT
-    - Bars 8-50
-    - Stability: wax kasta oo bars ah waa in uu range ku jiraa
+    Group pivots whose prices lie within `tolerance` (fraction).
+    Returns list of dicts:
+        {price, touches, first_pos, last_pos, values}
     """
-    n = end_idx - start_idx + 1
-    if n < CONFIG["MIN_CONSOL_BARS"] or n > CONFIG["MAX_CONSOL_BARS"]:
-        return False, None
-
-    seg = df.iloc[start_idx:end_idx + 1]
-    high = float(seg["High"].max())
-    low = float(seg["Low"].min())
-    if low <= 0:
-        return False, None
-
-    range_pct = (high - low) / low * 100
-    if range_pct > CONFIG["MAX_CONSOL_RANGE_PCT"]:
-        return False, None
-
-    # Hubi stability — bars kasta waa in uu ku jiraa range
-    stable_count = 0
-    for _, row in seg.iterrows():
-        if low <= row["Close"] <= high:
-            stable_count += 1
-    stability_pct = stable_count / len(seg) * 100
-    if stability_pct < 90:  # 90% bars waa in uu ku jiraa
-        return False, None
-
-    return True, {
-        "high": high, "low": low,
-        "range_pct": round(range_pct, 3),
-        "bars": n,
-        "start_idx": start_idx,
-        "end_idx": end_idx,
-        "stability_pct": round(stability_pct, 1),
-        "high_idx": df.index[start_idx + int(seg["High"].values.argmax())],
-        "low_idx": df.index[start_idx + int(seg["Low"].values.argmin())],
-    }
-
-
-def find_consolidation_ending_at(df, end_idx):
-    """Soo hel consolidation ugu fiican ee ku dhammaanaysa end_idx."""
-    best = None
-    min_bars = CONFIG["MIN_CONSOL_BARS"]
-    max_bars = min(CONFIG["MAX_CONSOL_BARS"], end_idx + 1)
-
-    for lookback in range(min_bars, max_bars + 1):
-        start = end_idx - lookback + 1
-        if start < 0:
-            break
-        ok, info = detect_consolidation(df, start, end_idx)
-        if ok:
-            if best is None or info["bars"] > best["bars"]:
-                best = info
-
-    return best
+    if not pivots:
+        return []
+    sorted_p = sorted(pivots, key=lambda p: p["val"])
+    levels = []
+    for p in sorted_p:
+        merged = False
+        for lvl in levels:
+            if abs(p["val"] - lvl["price"]) / max(lvl["price"], 1e-9) <= tolerance:
+                lvl["values"].append(p["val"])
+                lvl["price"] = float(np.mean(lvl["values"]))
+                lvl["touches"] += 1
+                lvl["first_pos"] = min(lvl["first_pos"], p["pos"])
+                lvl["last_pos"]  = max(lvl["last_pos"],  p["pos"])
+                merged = True
+                break
+        if not merged:
+            levels.append({
+                "price":     p["val"],
+                "values":    [p["val"]],
+                "touches":   1,
+                "first_pos": p["pos"],
+                "last_pos":  p["pos"],
+            })
+    return levels
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2️⃣ BREAKOUT — CAD + CONFIRMED
+# 🎯 MAIN DETECTOR — S/R CLOSE-BREAKOUT
 # ══════════════════════════════════════════════════════════════════════════════
-def detect_breakout(df, consol, idx):
-    """Hubi in breakout dhaco — oo uu yahay CONFIRMED."""
-    if consol is None or idx < 1 or idx >= len(df):
-        return False, None
-
-    candle = df.iloc[idx]
-    consol_high = consol["high"]
-    consol_low = consol["low"]
-
-    buffer = consol_high * (CONFIG["BREAKOUT_BUFFER_PCT"] / 100)
-    buffer_low = consol_low * (CONFIG["BREAKOUT_BUFFER_PCT"] / 100)
-
-    body = abs(candle["Close"] - candle["Open"])
-    body_pct = (body / consol_low * 100) if consol_low > 0 else 0
-    if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
-        return False, None
-
-    # Bullish Breakout (BUY)
-    if candle["Close"] > consol_high + buffer and candle["Close"] > candle["Open"]:
-        return True, {
-            "direction": "BUY",
-            "entry": float(candle["Close"]),
-            "consol_high": consol_high,
-            "consol_low": consol_low,
-            "body_pct": round(body_pct, 3),
-            "breakout_price": float(candle["Close"]),
-            "breakout_idx": idx,
-        }
-
-    # Bearish Breakout (SELL)
-    if candle["Close"] < consol_low - buffer_low and candle["Close"] < candle["Open"]:
-        return True, {
-            "direction": "SELL",
-            "entry": float(candle["Close"]),
-            "consol_high": consol_high,
-            "consol_low": consol_low,
-            "body_pct": round(body_pct, 3),
-            "breakout_price": float(candle["Close"]),
-            "breakout_idx": idx,
-        }
-
-    return False, None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3️⃣ SL/TP
-# ══════════════════════════════════════════════════════════════════════════════
-def compute_sl_tp(entry, consol, direction):
-    consol_high = consol["high"]
-    consol_low = consol["low"]
-    range_size = consol_high - consol_low
-
-    if direction == "BUY":
-        sl = consol_low + CONFIG["SL_INSIDE_PCT"] * range_size
-        if sl >= entry:
-            return None
-        risk = entry - sl
-        if risk <= 0:
-            return None
-        tp = entry + CONFIG["TP_RR"] * risk
-        return {
-            "sl": round(sl, 5), "tp": round(tp, 5),
-            "risk": round(risk, 5),
-            "reward": round(tp - entry, 5),
-            "rr": CONFIG["TP_RR"],
-        }
-    else:
-        sl = consol_high - CONFIG["SL_INSIDE_PCT"] * range_size
-        if sl <= entry:
-            return None
-        risk = sl - entry
-        if risk <= 0:
-            return None
-        tp = entry - CONFIG["TP_RR"] * risk
-        return {
-            "sl": round(sl, 5), "tp": round(tp, 5),
-            "risk": round(risk, 5),
-            "reward": round(entry - tp, 5),
-            "rr": CONFIG["TP_RR"],
-        }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎯 DETECT ALL PATTERNS
-# ══════════════════════════════════════════════════════════════════════════════
-def detect_all_patterns(df, interval="1h", symbol=None):
-    """Soo hel dhammaan signals-ka Consolidation Breakout."""
-    if df is None or df.empty or len(df) < 50:
+def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
+    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
 
     df = df.copy()
@@ -299,92 +206,188 @@ def detect_all_patterns(df, interval="1h", symbol=None):
             return []
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < 50:
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
 
+    df = calculate_indicators(df)
+    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    pivots = get_chronological_pivots(df)
+    if len(pivots) < 2:
+        return []
+
+    lookback  = _lookback_bars(interval)
+    backstep  = CONFIG["ZIGZAG_BACKSTEP"]
+    tolerance = CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0
+    buf       = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
+
+    n = len(df)
     patterns = []
-    last_idx = -999
+    last_signal_pos = -10**9
+    broken_prices = []   # avoid re-signaling the same zone
 
-    for idx in range(CONFIG["MIN_CONSOL_BARS"], len(df)):
-        if idx - last_idx < CONFIG["MIN_BARS_BETWEEN"]:
+    for i in range(CONFIG["MIN_BARS_REQUIRED"], n):
+        # ── active pivots (confirmed & within lookback window) ──────────
+        active = [p for p in pivots
+                  if (p["pos"] + backstep) <= i and (i - p["pos"]) <= lookback]
+        if len(active) < 2:
             continue
 
-        # Soo hel consolidation ku dhammaanaysa idx-1
-        consol = find_consolidation_ending_at(df, idx - 1)
-        if not consol:
+        levels = cluster_levels(active, tolerance)
+        if not levels:
             continue
 
-        # Hubi breakout ee idx
-        ok, br = detect_breakout(df, consol, idx)
-        if not ok:
+        candle     = df.iloc[i]
+        prev       = df.iloc[i - 1]
+        close      = float(candle["Close"])
+        open_      = float(candle["Open"])
+        prev_close = float(prev["Close"])
+
+        # candle body filter
+        body_pct = abs(close - open_) / max(close, 1e-9) * 100
+        if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
             continue
 
-        # Xisaabi SL/TP
-        sltp = compute_sl_tp(br["entry"], consol, br["direction"])
-        if not sltp:
-            continue
+        # prefer strongest level
+        levels.sort(key=lambda l: -l["touches"])
 
-        direction = br["direction"]
-        bias = "Bullish" if direction == "BUY" else "Bearish"
+        for lvl in levels:
+            if lvl["touches"] < CONFIG["MIN_TOUCHES"]:
+                continue
+            price = lvl["price"]
 
-        # Nodes — SANDBUUQ 6 ah
-        # Nodes 1-4: Sanduuqa consolidation (4 corners)
-        # Nodes 5-6: Breakout + Entry
-        nodes = [
-            (consol["high_idx"], consol["high"]),   # 1: Top-left
-            (consol["low_idx"], consol["low"]),     # 2: Bottom-left
-            (consol["low_idx"], consol["high"]),    # 3: Top-right (ku soo dhaqaaq)
-            (consol["high_idx"], consol["low"]),    # 4: Bottom-right
-            (df.index[consol["end_idx"]], consol["high"] if direction == "BUY" else consol["low"]),  # 5: Consolidation end
-            (df.index[idx], br["entry"]),           # 6: Breakout
-        ]
+            # skip if we already broke this zone
+            if any(abs(price - bp) / max(price, 1e-9) < tolerance for bp in broken_prices):
+                continue
 
-        pattern = {
-            "name": "Consolidation Breakout",
-            "pattern": f"Consol → {direction} Breakout",
-            "bias": bias,
-            "direction": direction,
-            "match": 100.0,
-            "entry": round(br["entry"], 5),
-            "entry_trigger": round(br["entry"], 5),
-            "sl": sltp["sl"],
-            "tp": sltp["tp"],
-            "SL": sltp["sl"],
-            "TP": sltp["tp"],
-            "Entry": round(br["entry"], 5),
-            "nodes": nodes,
-            "consolidation_box": {
-                "x_start": consol["start_idx"],
-                "x_end": consol["end_idx"],
-                "high": consol["high"],
-                "low": consol["low"],
-            },
-            "neckline_start_idx": df.index[consol["start_idx"]],
-            "neckline_end_idx": df.index[idx],
-            "end_pos": idx,
-            "Entry Conditions": "Consolidation + Confirmed Breakout",
-            "consol_high": consol["high"],
-            "consol_low": consol["low"],
-            "consol_bars": consol["bars"],
-            "consol_range_pct": consol["range_pct"],
-            "consol_stability_pct": consol["stability_pct"],
-            "breakout_body_pct": br["body_pct"],
-        }
-        pattern.update(simulate_trade_outcome(pattern, df))
-        patterns.append(pattern)
-        last_idx = idx
+            up_thr   = price * (1 + buf)
+            down_thr = price * (1 - buf)
+
+            # ── Bullish close-breakout ─────────────────────────────────
+            if prev_close <= up_thr and close > up_thr and close > open_:
+                if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
+                    continue
+                pattern = _build_pattern(df, i, lvl, levels, "BUY", interval)
+                if pattern:
+                    patterns.append(pattern)
+                    last_signal_pos = i
+                    broken_prices.append(price)
+                    break
+
+            # ── Bearish close-breakout ─────────────────────────────────
+            elif prev_close >= down_thr and close < down_thr and close < open_:
+                if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
+                    continue
+                pattern = _build_pattern(df, i, lvl, levels, "SELL", interval)
+                if pattern:
+                    patterns.append(pattern)
+                    last_signal_pos = i
+                    broken_prices.append(price)
+                    break
 
     return patterns
+
+
+def _build_pattern(df, idx, lvl, all_levels, direction, interval):
+    candle = df.iloc[idx]
+    entry  = float(candle["Close"])
+    level_price = float(lvl["price"])
+    sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
+
+    # ── SL: just beyond the broken level ─────────────────────────────────
+    if direction == "BUY":
+        sl = level_price * (1 - sl_buf)
+        if sl >= entry:
+            return None
+        risk = entry - sl
+        min_rr_tp = entry + CONFIG["MIN_RR"] * risk
+    else:
+        sl = level_price * (1 + sl_buf)
+        if sl <= entry:
+            return None
+        risk = sl - entry
+        min_rr_tp = entry - CONFIG["MIN_RR"] * risk
+
+    if risk <= 0:
+        return None
+
+    # ── TP: prefer next opposing S/R zone if it satisfies min R:R ────────
+    tp = min_rr_tp
+    if direction == "BUY":
+        candidates = [l["price"] for l in all_levels
+                      if l["price"] >= min_rr_tp and l["price"] > entry]
+        if candidates:
+            tp = min(candidates)
+    else:
+        candidates = [l["price"] for l in all_levels
+                      if l["price"] <= min_rr_tp and l["price"] < entry]
+        if candidates:
+            tp = max(candidates)
+
+    rr = abs(tp - entry) / risk
+    if rr < CONFIG["MIN_RR"] - 0.05:
+        return None
+
+    bias = "Bullish" if direction == "BUY" else "Bearish"
+    body_pct = abs(float(candle["Close"]) - float(candle["Open"])) / max(entry, 1e-9) * 100
+
+    # ── chart nodes (level line + breakout) ──────────────────────────────
+    nodes = [
+        (df.index[lvl["first_pos"]], level_price),
+        (df.index[lvl["last_pos"]],  level_price),
+        (df.index[max(0, idx - 1)],  level_price),
+        (df.index[idx],              entry),
+    ]
+
+    # thin horizontal "box" so the app's Consolidation rect renders the level
+    box_high = level_price * (1 + CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0)
+    box_low  = level_price * (1 - CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0)
+
+    pattern = {
+        "name": "S/R Breakout",
+        "pattern": f"S/R {direction} Breakout ({lvl['touches']} touches)",
+        "bias": bias,
+        "direction": direction,
+        "match": float(min(100, 50 + lvl["touches"] * 10)),
+        "entry": round(entry, 5),
+        "entry_trigger": round(entry, 5),
+        "sl": round(sl, 5),
+        "tp": round(tp, 5),
+        "SL": round(sl, 5),
+        "TP": round(tp, 5),
+        "Entry": round(entry, 5),
+        "nodes": nodes,
+        "consolidation_box": {
+            "x_start": lvl["first_pos"],
+            "x_end":   idx,
+            "high":    round(box_high, 5),
+            "low":     round(box_low, 5),
+        },
+        "level_price":  round(level_price, 5),
+        "level_touches": lvl["touches"],
+        "neckline_start_idx": df.index[lvl["first_pos"]],
+        "neckline_end_idx":   df.index[idx],
+        "end_pos": idx,
+        "Entry Conditions": f"S/R level ({lvl['touches']} touches) broken by close",
+        "consol_high": round(box_high, 5),
+        "consol_low":  round(box_low, 5),
+        "consol_bars": int(lvl["last_pos"] - lvl["first_pos"] + 1),
+        "consol_range_pct": round((box_high - box_low) / max(level_price, 1e-9) * 100, 3),
+        "consol_stability_pct": 100.0,
+        "breakout_body_pct": round(body_pct, 3),
+    }
+
+    pattern.update(simulate_trade_outcome(pattern, df))
+    return pattern
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 🧪 SIMULATE
 # ══════════════════════════════════════════════════════════════════════════════
 def simulate_trade_outcome(pattern, df):
-    bias = pattern["bias"]
-    entry = float(pattern["entry"])
-    sl = float(pattern["sl"])
-    tp = float(pattern["tp"])
+    bias    = pattern["bias"]
+    entry   = float(pattern["entry"])
+    sl      = float(pattern["sl"])
+    tp      = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
 
     stats = {
@@ -416,7 +419,7 @@ def simulate_trade_outcome(pattern, df):
 
     for i, (idx, row) in enumerate(post.iloc[1:].iterrows(), start=1):
         high = float(row["High"])
-        low = float(row["Low"])
+        low  = float(row["Low"])
 
         if bias == "Bearish":
             fav = max(0.0, entry - low)
@@ -432,18 +435,18 @@ def simulate_trade_outcome(pattern, df):
 
         if bias == "Bearish":
             hit_sl = high >= sl
-            hit_tp = low <= tp
+            hit_tp = low  <= tp
         else:
-            hit_sl = low <= sl
+            hit_sl = low  <= sl
             hit_tp = high >= tp
 
         if hit_sl:
             stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
             r = max_fav
-            if r < 5: stats["Loss Category"] = "immediate_rejection"
-            elif r < 30: stats["Loss Category"] = "early_reversal"
-            elif r < 70: stats["Loss Category"] = "mid_reversal"
-            else: stats["Loss Category"] = "late_reversal"
+            if r < 5:      stats["Loss Category"] = "immediate_rejection"
+            elif r < 30:   stats["Loss Category"] = "early_reversal"
+            elif r < 70:   stats["Loss Category"] = "mid_reversal"
+            else:          stats["Loss Category"] = "late_reversal"
             stats["exit_idx"] = idx; stats["exit_price"] = sl
             stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
             break
@@ -498,11 +501,11 @@ def run_full_analysis(df, interval="1h", symbol=None):
             return default_empty
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < 50:
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         default_empty["error"] = f"Insufficient data: {len(df)}"
         return default_empty
 
-    df_active = df.tail(300).copy()
+    df_active = df.tail(600).copy()
     all_patterns = detect_all_patterns(df_active, interval=interval, symbol=symbol)
 
     if not all_patterns:
@@ -519,7 +522,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "sl": latest["sl"], "tp": latest["tp"],
         "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
         "consolidation_box": latest.get("consolidation_box"),
-        "all_patterns": all_patterns, "match": 100.0,
+        "all_patterns": all_patterns, "match": latest.get("match", 100.0),
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"),
         "Exit Date": latest.get("Exit Date"),
@@ -532,7 +535,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
 # 📤 backtest_strategy
 # ══════════════════════════════════════════════════════════════════════════════
 def backtest_strategy(df, interval="1h", symbol=None):
-    if df is None or df.empty or len(df) < 50:
+    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
 
     df = df.copy()
@@ -541,7 +544,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
             return []
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < 50:
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
 
     patterns = detect_all_patterns(df, interval=interval, symbol=symbol)
@@ -576,6 +579,8 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Trailing Stage": p.get("Trailing Stage", 0),
             "Initial SL": p.get("Initial SL"),
             "Final SL": p.get("Final SL"),
+            "level_price": p.get("level_price"),
+            "level_touches": p.get("level_touches"),
             "consol_high": p.get("consol_high"),
             "consol_low": p.get("consol_low"),
             "consol_bars": p.get("consol_bars"),
@@ -587,6 +592,15 @@ def backtest_strategy(df, interval="1h", symbol=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 🔁 BACKWARD-COMPAT ALIAS (used by app's detect_near_signals)
+# ══════════════════════════════════════════════════════════════════════════════
+def detect_all_head_shoulders(pivots=None, df=None, is_backtest=False, **kwargs):
+    if df is None:
+        return []
+    return detect_all_patterns(df)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 🧪 diagnose_filters
 # ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
@@ -595,7 +609,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "stages": {}, "smart_diagnosis": {}, "recommendations": [],
         "trade_analysis": [], "rejection_samples": {},
     }
-    if df is None or df.empty or len(df) < 50:
+    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         result["error"] = "بيانات غير كافية"
         return result
 
@@ -611,8 +625,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
     result["final_count"] = len(trades)
     result["total_raw_candidates"] = len(trades)
 
-    wins = [t for t in trades if "WIN" in str(t.get("Result", "")).upper()]
-    losses = [t for t in trades if "LOSS" in str(t.get("Result", "")).upper()]
+    wins     = [t for t in trades if "WIN" in str(t.get("Result", "")).upper()]
+    losses   = [t for t in trades if "LOSS" in str(t.get("Result", "")).upper()]
     timeouts = [t for t in trades if "TIMEOUT" in str(t.get("Result", "")).upper()]
 
     total_closed = len(wins) + len(losses)
@@ -647,8 +661,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
     }
 
     result["stages"] = {
-        "1. Consolidation": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Breakout": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "1. S/R Levels":     {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Close Breakout": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
     trade_analysis = []
@@ -683,7 +697,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Consolidation Breakout v2")
-    print("Consolidation: 8-50 bars, range ≤ 0.35%, stability ≥ 90%")
-    print("Breakout: confirmed close + body ≥ 0.15%")
-    print("SL inside: 40% | TP: 2.5× SL")
+    print("ENGINE.PY — S/R Horizontal Breakout v3")
+    print(f"Lookback: {CONFIG['LOOKBACK_DAYS']} days   |   tolerance: {CONFIG['LEVEL_TOLERANCE_PCT']}%   |   min touches: {CONFIG['MIN_TOUCHES']}")
+    print(f"Breakout: close beyond level by {CONFIG['BREAKOUT_BUFFER_PCT']}%   |   body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}%")
+    print(f"SL: {CONFIG['SL_BUFFER_PCT']}% beyond level   |   Min R:R = 1:{CONFIG['MIN_RR']}")
