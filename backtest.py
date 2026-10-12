@@ -370,7 +370,8 @@ def get_near_symbols():
     near = set()
     if "near_signals" in st.session_state:
         for item in st.session_state.near_signals:
-            near.add(item["symbol"])
+            if "symbol" in item:
+                near.add(item["symbol"])
     return sorted(list(near))
 
 
@@ -578,7 +579,7 @@ def detect_near_signals(df, interval="5m", symbol=None, proximity_pct=2.0):
     return near_signals
 
 
-def render_near_signals(near_signals):
+def render_near_signals(near_signals, unique_id="near_default"):
     if not near_signals:
         st.info("ℹ️ Ma jiraan signals dhow inay jabaan — suug ilaa xog cusub")
         return
@@ -599,7 +600,9 @@ def render_near_signals(near_signals):
 
     st.dataframe(df_disp, use_container_width=True, hide_index=True)
 
-    if st.button("🔗 U rar signals-ka calculator-ka", key="load_near_sig", use_container_width=True):
+    if st.button("🔗 U rar signals-ka calculator-ka",
+                 key=f"load_near_sig_{unique_id}",
+                 use_container_width=True):
         first = near_signals[0]
         st.session_state["active_signal_symbol"] = first["symbol"]
         st.session_state["active_signal_entry"] = first["neckline"]
@@ -822,11 +825,12 @@ def render_advanced_risk_calculator(unique_id="main"):
 
     with st.expander("ℹ️ كيف تستخدم الحاسبة؟"):
         st.markdown("""
-        **1. أدخل رأس المال** + **2. اختر نسبة المخاطرة**  
+        **1. أدخل رأس المال** + **2. اختر نسبة المخاطرة (%):**  
         **3. اختر مصدر القائمة** (Active / Near / All)  
         **4. ابحث بالاسم** — ku qor "EUR" ama "BTC"  
         **5. Riix "⚡ TP (R:R = 1:2)"**  
         **6. Eeg natiijada:** ✅ مقبولة / ❌ مرفوضة
+        """)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1616,7 +1620,7 @@ else:
 
     if st.session_state.get("near_signals"):
         with st.expander("⏳ ليستة المراقبة — Signals قريبة من الكسر", expanded=True):
-            render_near_signals(st.session_state.near_signals)
+            render_near_signals(st.session_state.near_signals, unique_id="live_top")
 
     # ══════════════════════════════════════════════════════════════════════════
     # 📊 Natiijada Signal-ka Firfircoon
@@ -1814,14 +1818,9 @@ else:
 # 💰 XISAABIYAHA KHATARTA
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
-with st.expander("ℹ️ كيف تستخدم الحاسبة؟"):
-    st.markdown("""
-    **1. أدخل رأس المال** + **2. اختر نسبة المخاطرة**  
-    **3. اختر مصدر القائمة** (Active / Near / All)  
-    **4. ابحث بالاسم** — ku qor "EUR" ama "BTC"  
-    **5. Riix "⚡ TP (R:R = 1:2)"**  
-    **6. Eeg natiijada:** ✅ مقبولة / ❌ مرفوضة
-    """)
+with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
+    render_advanced_risk_calculator(unique_id="end")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ⏳ LIISKA WAARITAANKA
@@ -1830,7 +1829,7 @@ st.markdown("---")
 
 with st.expander("⏳ ليستة المراقبة — Signals قريبة من الكسر", expanded=False):
     if st.session_state.get("near_signals"):
-        render_near_signals(st.session_state.near_signals)
+        render_near_signals(st.session_state.near_signals, unique_id="bottom")
     else:
         st.info("ℹ️ Riix '⏳ Raadi signals-ka dhow' ee Live Scan si aad u buuxiso liiska")
 
@@ -1928,4 +1927,3 @@ with st.expander("📖 Sida loo isticmaalo App-ka", expanded=False):
     - ✅ **Multiselect** oo leh raadin
     - ✅ **أزرار سريعة** (Major / Cross / Clear)
     """)
-    
