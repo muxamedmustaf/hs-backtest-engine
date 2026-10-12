@@ -1,547 +1,633 @@
 # -*- coding: utf-8 -*-
 """
-REVERSAL AFTER CONSOLIDATION
-Strategy: Downtrend → Consolidation → Upward Breakout
-ZigZag Only — No indicators
+ENGINE.PY — Reversal After Consolidation
+=========================================
+1. Downtrend (اتجاه سابق)
+2. Consolidation (تجميع)
+3. Breakout (كسر الحاجز)
+4. Confirmed close (شمعة اختراقية مغلقة)
+5. SL inside consolidation (وقف داخل التجميع)
+6. TP = 3× SL (الهدف 3 أضعاف الوقف)
 """
 import pandas as pd
 import numpy as np
 
-CONFIG_RAC = {
-    # ZigZag
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚙️ CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+CONFIG = {
     "ZIGZAG_DEPTH": 8,
     "ZIGZAG_BACKSTEP": 4,
-
-    # Downtrend check
-    "MIN_PIVOTS_FOR_TREND": 4,
     "MIN_LOWER_HIGHS": 2,
     "MIN_LOWER_LOWS": 2,
-
-    # Consolidation
-    "MIN_PIVOTS_CONSOL": 3,
-    "MAX_CONSOL_RANGE_PCT": 0.30,  # 0.30%
-    "CONSOL_LOOKBACK_BARS": 30,
-
-    # Breakout
-    "MIN_BREAKOUT_BODY_PCT": 0.15,  # Min body %
-    "MIN_BREAKOUT_RANGE_PCT": 0.25,  # Min range %
-    "BREAKOUT_BUFFER_PCT": 0.02,     # 0.02% buffer above high
-
-    # SL/TP
-    "SL_BUFFER_PCT": 0.05,      # 0.05% below consol low
-    "TP_RR_MIN": 1.5,
-    "TP_RR_MAX": 4.0,
-
-    # Filters
+    "MIN_CONSOL_BARS": 5,
+    "MAX_CONSOL_BARS": 40,
+    "MAX_CONSOL_RANGE_PCT": 0.30,
+    "MIN_BREAKOUT_BODY_PCT": 0.15,
+    "BREAKOUT_BUFFER_PCT": 0.02,
+    "SL_INSIDE_PCT": 0.40,
+    "TP_RR": 3.0,
     "MIN_BARS_BETWEEN": 5,
     "MAX_TIMEOUT_BARS": 200,
-    "MIN_PRICE": 0.0001,
+    "VOLUME_MA_PERIOD": 20,
+}
+
+TIMEOUT_STATISTICAL_FLOOR = 200
+TIMEOUT_DURATION_MULTIPLIER = 3
+
+REASON_MAP = {
+    "immediate_rejection": {"reason": "رفض فوري", "action": "انتظر", "prevention": "—"},
+    "early_reversal": {"reason": "انعكاس مبكر", "action": "SL للتعادل", "prevention": "Trailing"},
+    "mid_reversal": {"reason": "انعكاس متوسط", "action": "خروج 50%", "prevention": "TP جزئي"},
+    "late_reversal": {"reason": "انعكاس متأخر", "action": "Trailing", "prevention": "راقب"},
+    "timeout": {"reason": "انتهى الوقت", "action": "أغلق", "prevention": "ADX"},
+    "success": {"reason": "وصل الهدف", "action": "كرر", "prevention": "—"},
+    "open": {"reason": "مفتوحة", "action": "راقب", "prevention": "—"},
 }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 🛠️ ZIGZAG — U isticmaal engine.py
-# ══════════════════════════════════════════════════════════════════════════════
-def get_zigzag_pivots(df):
-    """Soo qaado ZigZag pivots — engine.py."""
-    try:
-        from engine import (calculate_indicators, calculate_zigzag,
-                            get_chronological_pivots, CONFIG)
-        df = df.copy()
-        df = calculate_indicators(df)
-        df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-        pivots = get_chronological_pivots(df)
-        return df, pivots
-    except Exception as e:
-        return df, []
+def _get_max_gap(interval):
+    return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
+            "4h": 15, "1d": 10}.get(interval, 50)
 
 
+def _get_max_pattern_duration(interval):
+    return {"1m": 600, "5m": 200, "15m": 150, "30m": 120, "1h": 100,
+            "4h": 80, "1d": 60}.get(interval, 200)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🛠️ INDICATORS (sida hore — loo baahan yahay)
+# ══════════════════════════════════════════════════════════════════════════════
+def calculate_indicators(df):
+    df = df.copy()
+    hl = df["High"] - df["Low"]
+    hc = np.abs(df["High"] - df["Close"].shift())
+    lc = np.abs(df["Low"] - df["Close"].shift())
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    df["ATR"] = tr.rolling(14).mean()
+    df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
+    df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
+    if "Volume" in df.columns:
+        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df["Volume"] = v
+        df["Volume_MA"] = v.rolling(CONFIG["VOLUME_MA_PERIOD"]).mean().fillna(0.0)
+    else:
+        df["Volume"] = 0.0
+        df["Volume_MA"] = 0.0
+    return df
+
+
+def calculate_zigzag(df, depth=8, backstep=4):
+    df = df.copy()
+    df["Pivot_H"] = np.nan
+    df["Pivot_L"] = np.nan
+    highs = df["High"].astype(float).values
+    lows = df["Low"].astype(float).values
+    n = len(df)
+    if n < depth + backstep + 1:
+        return df
+    for i in range(depth, n - backstep):
+        hw = highs[i - depth:i + backstep + 1]
+        lw = lows[i - depth:i + backstep + 1]
+        ch, cl = highs[i], lows[i]
+        is_h = (ch == np.max(hw) and np.sum(hw == ch) == 1)
+        is_l = (cl == np.min(lw) and np.sum(lw == cl) == 1)
+        if is_h and not is_l:
+            df.iloc[i, df.columns.get_loc("Pivot_H")] = ch
+        elif is_l and not is_h:
+            df.iloc[i, df.columns.get_loc("Pivot_L")] = cl
+    return df
+
+
+def get_chronological_pivots(df):
+    raw = []
+    for pos, (idx, row) in enumerate(df.iterrows()):
+        if not pd.isna(row["Pivot_H"]):
+            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_H"]),
+                        "type": "H", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
+        elif not pd.isna(row["Pivot_L"]):
+            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_L"]),
+                        "type": "L", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
+    if not raw:
+        return []
+    clean = []
+    for p in raw:
+        if not clean:
+            clean.append(p); continue
+        last = clean[-1]
+        ms = p["dynamic_swing"]
+        if last["type"] != p["type"]:
+            mv = abs(p["val"] - last["val"]) / max(abs(last["val"]), 1e-9)
+            if mv >= ms:
+                clean.append(p)
+            else:
+                if last["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
+                elif last["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
+        else:
+            if p["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
+            elif p["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
+    final = []
+    for p in clean:
+        if not final:
+            final.append(p)
+        else:
+            if final[-1]["type"] != p["type"]:
+                final.append(p)
+            else:
+                if p["type"] == "H" and p["val"] > final[-1]["val"]: final[-1] = p
+                elif p["type"] == "L" and p["val"] < final[-1]["val"]: final[-1] = p
+    return final
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1️⃣ DOWNTREND
+# ══════════════════════════════════════════════════════════════════════════════
 def detect_downtrend(pivots, end_idx):
-    """
-    Hubi in 2-3 pivots ugu dambeeyay yihiin downtrend.
-
-    Downtrend = Lower Highs + Lower Lows.
-    """
-    if len(pivots) < CONFIG_RAC["MIN_PIVOTS_FOR_TREND"]:
-        return False, None
-
-    # Soo qaado pivots ugu dambeeyay ee ka horreeya end_idx
     relevant = [p for p in pivots if p["pos"] <= end_idx]
     if len(relevant) < 4:
         return False, None
-
-    last_pivots = relevant[-4:]
-
-    # Kala saar highs iyo lows
-    highs = [p for p in last_pivots if p["type"] == "H"]
-    lows  = [p for p in last_pivots if p["type"] == "L"]
-
+    last4 = relevant[-4:]
+    highs = [p for p in last4 if p["type"] == "H"]
+    lows = [p for p in last4 if p["type"] == "L"]
     if len(highs) < 2 or len(lows) < 2:
         return False, None
-
-    # Hubi Lower Highs
-    lower_highs = sum(
-        1 for i in range(1, len(highs))
-        if highs[i]["val"] < highs[i-1]["val"]
-    )
-
-    # Hubi Lower Lows
-    lower_lows = sum(
-        1 for i in range(1, len(lows))
-        if lows[i]["val"] < lows[i-1]["val"]
-    )
-
-    is_downtrend = (
-        lower_highs >= CONFIG_RAC["MIN_LOWER_HIGHS"] and
-        lower_lows >= CONFIG_RAC["MIN_LOWER_LOWS"]
-    )
-
-    return is_downtrend, {
-        "lower_highs": lower_highs,
-        "lower_lows": lower_lows,
-        "last_high": highs[-1]["val"],
-        "last_low": lows[-1]["val"],
-        "last_high_pos": highs[-1]["pos"],
+    lh = sum(1 for i in range(1, len(highs)) if highs[i]["val"] < highs[i-1]["val"])
+    ll = sum(1 for i in range(1, len(lows)) if lows[i]["val"] < lows[i-1]["val"])
+    is_down = (lh >= CONFIG["MIN_LOWER_HIGHS"] and ll >= CONFIG["MIN_LOWER_LOWS"])
+    return is_down, {
+        "lower_highs": lh, "lower_lows": ll,
         "last_low_pos": lows[-1]["pos"],
+        "last_high_pos": highs[-1]["pos"],
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🛠️ CONSOLIDATION DETECTION
+# 2️⃣ CONSOLIDATION
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_consolidation(df, start_idx, end_idx):
-    """
-    Hubi in bars-ka u dhexeeya start_idx iyo end_idx ay yihiin consolidation.
-
-    Shuruudaha:
-    1. Range (High - Low) < MAX_CONSOL_RANGE_PCT
-    2. Bars badan (>= 5)
-    3. Ma jiro impulse weyn
-    """
-    if end_idx - start_idx < 5:
+    n = end_idx - start_idx + 1
+    if n < CONFIG["MIN_CONSOL_BARS"] or n > CONFIG["MAX_CONSOL_BARS"]:
         return False, None
-
-    segment = df.iloc[start_idx:end_idx + 1]
-    if len(segment) < 5:
+    seg = df.iloc[start_idx:end_idx + 1]
+    high = float(seg["High"].max())
+    low = float(seg["Low"].min())
+    if low <= 0:
         return False, None
-
-    consol_high = float(segment["High"].max())
-    consol_low  = float(segment["Low"].min())
-
-    if consol_low <= 0:
+    range_pct = (high - low) / low * 100
+    if range_pct > CONFIG["MAX_CONSOL_RANGE_PCT"]:
         return False, None
-
-    range_pct = (consol_high - consol_low) / consol_low * 100
-
-    if range_pct > CONFIG_RAC["MAX_CONSOL_RANGE_PCT"]:
-        return False, None
-
-    # Hubi bars-ka
-    num_bars = len(segment)
-    if num_bars < 5:
-        return False, None
-
     return True, {
-        "high": consol_high,
-        "low": consol_low,
+        "high": high, "low": low,
         "range_pct": round(range_pct, 3),
-        "bars": num_bars,
-        "start_idx": start_idx,
-        "end_idx": end_idx,
-        "mid": (consol_high + consol_low) / 2,
+        "bars": n, "start_idx": start_idx, "end_idx": end_idx,
     }
 
 
-def find_consolidation_after_downtrend(df, pivots, downtrend_info):
-    """
-    Soo hel consolidation ka dib downtrend.
-
-    Fikradda:
-    - Downtrend wuxuu dhammaaday marka pivot low ugu dambeeyay
-    - Consolidation wuxuu bilaabmaa ka dib
-    - Range yar ilaa breakout
-    """
+def find_consolidation(df, downtrend_info):
     if not downtrend_info:
         return None
-
-    last_low_pos = downtrend_info["last_low_pos"]
-
-    # Bilow ka dib last_low_pos
-    start_search = last_low_pos + 1
-
-    if start_search >= len(df) - 5:
+    start = downtrend_info["last_low_pos"] + 1
+    if start >= len(df) - 5:
         return None
-
-    # Raadi consolidation inta u dhexeeya last_low_pos iyo dhamaadka
-    best_consol = None
-
-    for end_idx in range(start_search + 5, min(start_search + 60, len(df))):
-        is_consol, consol_info = detect_consolidation(df, start_search, end_idx)
-        if is_consol:
-            if best_consol is None or consol_info["bars"] > best_consol["bars"]:
-                best_consol = consol_info
-
-    return best_consol
+    best = None
+    for end in range(start + CONFIG["MIN_CONSOL_BARS"], min(start + 60, len(df))):
+        ok, info = detect_consolidation(df, start, end)
+        if ok and (best is None or info["bars"] > best["bars"]):
+            best = info
+    return best
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🛠️ BREAKOUT DETECTION
+# 3️⃣ + 4️⃣ BREAKOUT + CONFIRMED
 # ══════════════════════════════════════════════════════════════════════════════
-def detect_bullish_breakout(df, consol_info, check_idx):
-    """
-    Hubi in breakout bullish uu dhaco ka dib consolidation.
-
-    Shuruudaha:
-    1. Candle close > consol_high + buffer
-    2. Candle body weyn (>= MIN_BREAKOUT_BODY_PCT)
-    3. Range weyn (>= MIN_BREAKOUT_RANGE_PCT)
-    """
-    if consol_info is None:
+def detect_breakout(df, consol, idx):
+    if consol is None or idx < 1 or idx >= len(df):
         return False, None
-
-    if check_idx < 1 or check_idx >= len(df):
-        return False, None
-
-    candle = df.iloc[check_idx]
-    prev = df.iloc[check_idx - 1]
-
-    consol_high = consol_info["high"]
-    consol_low  = consol_info["low"]
-
-    # Shuruud 1: Close > high + buffer
-    buffer = consol_high * (CONFIG_RAC["BREAKOUT_BUFFER_PCT"] / 100)
+    candle = df.iloc[idx]
+    consol_high = consol["high"]
+    consol_low = consol["low"]
+    buffer = consol_high * (CONFIG["BREAKOUT_BUFFER_PCT"] / 100)
     if candle["Close"] <= consol_high + buffer:
         return False, None
-
-    # Shuruud 2: Body weyn
-    body = abs(candle["Close"] - candle["Open"])
-    body_pct = (body / consol_low * 100) if consol_low > 0 else 0
-
-    if body_pct < CONFIG_RAC["MIN_BREAKOUT_BODY_PCT"]:
-        return False, None
-
-    # Shuruud 3: Range weyn
-    candle_range = candle["High"] - candle["Low"]
-    range_pct = (candle_range / consol_low * 100) if consol_low > 0 else 0
-
-    if range_pct < CONFIG_RAC["MIN_BREAKOUT_RANGE_PCT"]:
-        return False, None
-
-    # Shuruud 4: Candle bullish
     if candle["Close"] <= candle["Open"]:
         return False, None
-
+    body = abs(candle["Close"] - candle["Open"])
+    body_pct = (body / consol_low * 100) if consol_low > 0 else 0
+    if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
+        return False, None
     return True, {
-        "breakout_idx": check_idx,
-        "breakout_price": float(candle["Close"]),
+        "entry": float(candle["Close"]),
         "consol_high": consol_high,
         "consol_low": consol_low,
         "body_pct": round(body_pct, 3),
-        "range_pct": round(range_pct, 3),
-        "buffer_pct": round(CONFIG_RAC["BREAKOUT_BUFFER_PCT"], 3),
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 CALCULATE SL/TP
+# 5️⃣ + 6️⃣ SL + TP
 # ══════════════════════════════════════════════════════════════════════════════
-def calculate_sl_tp(entry, consol_info, downtrend_info):
-    """
-    Xisaabi SL iyo TP.
-
-    SL = consol_low - buffer (0.05%)
-    TP = entry + measured_move (impulse from prev high)
-    """
-    consol_low  = consol_info["low"]
-    consol_high = consol_info["high"]
-
-    # SL = consol_low - 0.05%
-    sl_buffer = consol_low * (CONFIG_RAC["SL_BUFFER_PCT"] / 100)
-    sl = consol_low - sl_buffer
-
-    # Measured move: impulse = consol_high - consol_low
-    impulse_size = consol_high - consol_low
-
-    # TP = entry + impulse_size
-    tp = entry + impulse_size
-
-    # Risk iyo Reward
+def compute_sl_tp(entry, consol):
+    consol_high = consol["high"]
+    consol_low = consol["low"]
+    range_size = consol_high - consol_low
+    # 5️⃣ SL inside consolidation
+    sl = consol_low + CONFIG["SL_INSIDE_PCT"] * range_size
+    if sl >= entry:
+        return None
     risk = entry - sl
-    reward = tp - entry
-
     if risk <= 0:
         return None
-
-    rr = reward / risk
-
-    # Hubi R:R
-    if rr < CONFIG_RAC["TP_RR_MIN"]:
-        # Kordhi TP si R:R uu gaaro minimum
-        tp = entry + CONFIG_RAC["TP_RR_MIN"] * risk
-        reward = tp - entry
-        rr = CONFIG_RAC["TP_RR_MIN"]
-
-    if rr > CONFIG_RAC["TP_RR_MAX"]:
-        # Yaree TP
-        tp = entry + CONFIG_RAC["TP_RR_MAX"] * risk
-        reward = tp - entry
-        rr = CONFIG_RAC["TP_RR_MAX"]
-
+    # 6️⃣ TP = 3× risk
+    tp = entry + CONFIG["TP_RR"] * risk
     return {
         "sl": round(sl, 5),
         "tp": round(tp, 5),
         "risk": round(risk, 5),
-        "reward": round(reward, 5),
-        "rr": round(rr, 2),
-        "impulse_size": round(impulse_size, 5),
-        "sl_buffer": round(sl_buffer, 5),
+        "reward": round(tp - entry, 5),
+        "rr": CONFIG["TP_RR"],
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 MAIN STRATEGY — Soo hel dhammaan signals
+# 🧪 SIMULATE
 # ══════════════════════════════════════════════════════════════════════════════
-def detect_reversal_signals(df, symbol=None, interval="1h"):
-    """
-    Soo hel signals-ka "Downtrend → Consolidation → Bullish Breakout".
-    """
+def simulate_trade_outcome(pattern, df):
+    entry = float(pattern["entry"])
+    sl = float(pattern["sl"])
+    tp = float(pattern["tp"])
+    end_idx = pattern["neckline_end_idx"]
+
+    stats = {
+        "Result": "OPEN", "Head Result": "OPEN",
+        "progress_ratio": 0.0, "candles_to_exit": 0,
+        "exit_idx": None, "exit_price": None,
+        "Entry Date": None, "Exit Date": None,
+        "Max Reach %": 0.0, "SL Safety %": 0.0,
+        "Breakeven Activated": False, "Breakeven Exit": False,
+        "Trailing Stage": 0, "Initial SL": sl, "Final SL": sl,
+        "Loss Category": None,
+        "Pattern Duration": 50, "Timeout Used": CONFIG["MAX_TIMEOUT_BARS"],
+    }
+
+    if end_idx not in df.index:
+        return stats
+    post = df.loc[end_idx:]
+    if len(post) <= 1:
+        return stats
+
+    stats["Entry Date"] = str(end_idx)
+    total_tp = abs(tp - entry)
+    total_sl = abs(sl - entry)
+    max_fav = 0.0
+    max_adv = 0.0
+
+    for i, (idx, row) in enumerate(post.iloc[1:].iterrows(), start=1):
+        high = float(row["High"])
+        low = float(row["Low"])
+
+        fav = max(0.0, high - entry)
+        adv = max(0.0, entry - low)
+
+        if total_tp > 0:
+            max_fav = max(max_fav, fav / total_tp * 100)
+        if total_sl > 0:
+            max_adv = max(max_adv, adv / total_sl * 100)
+
+        if low <= sl:
+            stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
+            r = max_fav
+            if r < 5: stats["Loss Category"] = "immediate_rejection"
+            elif r < 30: stats["Loss Category"] = "early_reversal"
+            elif r < 70: stats["Loss Category"] = "mid_reversal"
+            else: stats["Loss Category"] = "late_reversal"
+            stats["exit_idx"] = idx; stats["exit_price"] = sl
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
+            break
+        if high >= tp:
+            stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
+            stats["Loss Category"] = "success"
+            stats["exit_idx"] = idx; stats["exit_price"] = tp
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
+            break
+
+        if i >= CONFIG["MAX_TIMEOUT_BARS"]:
+            stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
+            stats["Loss Category"] = "timeout"
+            stats["exit_idx"] = idx; stats["exit_price"] = float(row["Close"])
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
+            moved = max(0.0, float(row["Close"]) - entry)
+            if total_tp > 0:
+                stats["progress_ratio"] = round(moved / total_tp * 100, 2)
+            break
+    else:
+        stats["candles_to_exit"] = max(0, len(post) - 1)
+        stats["Exit Date"] = str(df.index[-1])
+        stats["Loss Category"] = "open"
+
+    stats["Max Reach %"] = round(max_fav, 1)
+    stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
+    stats["Final SL"] = sl
+
+    if stats["Result"] == "WIN":
+        stats["progress_ratio"] = 100.0
+    return stats
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 DETECT ALL — Istiraatijiyada cusub
+# ══════════════════════════════════════════════════════════════════════════════
+def detect_all_patterns(df, interval="1h", symbol=None):
+    """Soo hel dhammaan signals-ka istiraatijiyada cusub."""
     if df is None or df.empty or len(df) < 50:
         return []
 
     df = df.copy()
-    for col in ["Open", "High", "Low", "Close"]:
-        if col not in df.columns:
+    for c in ["Open", "High", "Low", "Close"]:
+        if c not in df.columns:
             return []
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
-
     if len(df) < 50:
         return []
 
-    # Soo qaado ZigZag
-    df_zz, pivots = get_zigzag_pivots(df)
+    df_zz = calculate_indicators(df.copy())
+    df_zz = calculate_zigzag(df_zz, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    pivots = get_chronological_pivots(df_zz)
+
     if not pivots:
         return []
 
-    signals = []
-    last_signal_idx = -999
+    patterns = []
+    last_idx = -999
 
-    # Baar bars kasta oo ka bilaabma 50
     for idx in range(50, len(df)):
-        # Hubi bars u dhexeeya signal-ka hore
-        if (idx - last_signal_idx) < CONFIG_RAC["MIN_BARS_BETWEEN"]:
+        if idx - last_idx < CONFIG["MIN_BARS_BETWEEN"]:
             continue
 
-        # 1. Downtrend check
-        is_downtrend, downtrend_info = detect_downtrend(pivots, idx)
-        if not is_downtrend:
+        # 1️⃣ Downtrend
+        is_down, dt = detect_downtrend(pivots, idx)
+        if not is_down:
             continue
 
-        # 2. Consolidation check (ka dib downtrend)
-        consol_info = find_consolidation_after_downtrend(df, pivots, downtrend_info)
-        if not consol_info:
+        # 2️⃣ Consolidation
+        consol = find_consolidation(df, dt)
+        if not consol:
             continue
 
-        # 3. Breakout check
-        is_breakout, breakout_info = detect_bullish_breakout(df, consol_info, idx)
-        if not is_breakout:
+        # 3️⃣+4️⃣ Breakout + Confirmed
+        ok, br = detect_breakout(df, consol, idx)
+        if not ok:
             continue
 
-        # 4. Xisaabi SL/TP
-        entry = breakout_info["breakout_price"]
-        sl_tp = calculate_sl_tp(entry, consol_info, downtrend_info)
-        if not sl_tp:
+        # 5️⃣+6️⃣ SL/TP
+        sltp = compute_sl_tp(br["entry"], consol)
+        if not sltp:
             continue
 
-        # 5. Diiwaangeli signal
-        signals.append({
-            "symbol": symbol or "N/A",
-            "strategy": "ReversalAfterConsol",
-            "pattern": f"Down→Consol→Breakout",
+        pattern = {
+            "name": "Reversal After Consolidation",
+            "pattern": "Down→Consol→Breakout",
             "bias": "Bullish",
-            "direction": "BUY",
-            "entry": round(entry, 5),
-            "sl": sl_tp["sl"],
-            "tp": sl_tp["tp"],
-            "rr": sl_tp["rr"],
-            "entry_idx": df.index[idx],
-            "entry_pos": idx,
-            "consol_high": round(consol_info["high"], 5),
-            "consol_low": round(consol_info["low"], 5),
-            "consol_bars": consol_info["bars"],
-            "consol_range_pct": consol_info["range_pct"],
-            "downtrend_lower_highs": downtrend_info["lower_highs"],
-            "downtrend_lower_lows": downtrend_info["lower_lows"],
-            "breakout_body_pct": breakout_info["body_pct"],
-            "breakout_range_pct": breakout_info["range_pct"],
-            "impulse_size": sl_tp["impulse_size"],
-            "risk": sl_tp["risk"],
-            "reward": sl_tp["reward"],
-        })
-
-        last_signal_idx = idx
-
-    return signals
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🧪 SIMULATE TRADE
-# ══════════════════════════════════════════════════════════════════════════════
-def simulate_trade(signal, df):
-    """Simulate trade — WIN/LOSS/TIMEOUT."""
-    entry_pos = signal["entry_pos"]
-    if entry_pos >= len(df) - 1:
-        return None
-
-    entry = signal["entry"]
-    sl = signal["sl"]
-    tp = signal["tp"]
-    direction = signal["direction"]
-
-    max_bars = CONFIG_RAC["MAX_TIMEOUT_BARS"]
-    end_pos = min(entry_pos + max_bars, len(df) - 1)
-
-    post_df = df.iloc[entry_pos + 1:end_pos + 1]
-
-    max_reach_pct = 0.0
-    max_adverse_pct = 0.0
-
-    total_tp = abs(tp - entry)
-    total_sl = abs(sl - entry)
-
-    for i, (idx, row) in enumerate(post_df.iterrows(), start=1):
-        high = float(row["High"])
-        low = float(row["Low"])
-
-        if direction == "BUY":
-            favorable = max(0.0, high - entry)
-            adverse = max(0.0, entry - low)
-        else:
-            favorable = max(0.0, entry - low)
-            adverse = max(0.0, high - entry)
-
-        if total_tp > 0:
-            max_reach_pct = max(max_reach_pct, favorable / total_tp * 100)
-        if total_sl > 0:
-            max_adverse_pct = max(max_adverse_pct, adverse / total_sl * 100)
-
-        # Hubi SL/TP
-        if direction == "BUY":
-            if low <= sl:
-                return {
-                    "Result": "LOSS",
-                    "exit_price": sl,
-                    "candles_to_exit": i,
-                    "Exit Date": str(idx),
-                    "Max Reach %": round(max_reach_pct, 1),
-                    "SL Safety %": round(100 - max_adverse_pct, 1),
-                }
-            if high >= tp:
-                return {
-                    "Result": "WIN",
-                    "exit_price": tp,
-                    "candles_to_exit": i,
-                    "Exit Date": str(idx),
-                    "Max Reach %": 100.0,
-                    "SL Safety %": round(100 - max_adverse_pct, 1),
-                }
-        else:  # SELL
-            if high >= sl:
-                return {
-                    "Result": "LOSS",
-                    "exit_price": sl,
-                    "candles_to_exit": i,
-                    "Exit Date": str(idx),
-                    "Max Reach %": round(max_reach_pct, 1),
-                    "SL Safety %": round(100 - max_adverse_pct, 1),
-                }
-            if low <= tp:
-                return {
-                    "Result": "WIN",
-                    "exit_price": tp,
-                    "candles_to_exit": i,
-                    "Exit Date": str(idx),
-                    "Max Reach %": 100.0,
-                    "SL Safety %": round(100 - max_adverse_pct, 1),
-                }
-
-    # Timeout
-    if len(post_df) > 0:
-        last = post_df.iloc[-1]
-        return {
-            "Result": "TIMEOUT",
-            "exit_price": float(last["Close"]),
-            "candles_to_exit": len(post_df),
-            "Exit Date": str(post_df.index[-1]),
-            "Max Reach %": round(max_reach_pct, 1),
-            "SL Safety %": round(100 - max_adverse_pct, 1),
+            "match": 100.0,
+            "entry": round(br["entry"], 5),
+            "entry_trigger": round(br["entry"], 5),
+            "sl": sltp["sl"],
+            "tp": sltp["tp"],
+            "SL": sltp["sl"],
+            "TP": sltp["tp"],
+            "Entry": round(br["entry"], 5),
+            "nodes": [
+                (df.index[consol["start_idx"]], consol["high"]),
+                (df.index[consol["start_idx"]], consol["low"]),
+                (df.index[consol["end_idx"]], consol["high"]),
+                (df.index[idx], br["entry"]),
+            ],
+            "neckline_start_idx": df.index[consol["start_idx"]],
+            "neckline_end_idx": df.index[idx],
+            "end_pos": idx,
+            "Entry Conditions": "Downtrend + Consolidation + Breakout",
+            "consol_high": consol["high"],
+            "consol_low": consol["low"],
+            "consol_bars": consol["bars"],
+            "consol_range_pct": consol["range_pct"],
+            "breakout_body_pct": br["body_pct"],
+            "lower_highs": dt["lower_highs"],
+            "lower_lows": dt["lower_lows"],
         }
+        pattern.update(simulate_trade_outcome(pattern, df))
+        patterns.append(pattern)
+        last_idx = idx
+
+    return patterns
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 run_full_analysis — loo baahan yahay backtest.py
+# ══════════════════════════════════════════════════════════════════════════════
+def run_full_analysis(df, interval="1h", symbol=None):
+    default_empty = {
+        "df": df, "symbol": symbol or "N/A",
+        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
+    }
+    if df is None or df.empty:
+        return default_empty
+
+    df = df.copy()
+    for c in ["Open", "High", "Low", "Close"]:
+        if c not in df.columns:
+            default_empty["error"] = f"Missing column: {c}"
+            return default_empty
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    if len(df) < 50:
+        default_empty["error"] = f"Insufficient data: {len(df)}"
+        return default_empty
+
+    df_active = df.tail(300).copy()
+    all_patterns = detect_all_patterns(df_active, interval=interval, symbol=symbol)
+
+    if not all_patterns:
+        default_empty["df"] = df_active
+        return default_empty
+
+    latest = all_patterns[-1]
+    signal = "STRONG BUY"
 
     return {
-        "Result": "OPEN",
-        "exit_price": entry,
-        "candles_to_exit": 0,
-        "Exit Date": None,
-        "Max Reach %": 0,
-        "SL Safety %": 100,
+        "df": df_active, "symbol": symbol or "N/A",
+        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
+        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
+        "sl": latest["sl"], "tp": latest["tp"],
+        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
+        "all_patterns": all_patterns, "match": 100.0,
+        "Result": latest.get("Result", "OPEN"),
+        "Entry Date": latest.get("Entry Date"),
+        "Exit Date": latest.get("Exit Date"),
+        "Max Reach %": latest.get("Max Reach %", 0),
+        "error": None,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 BACKTEST FUNCTION
+# 📤 backtest_strategy — loo baahan yahay backtest.py
 # ══════════════════════════════════════════════════════════════════════════════
-def backtest_reversal_strategy(df, symbol=None, interval="1h"):
-    """
-    Backtest istiraatijiyada oo dhan.
-    """
-    signals = detect_reversal_signals(df, symbol=symbol, interval=interval)
+def backtest_strategy(df, interval="1h", symbol=None):
+    if df is None or df.empty or len(df) < 50:
+        return []
+
+    df = df.copy()
+    for c in ["Open", "High", "Low", "Close"]:
+        if c not in df.columns:
+            return []
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    if len(df) < 50:
+        return []
+
+    patterns = detect_all_patterns(df, interval=interval, symbol=symbol)
 
     trades = []
-    for sig in signals:
-        sim = simulate_trade(sig, df)
-        if sim:
-            trade = {**sig, **sim}
-            trade["Entry Date"] = str(sig["entry_idx"])
-            trades.append(trade)
-
+    for p in patterns:
+        trades.append({
+            "Symbol": symbol or "N/A", "symbol": symbol or "N/A",
+            "Pattern": p["pattern"], "pattern": p["pattern"],
+            "Bias": p["bias"], "bias": p["bias"],
+            "Result": p.get("Result", "OPEN"),
+            "Head Result": p.get("Head Result", "OPEN"),
+            "Entry": p["entry"], "Entry Price": p["entry"],
+            "SL": p["sl"], "Stop Loss": p["sl"],
+            "TP": p["tp"], "Take Profit": p["tp"],
+            "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
+            "Exit Price": p.get("exit_price"),
+            "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
+            "Max Reach %": p.get("Max Reach %", 0.0),
+            "SL Safety %": p.get("SL Safety %", 0.0),
+            "Entry Conditions": p.get("Entry Conditions", ""),
+            "nodes": p["nodes"],
+            "candles_to_exit": p.get("candles_to_exit", 0),
+            "progress_ratio": p.get("progress_ratio", 0.0),
+            "neckline_end_idx": p["neckline_end_idx"],
+            "Pattern Duration": p.get("Pattern Duration", 0),
+            "Timeout Used": p.get("Timeout Used", 0),
+            "Breakeven Activated": p.get("Breakeven Activated", False),
+            "Breakeven Exit": p.get("Breakeven Exit", False),
+            "Loss Category": p.get("Loss Category"),
+            "Trailing Stage": p.get("Trailing Stage", 0),
+            "Initial SL": p.get("Initial SL"),
+            "Final SL": p.get("Final SL"),
+            "consol_high": p.get("consol_high"),
+            "consol_low": p.get("consol_low"),
+            "consol_bars": p.get("consol_bars"),
+            "consol_range_pct": p.get("consol_range_pct"),
+            "breakout_body_pct": p.get("breakout_body_pct"),
+            "lower_highs": p.get("lower_highs"),
+            "lower_lows": p.get("lower_lows"),
+        })
     return trades
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📊 BATCH SCAN — 48 symbols
+# 🧪 diagnose_filters — loo baahan yahay backtest.py
 # ══════════════════════════════════════════════════════════════════════════════
-def scan_multiple_symbols(symbols, interval="1h", period="3mo",
-                          start_date=None, end_date=None,
-                          fetch_func=None):
-    """
-    Baar dhammaan symbols-ka.
+def diagnose_filters(df, interval="1h", symbol=None):
+    result = {
+        "error": None, "total_raw_candidates": 0, "final_count": 0,
+        "stages": {}, "smart_diagnosis": {}, "recommendations": [],
+        "trade_analysis": [], "rejection_samples": {},
+    }
+    if df is None or df.empty or len(df) < 50:
+        result["error"] = "بيانات غير كافية"
+        return result
 
-    Args:
-        symbols: List of symbols
-        fetch_func: Function soo qaadaya xogta (fetch_data)
-    """
-    all_trades = []
+    df = df.copy()
+    for c in ["Open", "High", "Low", "Close"]:
+        if c not in df.columns:
+            result["error"] = f"مفقود: {c}"
+            return result
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
 
-    if fetch_func is None:
-        return all_trades
+    trades = backtest_strategy(df, interval=interval, symbol=symbol)
+    result["final_count"] = len(trades)
+    result["total_raw_candidates"] = len(trades)
 
-    for sym in symbols:
-        try:
-            if start_date and end_date:
-                df = fetch_func(sym, interval=interval,
-                                start_date=start_date, end_date=end_date,
-                                cache_hours=1)
-            else:
-                df = fetch_func(sym, interval=interval, period=period,
-                                cache_hours=1)
+    wins = [t for t in trades if "WIN" in str(t.get("Result", "")).upper()]
+    losses = [t for t in trades if "LOSS" in str(t.get("Result", "")).upper()]
+    timeouts = [t for t in trades if "TIMEOUT" in str(t.get("Result", "")).upper()]
+    skipped = [t for t in trades if "SKIPPED" in str(t.get("Result", "")).upper()]
 
-            if df is None or df.empty or len(df) < 50:
-                continue
+    total_closed = len(wins) + len(losses)
+    win_rate = round(len(wins) / total_closed * 100, 1) if total_closed else 0
 
-            trades = backtest_reversal_strategy(df, symbol=sym, interval=interval)
-            all_trades.extend(trades)
+    if total_closed == 0:
+        verdict = "لا توجد صفقات كافية"
+    elif win_rate >= 70:
+        verdict = f"ممتاز — {win_rate}%"
+    elif win_rate >= 50:
+        verdict = f"جيد — {win_rate}%"
+    elif win_rate >= 35:
+        verdict = f"متوسط — {win_rate}%"
+    else:
+        verdict = f"ضعيف — {win_rate}%"
 
-        except Exception as e:
-            continue
+    avg_reach = 0.0
+    if wins:
+        avg_reach = round(sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1)
 
-    return all_trades
+    result["smart_diagnosis"] = {
+        "verdict": verdict,
+        "win_breakdown": {"total_wins": len(wins), "avg_max_reach": avg_reach},
+        "loss_breakdown": {
+            "immediate_rejection": 0, "early_reversal": len(losses),
+            "mid_reversal": 0, "late_reversal": 0,
+            "unavoidable": 0, "avoidable": len(losses),
+        },
+        "action_plan": [
+            f"🟢 WIN: {len(wins)} | ❌ LOSS: {len(losses)} | ⏰ TIMEOUT: {len(timeouts)} | ⏭️ SKIPPED: {len(skipped)}"
+        ],
+    }
+
+    result["stages"] = {
+        "1. Downtrend": {"before": 0, "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Consolidation": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "3. Breakout": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+    }
+
+    trade_analysis = []
+    for i, t in enumerate(trades):
+        cat = t.get("Loss Category") or "open"
+        info = REASON_MAP.get(cat, REASON_MAP.get("open"))
+        entry = t.get("Entry", 0) or 0
+        sl = t.get("SL", 0) or 0
+        tp = t.get("TP", 0) or 0
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+        rr = round(reward / risk, 2) if risk > 0 else "—"
+        trade_analysis.append({
+            "trade_num": i + 1,
+            "bias": t.get("Bias", "—"),
+            "result": t.get("Result", "—"),
+            "category": cat,
+            "max_reach_%": t.get("Max Reach %", 0),
+            "rr_ratio": rr,
+            "is_unavoidable": t.get("Max Reach %", 0) >= 60 and "LOSS" in str(t.get("Result", "")).upper(),
+            "reason": info.get("reason", "—"),
+            "action": info.get("action", "—"),
+            "prevention": info.get("prevention", "—"),
+        })
+    result["trade_analysis"] = trade_analysis
+
+    recommendations = []
+    if len(timeouts) > len(wins):
+        recommendations.append({"severity": "حرج", "message": "الصفقات المنتهية بالوقت كثيرة."})
+    result["recommendations"] = recommendations
+    return result
+
+
+if __name__ == "__main__":
+    print("ENGINE.PY — Reversal After Consolidation")
+    print("1. Downtrend  2. Consolidation  3. Breakout")
+    print("4. Confirmed Close  5. SL inside  6. TP = 3× SL")
