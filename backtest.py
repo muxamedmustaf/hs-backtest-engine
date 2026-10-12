@@ -1814,9 +1814,14 @@ else:
 # 💰 XISAABIYAHA KHATARTA
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
-with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
-    render_advanced_risk_calculator(unique_id="end")
-
+with st.expander("ℹ️ كيف تستخدم الحاسبة؟"):
+    st.markdown("""
+    **1. أدخل رأس المال** + **2. اختر نسبة المخاطرة**  
+    **3. اختر مصدر القائمة** (Active / Near / All)  
+    **4. ابحث بالاسم** — ku qor "EUR" ama "BTC"  
+    **5. Riix "⚡ TP (R:R = 1:2)"**  
+    **6. Eeg natiijada:** ✅ مقبولة / ❌ مرفوضة
+    """)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ⏳ LIISKA WAARITAANKA
@@ -1923,5 +1928,4 @@ with st.expander("📖 Sida loo isticmaalo App-ka", expanded=False):
     - ✅ **Multiselect** oo leh raadin
     - ✅ **أزرار سريعة** (Major / Cross / Clear)
     """)
-        """)
     
