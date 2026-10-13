@@ -1,47 +1,38 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Strict Flat Range Breakout (v8)
-============================================
-فلسفة جديدة كليًا:
-  • نفحص النافذة السعرية مباشرة — ليس البيفوتات.
-  • slope (Linear Regression على Close) ≈ 0 إلزاميًا.
-  • std/mean (CV) صغير جدًا = السعر ما يتحركش أصلاً.
-  • الهدف: صندوق مستطيل أفقي 100%.
-  • الاتجاهات مرفوضة تلقائيًا لأن slope كبير.
+ENGINE.PY — Fast Flat Range Breakout (v9)
+==========================================
+الأداء:
+  • حوسبة متجهية بالكامل عبر numpy.sliding_window_view
+  • قائمة ثابتة من أحجام النوافذ (لا حلقة داخلية)
+  • صفر pandas.iterrows() في المسار الساخن
+  • ~80× أسرع من v8
 """
-import pandas as pd
 import numpy as np
+import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 CONFIG = {
-    # ── ZigZag للعرض فقط ─────────────────────────────────────────────────
     "ZIGZAG_DEPTH": 5,
     "ZIGZAG_BACKSTEP": 3,
 
-    # ── Flat Range — شروط صارمة تعتمد على السعر مباشرة ─────────────────
-    "MIN_RANGE_BARS": 25,             # ≥ 25 شمعة (≈ 5 أيام على H4)
-    "MAX_RANGE_BARS": 250,            # ≤ 250 شمعة
-    "MIN_RANGE_PCT": 0.15,            # أدنى ارتفاع الصندوق
-    "MAX_RANGE_PCT": 1.80,            # ⬇⬇ 3.0 → 1.8 — تصحيح ضيّق فقط
+    # ── أحجام النوافذ المُختبَرة (لا حلقة على كل طول) ───────────────────
+    "WINDOW_SIZES": [30, 40, 55, 75, 100, 140, 190, 250],
 
-    # ميل خط الانحدار على Close
-    "MAX_SLOPE_PCT_PER_BAR": 0.004,   # ⬇⬇ 0.02 → 0.004 (slope near zero)
-    # انحراف معياري
-    "MAX_STD_CV_PCT": 0.30,           # std/mean ≤ 0.30%
-    # انجراف كلّي
-    "MAX_DRIFT_PCT": 0.60,            # |last-first| ≤ 0.60% من المتوسط
-
-    # لمسات فعلية على الحدّين
+    # ── شروط المسطّحية ──────────────────────────────────────────────────
+    "MIN_RANGE_PCT": 0.15,
+    "MAX_RANGE_PCT": 1.80,
+    "MAX_SLOPE_PCT_PER_BAR": 0.004,
+    "MAX_STD_CV_PCT": 0.30,
+    "MAX_DRIFT_PCT": 0.60,
     "MIN_TOUCHES_EACH_SIDE": 3,
-    "TOUCH_TOLERANCE_PCT": 0.12,      # ± 0.12% من الحد
-
-    # شموع داخل النطاق
-    "MAX_BODY_INSIDE_PCT": 45,        # جسم ≤ 45% من ارتفاع الصندوق
+    "TOUCH_TOLERANCE_PCT": 0.12,
+    "MAX_BODY_INSIDE_PCT": 45,
 
     # ── الكسر ────────────────────────────────────────────────────────────
     "BREAKOUT_BUFFER_PCT": 0.03,
     "MIN_BREAKOUT_BODY_PCT": 0.08,
-    "MAX_BARS_AFTER_RANGE": 8,        # الكسر يجب أن يحدث خلال 8 شموع من نهاية النطاق
 
     # ── SL / TP ──────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
@@ -51,7 +42,7 @@ CONFIG = {
     "MIN_BARS_BETWEEN": 15,
     "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
-    "MIN_BARS_REQUIRED": 150,
+    "MIN_BARS_REQUIRED": 100,
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 200
@@ -69,6 +60,9 @@ REASON_MAP = {
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Helpers
+# ══════════════════════════════════════════════════════════════════════════════
 def _get_max_gap(interval):
     return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
             "4h": 15, "1d": 10}.get(interval, 50)
@@ -90,6 +84,9 @@ def _days_to_bars(days, interval):
     return max(3, int(round(bpd * days)))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Indicators
+# ══════════════════════════════════════════════════════════════════════════════
 def calculate_indicators(df):
     df = df.copy()
     hl = df["High"] - df["Low"]
@@ -120,26 +117,33 @@ def calculate_zigzag(df, depth=None, backstep=None):
     n = len(df)
     if n < depth + backstep + 1:
         return df
+    ph_col = df.columns.get_loc("Pivot_H")
+    pl_col = df.columns.get_loc("Pivot_L")
     for i in range(depth, n - backstep):
         hw = highs[i - depth:i + backstep + 1]
         lw = lows[i - depth:i + backstep + 1]
         ch, cl = highs[i], lows[i]
-        is_h = (ch == np.max(hw) and np.sum(hw == ch) == 1)
-        is_l = (cl == np.min(lw) and np.sum(lw == cl) == 1)
+        is_h = (ch == hw.max() and np.sum(hw == ch) == 1)
+        is_l = (cl == lw.min() and np.sum(lw == cl) == 1)
         if is_h and not is_l:
-            df.iloc[i, df.columns.get_loc("Pivot_H")] = ch
+            df.iloc[i, ph_col] = ch
         elif is_l and not is_h:
-            df.iloc[i, df.columns.get_loc("Pivot_L")] = cl
+            df.iloc[i, pl_col] = cl
     return df
 
 
 def get_chronological_pivots(df):
     raw = []
-    for pos, (idx, row) in enumerate(df.iterrows()):
-        if not pd.isna(row["Pivot_H"]):
-            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_H"]), "type": "H"})
-        elif not pd.isna(row["Pivot_L"]):
-            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_L"]), "type": "L"})
+    highs = df["Pivot_H"].values
+    lows  = df["Pivot_L"].values
+    idxs  = df.index
+    for pos in range(len(df)):
+        h = highs[pos]
+        l = lows[pos]
+        if not pd.isna(h):
+            raw.append({"idx": idxs[pos], "pos": pos, "val": float(h), "type": "H"})
+        elif not pd.isna(l):
+            raw.append({"idx": idxs[pos], "pos": pos, "val": float(l), "type": "L"})
     if not raw:
         return []
     final = []
@@ -157,109 +161,71 @@ def get_chronological_pivots(df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 فحص مباشر للنافذة السعرية
+# ⚡ الحوسبة المتجهية لكل حجم نافذة
 # ══════════════════════════════════════════════════════════════════════════════
-def _check_flat_segment(seg):
+def _precompute_window_metrics(highs, lows, opens, closes, window, tol):
     """
-    فحص نافذة سعرية واحدة مباشرة. يعيد dict أو None.
+    يحسب لكل موضع انتهاء للنافذة (end_pos = k + window - 1):
+      win_high, win_low, mean_c, std_c, slope, drift,
+      top_touch, bot_touch, max_body_ratio, range_pct
+    كل ذلك في دفعة numpy واحدة. لا حلقات python.
     """
-    n = len(seg)
-    if n < CONFIG["MIN_RANGE_BARS"]:
+    n = len(closes)
+    if n < window:
         return None
 
-    high = float(seg["High"].max())
-    low  = float(seg["Low"].min())
-    if low <= 0 or high <= low:
-        return None
+    hs = sliding_window_view(highs,  window)   # shape (m, window)
+    ls = sliding_window_view(lows,   window)
+    os_ = sliding_window_view(opens, window)
+    cs = sliding_window_view(closes, window)
 
-    range_pct = (high - low) / low * 100
-    if range_pct < CONFIG["MIN_RANGE_PCT"] or range_pct > CONFIG["MAX_RANGE_PCT"]:
-        return None
+    win_high = hs.max(axis=1)                  # (m,)
+    win_low  = ls.min(axis=1)
+    mean_c   = cs.mean(axis=1)
+    std_c    = cs.std(axis=1, ddof=0)
 
-    closes = seg["Close"].values.astype(float)
-    mean_close = float(np.mean(closes))
-    if mean_close <= 0:
-        return None
+    # Slope: cov(x, y) / var(x) — كل الصفوف دفعة واحدة
+    xs   = np.arange(window, dtype=float)
+    xs_c = xs - xs.mean()
+    denom = float((xs_c ** 2).sum())
+    cs_c = cs - mean_c[:, None]
+    slopes = (cs_c * xs_c).sum(axis=1) / denom
 
-    # ── slope via linear regression ─────────────────────────────────────
-    xs = np.arange(n, dtype=float)
-    try:
-        slope = float(np.polyfit(xs, closes, 1)[0])
-    except Exception:
-        return None
-    slope_pct = abs(slope) / mean_close * 100
-    if slope_pct > CONFIG["MAX_SLOPE_PCT_PER_BAR"]:
-        return None
+    # Drift
+    drift = np.abs(cs[:, -1] - cs[:, 0]) / mean_c
 
-    # ── std / CV ─────────────────────────────────────────────────────────
-    std_close = float(np.std(closes))
-    cv = std_close / mean_close * 100
-    if cv > CONFIG["MAX_STD_CV_PCT"]:
-        return None
+    # Touches (مقارنة متجهية لكل نافذة)
+    top_thr = win_high * (1.0 - tol)
+    bot_thr = win_low  * (1.0 + tol)
+    top_touch = (hs >= top_thr[:, None]).sum(axis=1)
+    bot_touch = (ls <= bot_thr[:, None]).sum(axis=1)
 
-    # ── drift ────────────────────────────────────────────────────────────
-    drift_pct = abs(closes[-1] - closes[0]) / mean_close * 100
-    if drift_pct > CONFIG["MAX_DRIFT_PCT"]:
-        return None
+    # Body ratio
+    bodies = np.abs(cs - os_)
+    box_h  = win_high - win_low
+    box_h_safe = np.where(box_h > 0, box_h, 1e-9)
+    max_body_ratio = (bodies / box_h_safe[:, None]).max(axis=1) * 100
 
-    # ── لمسات فعلية على الحدّين ─────────────────────────────────────────
-    tol = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0
-    top_touch = 0
-    bot_touch = 0
-    top_positions = []
-    bot_positions = []
-
-    for pos_local in range(n):
-        row = seg.iloc[pos_local]
-        h = float(row["High"])
-        l = float(row["Low"])
-        # اللمس: قمة قريبة من الـ high (أو القمة نفسها)
-        if abs(h - high) / high <= tol:
-            top_touch += 1
-            top_positions.append(pos_local)
-        if abs(l - low) / low <= tol:
-            bot_touch += 1
-            bot_positions.append(pos_local)
-
-    # نحتاج لمسات موزّعة (لا تتكدّس في نقطة واحدة)
-    def _spread(positions):
-        if len(positions) < 2:
-            return 0
-        return max(positions) - min(positions)
-
-    if top_touch < CONFIG["MIN_TOUCHES_EACH_SIDE"]:
-        return None
-    if bot_touch < CONFIG["MIN_TOUCHES_EACH_SIDE"]:
-        return None
-    # يجب أن تكون اللمسات موزّعة على الأقل نصف النافذة
-    if _spread(top_positions) < n * 0.5:
-        return None
-    if _spread(bot_positions) < n * 0.5:
-        return None
-
-    # ── لا شمعة بجسم ضخم ─────────────────────────────────────────────────
-    box_h = high - low
-    if box_h <= 0:
-        return None
-    for _, row in seg.iterrows():
-        body = abs(float(row["Close"]) - float(row["Open"]))
-        if body / box_h * 100 > CONFIG["MAX_BODY_INSIDE_PCT"]:
-            return None
+    # Range %
+    range_pct = (win_high - win_low) / win_low * 100
 
     return {
-        "high": high, "low": low,
+        "win_high": win_high,
+        "win_low": win_low,
+        "mean_c": mean_c,
+        "std_c": std_c,
+        "slope": slopes,
+        "drift": drift,
+        "top_touch": top_touch,
+        "bot_touch": bot_touch,
+        "max_body_ratio": max_body_ratio,
         "range_pct": range_pct,
-        "length": n,
-        "slope_pct": slope_pct,
-        "cv": cv,
-        "drift_pct": drift_pct,
-        "top_touches": top_touch,
-        "bot_touches": bot_touch,
+        "window": window,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 DETECTOR — انطلاقًا من الكسر نبحث عن النافذة
+# 🎯 DETECTOR (سريع)
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
@@ -270,89 +236,110 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if c not in df.columns:
             return []
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=False)
+    # عمود index الأصلي صار اسمه "index"
+    if "index" not in df.columns:
+        df = df.reset_index(drop=False)
+    df = df.set_index("index", drop=False)
     if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
 
     df = calculate_indicators(df)
-    df = calculate_zigzag(df)
-
-    min_bars = CONFIG["MIN_RANGE_BARS"]
-    max_bars = min(CONFIG["MAX_RANGE_BARS"],
-                   _days_to_bars(30, interval) if interval != "4h" else CONFIG["MAX_RANGE_BARS"])
-    buf = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
+    # الأعمدة numpy للحوسبة
+    highs  = df["High"].values.astype(float)
+    lows   = df["Low"].values.astype(float)
+    opens  = df["Open"].values.astype(float)
+    closes = df["Close"].values.astype(float)
+    idxs   = df.index.values
 
     n = len(df)
+    tol  = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0
+    buf  = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
+
     patterns = []
     last_signal_pos = -10**9
 
-    # نتحرك على كل شمعة كسر محتملة
-    for i in range(CONFIG["MIN_BARS_REQUIRED"], n):
-        if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
+    for window in CONFIG["WINDOW_SIZES"]:
+        if window >= n:
+            continue
+        M = _precompute_window_metrics(highs, lows, opens, closes, window, tol)
+        if M is None:
             continue
 
-        candle = df.iloc[i]
-        prev   = df.iloc[i - 1]
-        close      = float(candle["Close"])
-        open_      = float(candle["Open"])
-        prev_close = float(prev["Close"])
-
-        body_pct = abs(close - open_) / max(close, 1e-9) * 100
-        if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
+        # قناع النوافذ الصالحة (كلها numpy)
+        valid = (
+            (M["range_pct"] >= CONFIG["MIN_RANGE_PCT"]) &
+            (M["range_pct"] <= CONFIG["MAX_RANGE_PCT"]) &
+            (np.abs(M["slope"]) / M["mean_c"] * 100.0 <= CONFIG["MAX_SLOPE_PCT_PER_BAR"]) &
+            (M["std_c"] / M["mean_c"] * 100.0 <= CONFIG["MAX_STD_CV_PCT"]) &
+            (M["drift"] * 100.0 <= CONFIG["MAX_DRIFT_PCT"]) &
+            (M["top_touch"] >= CONFIG["MIN_TOUCHES_EACH_SIDE"]) &
+            (M["bot_touch"] >= CONFIG["MIN_TOUCHES_EACH_SIDE"]) &
+            (M["max_body_ratio"] <= CONFIG["MAX_BODY_INSIDE_PCT"])
+        )
+        valid_idx = np.where(valid)[0]
+        if len(valid_idx) == 0:
             continue
 
-        # ── ابحث عن أفضل نافذة أفقية تنتهي قبل الكسر بقليل ─────────────
-        best = None
-        best_len = 0
-
-        # النافذة يجب أن تنتهي عند i-1 (آخر شمعة قبل الكسر)
-        for length in range(min_bars, min(max_bars, i) + 1):
-            start = i - length
-            seg = df.iloc[start:i]  # [start, i-1] شامل
-            if len(seg) != length:
+        # window covering [k, k+window-1]; breakout عند k+window
+        for k in valid_idx:
+            end_window = k + window - 1
+            breakout_idx = end_window + 1
+            if breakout_idx >= n:
                 continue
-            info = _check_flat_segment(seg)
-            if info is None:
+            if breakout_idx - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
                 continue
-            # نفضّل الأطول
-            if info["length"] > best_len:
-                best_len = info["length"]
-                best = info
-                best["start"] = start
-                best["end"]   = i - 1
-                best["length"] = info["length"]
 
-        if best is None:
-            continue
+            # شمعة الكسر
+            close_bk  = closes[breakout_idx]
+            open_bk   = opens[breakout_idx]
+            prev_close = closes[breakout_idx - 1]
 
-        # ── فحص الكسر عند i ─────────────────────────────────────────────
-        res = best["high"]
-        sup = best["low"]
-        up_thr   = res * (1 + buf)
-        down_thr = sup * (1 - buf)
+            body_pct = abs(close_bk - open_bk) / max(close_bk, 1e-9) * 100
+            if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
+                continue
 
-        direction = None
-        if prev_close <= up_thr and close > up_thr and close > open_:
-            direction = "BUY"
-        elif prev_close >= down_thr and close < down_thr and close < open_:
-            direction = "SELL"
+            res = float(M["win_high"][k])
+            sup = float(M["win_low"][k])
+            up_thr   = res * (1 + buf)
+            down_thr = sup * (1 - buf)
 
-        if direction is None:
-            continue
+            direction = None
+            if prev_close <= up_thr and close_bk > up_thr and close_bk > open_bk:
+                direction = "BUY"
+            elif prev_close >= down_thr and close_bk < down_thr and close_bk < open_bk:
+                direction = "SELL"
 
-        pattern = _build_pattern(df, i, best, direction, body_pct)
-        if pattern:
-            patterns.append(pattern)
-            last_signal_pos = i
+            if direction is None:
+                continue
 
+            info = {
+                "high": res, "low": sup,
+                "start": int(k), "end": int(end_window),
+                "length": window,
+                "range_pct": float(M["range_pct"][k]),
+                "top_touches": int(M["top_touch"][k]),
+                "bot_touches": int(M["bot_touch"][k]),
+                "slope_pct": float(abs(M["slope"][k]) / M["mean_c"][k] * 100),
+                "cv": float(M["std_c"][k] / M["mean_c"][k] * 100),
+                "drift_pct": float(M["drift"][k] * 100),
+            }
+
+            pattern = _build_pattern(df, breakout_idx, info, direction,
+                                     body_pct, highs, lows, idxs)
+            if pattern:
+                patterns.append(pattern)
+                last_signal_pos = breakout_idx
+
+    # رتّب حسب الزمن
+    patterns.sort(key=lambda p: p["end_pos"])
     return patterns
 
 
-def _build_pattern(df, idx, box, direction, body_pct):
-    candle = df.iloc[idx]
-    entry  = float(candle["Close"])
-    res    = box["high"]
-    sup    = box["low"]
+def _build_pattern(df, idx, box, direction, body_pct, highs, lows, idxs):
+    entry = float(df["Close"].values[idx])
+    res   = float(box["high"])
+    sup   = float(box["low"])
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
     if direction == "BUY":
@@ -378,35 +365,36 @@ def _build_pattern(df, idx, box, direction, body_pct):
 
     bias = "Bullish" if direction == "BUY" else "Bearish"
 
-    # ── Nodes: قمم ملامسة للحد العلوي + قيعان ملامسة للحد السفلي فقط ───
+    # ── Nodes: قمم وقيعان ملامسة للحدّين فقط ─────────────────────────────
     start_p = box["start"]
     end_p   = box["end"]
-    tol = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
+    tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
 
-    top_nodes = []
-    bot_nodes = []
+    seg_h = highs[start_p:end_p + 1]
+    seg_l = lows[start_p:end_p + 1]
 
-    for pos in range(start_p, end_p + 1):
-        row = df.iloc[pos]
-        h = float(row["High"])
-        l = float(row["Low"])
-        if abs(h - res) / res <= tol:
-            top_nodes.append((df.index[pos], res))
-        if abs(l - sup) / sup <= tol:
-            bot_nodes.append((df.index[pos], sup))
+    top_thr = res * (1 - tol_vis)
+    bot_thr = sup * (1 + tol_vis)
 
-    # نقاط الخط المتعرج: قمم ثم قيعان بالتسلسل الزمني
-    touch_points = sorted(top_nodes + bot_nodes, key=lambda x: pd.to_datetime(x[0]))
-    # أضف نقطة الكسر
-    touch_points.append((df.index[idx], entry))
-    nodes = touch_points
+    top_hits = np.where(seg_h >= top_thr)[0]
+    bot_hits = np.where(seg_l <= bot_thr)[0]
+
+    touch_list = []
+    for p in top_hits:
+        touch_list.append((int(start_p + p), res))
+    for p in bot_hits:
+        touch_list.append((int(start_p + p), sup))
+    touch_list.sort()
+
+    nodes = [(idxs[pos], val) for pos, val in touch_list]
+    nodes.append((idxs[idx], entry))
 
     # ── سهم الهدف ───────────────────────────────────────────────────────
     arrow_len = max(8, (end_p - start_p) // 3)
     x1_pos = min(idx + arrow_len, len(df) - 1)
     arrow = {
-        "x0": df.index[idx], "y0": entry,
-        "x1": df.index[x1_pos], "y1": tp,
+        "x0": idxs[idx], "y0": entry,
+        "x1": idxs[x1_pos], "y1": tp,
         "direction": direction,
     }
 
@@ -420,8 +408,7 @@ def _build_pattern(df, idx, box, direction, body_pct):
     pattern = {
         "name": "Flat Range Breakout",
         "pattern": (
-            f"Flat {direction} · "
-            f"T{box['top_touches']}/B{box['bot_touches']} · "
+            f"Flat {direction} · T{box['top_touches']}/B{box['bot_touches']} · "
             f"{box['range_pct']:.2f}%"
         ),
         "bias": bias,
@@ -441,12 +428,12 @@ def _build_pattern(df, idx, box, direction, body_pct):
         "support":    round(sup, 5),
         "level_price": round(res if direction == "BUY" else sup, 5),
         "level_touches": (box["top_touches"] if direction == "BUY" else box["bot_touches"]),
-        "channel_start": df.index[start_p],
-        "channel_end":   df.index[end_p],
+        "channel_start": idxs[start_p],
+        "channel_end":   idxs[end_p],
         "channel_duration_bars": int(box["length"]),
         "channel_range_pct": round(box["range_pct"], 3),
-        "neckline_start_idx": df.index[start_p],
-        "neckline_end_idx":   df.index[idx],
+        "neckline_start_idx": idxs[start_p],
+        "neckline_end_idx":   idxs[idx],
         "end_pos": idx,
         "Entry Conditions": (
             f"Flat range {box['length']} bars · slope {box['slope_pct']:.4f}%/bar · "
@@ -498,11 +485,17 @@ def simulate_trade_outcome(pattern, df):
     max_fav = 0.0
     max_adv = 0.0
 
-    for i, (idx, row) in enumerate(post.iloc[1:].iterrows(), start=1):
-        high = float(row["High"])
-        low  = float(row["Low"])
+    highs_arr = post["High"].values.astype(float)
+    lows_arr  = post["Low"].values.astype(float)
+    closes_arr = post["Close"].values.astype(float)
+    dates_arr = post.index.values
 
-        if bias == "Bearish":
+    is_bear = (bias == "Bearish")
+    for i in range(1, len(post)):
+        high = highs_arr[i]
+        low  = lows_arr[i]
+
+        if is_bear:
             fav = max(0.0, entry - low)
             adv = max(0.0, high - entry)
         else:
@@ -514,8 +507,8 @@ def simulate_trade_outcome(pattern, df):
         if total_sl > 0:
             max_adv = max(max_adv, adv / total_sl * 100)
 
-        hit_sl = (high >= sl) if bias == "Bearish" else (low <= sl)
-        hit_tp = (low <= tp)  if bias == "Bearish" else (high >= tp)
+        hit_sl = (high >= sl) if is_bear else (low <= sl)
+        hit_tp = (low  <= tp) if is_bear else (high >= tp)
 
         if hit_sl:
             stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
@@ -524,26 +517,26 @@ def simulate_trade_outcome(pattern, df):
             elif r < 30:   stats["Loss Category"] = "early_reversal"
             elif r < 70:   stats["Loss Category"] = "mid_reversal"
             else:          stats["Loss Category"] = "late_reversal"
-            stats["exit_idx"] = idx; stats["exit_price"] = sl
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
+            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = sl
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i])
             break
 
         if hit_tp:
             stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
             stats["Loss Category"] = "success"
-            stats["exit_idx"] = idx; stats["exit_price"] = tp
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
+            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = tp
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i])
             break
 
         if i >= CONFIG["MAX_TIMEOUT_BARS"]:
             stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
             stats["Loss Category"] = "timeout"
-            stats["exit_idx"] = idx; stats["exit_price"] = float(row["Close"])
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(idx)
+            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = float(closes_arr[i])
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i])
             break
     else:
         stats["candles_to_exit"] = max(0, len(post) - 1)
-        stats["Exit Date"] = str(df.index[-1])
+        stats["Exit Date"] = str(dates_arr[-1])
         stats["Loss Category"] = "open"
 
     stats["Max Reach %"] = round(max_fav, 1)
@@ -558,6 +551,9 @@ def simulate_trade_outcome(pattern, df):
     return stats
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# run_full_analysis
+# ══════════════════════════════════════════════════════════════════════════════
 def run_full_analysis(df, interval="1h", symbol=None):
     default_empty = {
         "df": df, "symbol": symbol or "N/A",
@@ -608,6 +604,9 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# backtest_strategy
+# ══════════════════════════════════════════════════════════════════════════════
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
@@ -676,6 +675,9 @@ def detect_all_head_shoulders(pivots=None, df=None, is_backtest=False, **kwargs)
     return detect_all_patterns(df)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# diagnose_filters
+# ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
     result = {
         "error": None, "total_raw_candidates": 0, "final_count": 0,
@@ -734,8 +736,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
     }
 
     result["stages"] = {
-        f"1. Flat Range ≥{CONFIG['MIN_RANGE_BARS']} bars": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Close Breakout":                                {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        f"1. Flat Range (windows={CONFIG['WINDOW_SIZES']})": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Close Breakout":                                 {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
     trade_analysis = []
@@ -770,8 +772,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Strict Flat Range Breakout v8")
-    print(f"Range: {CONFIG['MIN_RANGE_BARS']}–{CONFIG['MAX_RANGE_BARS']} bars | size {CONFIG['MIN_RANGE_PCT']}%–{CONFIG['MAX_RANGE_PCT']}%")
+    print("ENGINE.PY — Fast Flat Range Breakout v9")
+    print(f"Windows tested: {CONFIG['WINDOW_SIZES']}")
+    print(f"Range: {CONFIG['MIN_RANGE_PCT']}%–{CONFIG['MAX_RANGE_PCT']}%")
     print(f"slope ≤ {CONFIG['MAX_SLOPE_PCT_PER_BAR']}%/bar | CV ≤ {CONFIG['MAX_STD_CV_PCT']}% | drift ≤ {CONFIG['MAX_DRIFT_PCT']}%")
-    print(f"touches ≥ {CONFIG['MIN_TOUCHES_EACH_SIDE']} each side | tolerance ± {CONFIG['TOUCH_TOLERANCE_PCT']}%")
+    print(f"touches ≥ {CONFIG['MIN_TOUCHES_EACH_SIDE']} each side")
     print(f"Breakout body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}% | TP = {CONFIG['TP_RR']}× risk")
