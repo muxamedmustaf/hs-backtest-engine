@@ -1,57 +1,53 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Triangle / Wedge Breakout (v10)
-============================================
-يدعم:
-  • Symmetrical Triangle   — قمة هابطة + قاع صاعد
-  • Descending Triangle    — قمة هابطة + قاع أفقي
-  • Ascending Triangle     — قمة أفقية + قاع صاعد
-  • Rising Wedge           — القمة والقاع يصعدان مع تقارب
-  • Falling Wedge          — القمة والقاع يهبطان مع تقارب
-
-الأداء:
-  • fit خطين عبر Linear Regression على البيفوتات
-  • R² عالٍ إلزامي (الخطان نظيفان)
-  • Apex مستقبلي + مسافة معقولة
-  • ~50ms لزوج واحد H4 (500 شمعة)
+ENGINE.PY — Trend → Consolidation → Continuation (v11)
+=======================================================
+الشروط:
+  1) اتجاه قوي وواضح قبل المستطيل (≥ 1.2% حركة، ≥ 55% شموع بنفس الاتجاه)
+  2) مستطيل أفقي ضيّق بعده (سعر يتحرك داخله بلا اتجاه)
+  3) اختراق في نفس اتجاه الاتجاه السابق (استمرار)
+  4) الإشارة بعد إغلاق شمعة الكسر خارج المستطيل
+  5) SL على الجهة المقابلة من المستطيل، TP = 3× المخاطرة
 """
 import numpy as np
 import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 CONFIG = {
-    # ── ZigZag ───────────────────────────────────────────────────────────
-    "ZIGZAG_DEPTH": 12,
+    "ZIGZAG_DEPTH": 5,
     "ZIGZAG_BACKSTEP": 3,
-    "MIN_SWING_PCT": 0.15,
 
-    # ── Triangle windows ─────────────────────────────────────────────────
-    "WINDOW_SIZES": [35, 50, 70, 95, 130, 175, 230],
+    # ── أحجام نوافذ التجميع ──────────────────────────────────────────────
+    "WINDOW_SIZES": [20, 30, 45, 65, 90, 130, 180],
 
-    # ── شروط المثلث ──────────────────────────────────────────────────────
-    "MIN_TOUCHES_PER_LINE": 3,       # ≥ 3 بيفوتات على كل خط
-    "MIN_R2": 0.72,                  # جودة الخطين
-    "MIN_WIDTH_START_PCT": 0.35,     # أدنى عرض للمثلث عند بدايته
-    "MAX_WIDTH_START_PCT": 3.50,     # أقصى عرض
-    "MIN_CONVERGENCE": 0.35,         # عرض النهاية ≤ 65% من عرض البداية
-    "APEX_MAX_MULTIPLIER": 2.5,      # Apex ليس أبعد من 2.5× عرض النافذة
-    "MIN_TOUCH_DISTANCE_PCT": 0.25,  # كل بيفوت على مسافة ≤ 0.25% من الخط
+    # ── شروط المستطيل الأفقي ────────────────────────────────────────────
+    "MIN_RANGE_PCT": 0.15,           # أدنى ارتفاع المستطيل
+    "MAX_RANGE_PCT": 2.80,           # أقصى ارتفاع (نمط التجميع ضيّق)
+    "MAX_SLOPE_PCT_PER_BAR": 0.006,  # ميل خط الانحدار ≈ 0
+    "MAX_STD_CV_PCT": 0.40,          # std/mean صغير
+    "MAX_DRIFT_PCT": 0.90,           # |آخر - أول| صغير
+    "MAX_BODY_INSIDE_PCT": 60,       # لا شمعة جسمها > 60% من ارتفاع المستطيل
+
+    # ── الاتجاه القوي قبل المستطيل ──────────────────────────────────────
+    "TREND_LOOKBACK_DAYS": 7,        # ~ أسبوع من البيانات قبل المستطيل
+    "MIN_TREND_MOVE_PCT": 1.20,      # |الحركة| ≥ 1.2%
+    "MIN_TREND_DIRECTIONAL_PCT": 55, # ≥ 55% من شموع الاتجاه بنفس الاتجاه
 
     # ── الكسر ────────────────────────────────────────────────────────────
     "BREAKOUT_BUFFER_PCT": 0.03,
-    "MIN_BREAKOUT_BODY_PCT": 0.08,
+    "MIN_BREAKOUT_BODY_PCT": 0.10,   # جسم شمعة الكسر قوي
 
     # ── SL / TP ──────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
     "TP_RR": 3.0,
 
-    # ── فلاتر ────────────────────────────────────────────────────────────
+    # ── فلاتر عامة ──────────────────────────────────────────────────────
     "MIN_BARS_BETWEEN": 15,
     "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
-    "MIN_BARS_REQUIRED": 80,
+    "MIN_BARS_REQUIRED": 150,
 }
-
 
 TIMEOUT_STATISTICAL_FLOOR = 200
 TIMEOUT_DURATION_MULTIPLIER = 3
@@ -135,99 +131,74 @@ def calculate_zigzag(df, depth=None, backstep=None):
     return df
 
 
-def get_chronological_pivots(df, min_swing_pct=None):
-    if min_swing_pct is None:
-        min_swing_pct = CONFIG["MIN_SWING_PCT"]
+def get_chronological_pivots(df):
     raw = []
     highs = df["Pivot_H"].values
     lows  = df["Pivot_L"].values
     for pos in range(len(df)):
-        h = highs[pos]
-        l = lows[pos]
+        h = highs[pos]; l = lows[pos]
         if not pd.isna(h):
             raw.append({"pos": pos, "val": float(h), "type": "H"})
         elif not pd.isna(l):
             raw.append({"pos": pos, "val": float(l), "type": "L"})
     if not raw:
         return []
-    # دمج المتتاليات نفس النوع
-    collapsed = [raw[0]]
-    for p in raw[1:]:
-        last = collapsed[-1]
-        if last["type"] == p["type"]:
-            if p["type"] == "H" and p["val"] > last["val"]:
-                collapsed[-1] = p
-            elif p["type"] == "L" and p["val"] < last["val"]:
-                collapsed[-1] = p
+    final = []
+    for p in raw:
+        if not final:
+            final.append(p); continue
+        if final[-1]["type"] != p["type"]:
+            final.append(p)
         else:
-            collapsed.append(p)
-    # فلتر أدنى تأرجح
-    filtered = [collapsed[0]]
-    for p in collapsed[1:]:
-        last = filtered[-1]
-        swing_pct = abs(p["val"] - last["val"]) / max(last["val"], 1e-9) * 100
-        if swing_pct >= min_swing_pct:
-            filtered.append(p)
-        else:
-            if p["type"] == last["type"]:
-                if p["type"] == "H" and p["val"] > last["val"]:
-                    filtered[-1] = p
-                elif p["type"] == "L" and p["val"] < last["val"]:
-                    filtered[-1] = p
-    return filtered
+            if p["type"] == "H" and p["val"] > final[-1]["val"]:
+                final[-1] = p
+            elif p["type"] == "L" and p["val"] < final[-1]["val"]:
+                final[-1] = p
+    return final
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ⚡ Linear Fit سريع
+# ⚡ حوسبة متجهية لخصائص كل نافذة
 # ══════════════════════════════════════════════════════════════════════════════
-def _fit_line(xs, ys):
-    """يعيد (slope, intercept, r2) أو None."""
-    n = len(xs)
-    if n < 2:
+def _compute_window_metrics(highs, lows, opens, closes, W):
+    """يحسب خصائص نافذة طولها W لكل موضع انتهاء."""
+    n = len(closes)
+    if n < W:
         return None
-    xs = np.asarray(xs, dtype=float)
-    ys = np.asarray(ys, dtype=float)
-    mx = xs.mean()
-    my = ys.mean()
-    dx = xs - mx
-    dy = ys - my
-    denom = (dx * dx).sum()
-    if denom < 1e-12:
-        return None
-    slope = (dx * dy).sum() / denom
-    intercept = my - slope * mx
-    y_pred = slope * xs + intercept
-    ss_res = ((ys - y_pred) ** 2).sum()
-    ss_tot = (dy ** 2).sum()
-    if ss_tot < 1e-12:
-        return (slope, intercept, 1.0)
-    r2 = 1.0 - ss_res / ss_tot
-    return (slope, intercept, r2)
 
+    hs = sliding_window_view(highs,  W)
+    ls = sliding_window_view(lows,   W)
+    os_ = sliding_window_view(opens, W)
+    cs = sliding_window_view(closes, W)
 
-def _classify_triangle(a_h, a_l, mean_price):
-    """
-    يصنّف المثلث حسب ميل الخطين.
-    يعيد: نوع + اتجاها الكسر المحتملين (bias hint).
-    """
-    eps = 1e-7
-    # نسب الميل (%/شمعة)
-    sh = a_h / mean_price * 100
-    sl = a_l / mean_price * 100
+    win_high = hs.max(axis=1)
+    win_low  = ls.min(axis=1)
+    mean_c   = cs.mean(axis=1)
+    std_c    = cs.std(axis=1, ddof=0)
 
-    if sh < -eps and sl > eps:
-        return "Symmetrical", "both"
-    if sh < -eps and abs(sl) <= eps:
-        return "Descending", "bearish"
-    if abs(sh) <= eps and sl > eps:
-        return "Ascending", "bullish"
-    if sh > eps and sl > eps and sh < sl:
-        return "Rising Wedge", "bearish"
-    if sh < -eps and sl < -eps and sh > sl:
-        return "Falling Wedge", "bullish"
-    if abs(sh) <= eps and abs(sl) <= eps:
-        return "Rectangle", "both"
-    return "Triangle", "both"
+    # slope (linear regression closed form)
+    xs = np.arange(W, dtype=float)
+    xs_c = xs - xs.mean()
+    denom = float((xs_c ** 2).sum())
+    cs_c = cs - mean_c[:, None]
+    slope = (cs_c * xs_c).sum(axis=1) / denom
+
+    drift = np.abs(cs[:, -1] - cs[:, 0]) / np.where(mean_c > 0, mean_c, 1e-9)
+
+    bodies = np.abs(cs - os_)
+    box_h  = win_high - win_low
+    box_h_safe = np.where(box_h > 0, box_h, 1e-9)
+    max_body_ratio = (bodies / box_h_safe[:, None]).max(axis=1) * 100
+
+    range_pct = (win_high - win_low) / np.where(win_low > 0, win_low, 1e-9) * 100
+
+    return {
+        "win_high": win_high, "win_low": win_low,
+        "mean_c": mean_c, "std_c": std_c,
+        "slope": slope, "drift": drift,
+        "max_body_ratio": max_body_ratio,
+        "range_pct": range_pct, "window": W,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -252,29 +223,31 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     df = calculate_indicators(df)
     df = calculate_zigzag(df)
     pivots = get_chronological_pivots(df)
-    if len(pivots) < 6:
+    if len(pivots) < 4:
         return []
 
-    highs_arr  = df["High"].values.astype(float)
-    lows_arr   = df["Low"].values.astype(float)
-    opens_arr  = df["Open"].values.astype(float)
-    closes_arr = df["Close"].values.astype(float)
-    idxs       = df.index.values
-    n          = len(df)
+    highs  = df["High"].values.astype(float)
+    lows   = df["Low"].values.astype(float)
+    opens  = df["Open"].values.astype(float)
+    closes = df["Close"].values.astype(float)
+    idxs   = df.index.values
+    n      = len(df)
 
-    # فرز البيفوتات مسبقًا
-    ph = [(p["pos"], p["val"]) for p in pivots if p["type"] == "H"]
-    pl = [(p["pos"], p["val"]) for p in pivots if p["type"] == "L"]
-
+    # ── معاملات ──────────────────────────────────────────────────────────
+    trend_lookback = min(
+        max(20, _days_to_bars(CONFIG["TREND_LOOKBACK_DAYS"], interval)),
+        n // 3
+    )
     buf = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
-    min_touches = CONFIG["MIN_TOUCHES_PER_LINE"]
-    r2_min = CONFIG["MIN_R2"]
-    width_min = CONFIG["MIN_WIDTH_START_PCT"]
-    width_max = CONFIG["MAX_WIDTH_START_PCT"]
-    conv_min = CONFIG["MIN_CONVERGENCE"]
-    touch_tol = CONFIG["MIN_TOUCH_DISTANCE_PCT"] / 100.0
-    apex_mult = CONFIG["APEX_MAX_MULTIPLIER"]
 
+    # ── حوسبة مقاييس كل حجم نافذة مرة واحدة ─────────────────────────────
+    metrics_by_W = {}
+    for W in CONFIG["WINDOW_SIZES"]:
+        M = _compute_window_metrics(highs, lows, opens, closes, W)
+        if M is not None:
+            metrics_by_W[W] = M
+
+    # ── البحث ────────────────────────────────────────────────────────────
     patterns = []
     last_signal_pos = -10**9
 
@@ -282,128 +255,112 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
             continue
 
-        # شمعة الكسر عند i
-        close_bk   = closes_arr[i]
-        open_bk    = opens_arr[i]
-        prev_close = closes_arr[i - 1]
+        c_bk = closes[i]
+        o_bk = opens[i]
+        prev_c = closes[i - 1]
 
-        body_pct = abs(close_bk - open_bk) / max(close_bk, 1e-9) * 100
+        body_pct = abs(c_bk - o_bk) / max(c_bk, 1e-9) * 100
         if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
             continue
 
+        # جرّب كل حجم نافذة — نأخذ الأكبر الذي ينجح (أكثر تمثيلًا)
         best = None
-        best_len = 0
-
-        # جرّب كل نافذة (نبحث عن أفضل مثلث ينتهي قبل i)
         for W in CONFIG["WINDOW_SIZES"]:
             start = i - W
-            if start < 0:
+            if start < trend_lookback + 1:
+                continue
+            M = metrics_by_W.get(W)
+            if M is None:
+                continue
+            k = start   # موضع النافذة [start : start+W] = [start : i]
+
+            # ── خصائص المستطيل ──────────────────────────────────────────
+            range_pct = M["range_pct"][k]
+            if range_pct < CONFIG["MIN_RANGE_PCT"] or range_pct > CONFIG["MAX_RANGE_PCT"]:
                 continue
 
-            # pivots داخل النافذة [start, i-1]
-            h_in = [(x, y) for (x, y) in ph if start <= x <= (i - 1)]
-            l_in = [(x, y) for (x, y) in pl if start <= x <= (i - 1)]
-
-            if len(h_in) < min_touches or len(l_in) < min_touches:
+            mean_c = M["mean_c"][k]
+            if mean_c <= 0:
                 continue
 
-            h_fit = _fit_line([x for x, y in h_in], [y for x, y in h_in])
-            l_fit = _fit_line([x for x, y in l_in], [y for x, y in l_in])
-            if h_fit is None or l_fit is None:
+            slope_pct = abs(M["slope"][k]) / mean_c * 100
+            if slope_pct > CONFIG["MAX_SLOPE_PCT_PER_BAR"]:
                 continue
 
-            a_h, b_h, r2_h = h_fit
-            a_l, b_l, r2_l = l_fit
-
-            if r2_h < r2_min or r2_l < r2_min:
+            cv = M["std_c"][k] / mean_c * 100
+            if cv > CONFIG["MAX_STD_CV_PCT"]:
                 continue
 
-            # يجب أن يتقاربا: a_h < a_l
-            if a_h >= a_l:
+            if M["drift"][k] * 100 > CONFIG["MAX_DRIFT_PCT"]:
                 continue
 
-            # Apex
-            denom = a_h - a_l
-            if abs(denom) < 1e-12:
-                continue
-            x_apex = (b_l - b_h) / denom
-            if x_apex < i:                # يجب أن يكون مستقبليًا
-                continue
-            if x_apex > i + W * apex_mult:
+            if M["max_body_ratio"][k] > CONFIG["MAX_BODY_INSIDE_PCT"]:
                 continue
 
-            # عرض البداية والنهاية
-            width_start = (a_h - a_l) * start + (b_h - b_l)
-            width_end   = (a_h - a_l) * (i - 1) + (b_h - b_l)
-
-            if width_start <= 0 or width_end <= 0:
+            # ── الاتجاه قبل المستطيل ────────────────────────────────────
+            t_start = start - trend_lookback
+            t_end   = start - 1
+            if t_start < 0:
                 continue
 
-            mean_price = closes_arr[start:i].mean()
-            width_start_pct = width_start / max(mean_price, 1e-9) * 100
-            if width_start_pct < width_min or width_start_pct > width_max:
+            trend_move = (closes[t_end] - closes[t_start]) / max(closes[t_start], 1e-9) * 100
+            if abs(trend_move) < CONFIG["MIN_TREND_MOVE_PCT"]:
                 continue
 
-            convergence = width_end / width_start
-            if convergence > (1 - conv_min):
+            trend_up = trend_move > 0
+
+            # نسبة الاتجاه
+            t_seg_c = closes[t_start:t_end + 1]
+            t_seg_o = opens[t_start:t_end + 1]
+            t_up_candles = int((t_seg_c > t_seg_o).sum())
+            t_dn_candles = int((t_seg_c < t_seg_o).sum())
+            t_total = t_up_candles + t_dn_candles
+            if t_total < 5:
+                continue
+            t_dir_pct = max(t_up_candles, t_dn_candles) / t_total * 100
+            if t_dir_pct < CONFIG["MIN_TREND_DIRECTIONAL_PCT"]:
                 continue
 
-            # touches: كم بيفوت قريب من الخط
-            def _count_touches(items, a, b):
-                c = 0
-                for (x, y) in items:
-                    line_y = a * x + b
-                    if abs(y - line_y) / max(abs(line_y), 1e-9) <= touch_tol:
-                        c += 1
-                return c
-
-            h_touches = _count_touches(h_in, a_h, b_h)
-            l_touches = _count_touches(l_in, a_l, b_l)
-
-            if h_touches < min_touches or l_touches < min_touches:
+            # الاتجاه يجب أن يتوافق مع الدفع الفعلي
+            if trend_up and t_up_candles < t_dn_candles:
+                continue
+            if (not trend_up) and t_dn_candles < t_up_candles:
                 continue
 
-            # تفضيل النوافذ الأطول
-            if W > best_len:
-                best_len = W
+            # ── الكسر ────────────────────────────────────────────────────
+            box_high = float(M["win_high"][k])
+            box_low  = float(M["win_low"][k])
+            up_thr   = box_high * (1 + buf)
+            down_thr = box_low  * (1 - buf)
+
+            direction = None
+            if prev_c <= up_thr and c_bk > up_thr and c_bk > o_bk and trend_up:
+                direction = "BUY"
+            elif prev_c >= down_thr and c_bk < down_thr and c_bk < o_bk and (not trend_up):
+                direction = "SELL"
+
+            if direction is None:
+                continue
+
+            # اختر الأكبر
+            if best is None or W > best["W"]:
                 best = {
-                    "start": start,
-                    "end": i - 1,
-                    "a_h": a_h, "b_h": b_h, "r2_h": r2_h,
-                    "a_l": a_l, "b_l": b_l, "r2_l": r2_l,
-                    "x_apex": x_apex,
-                    "width_start_pct": width_start_pct,
-                    "convergence": convergence,
-                    "h_touches": h_touches,
-                    "l_touches": l_touches,
-                    "window": W,
-                    "h_in": h_in,
-                    "l_in": l_in,
+                    "W": W, "start": start, "k": k,
+                    "box_high": box_high, "box_low": box_low,
+                    "range_pct": float(range_pct),
+                    "slope_pct": float(slope_pct),
+                    "cv": float(cv),
+                    "drift_pct": float(M["drift"][k] * 100),
+                    "trend_move": float(trend_move),
+                    "trend_dir_pct": float(t_dir_pct),
+                    "trend_up": trend_up,
                 }
 
         if best is None:
             continue
 
-        # ═══════ فحص الكسر ═══════
-        upper_now = best["a_h"] * i + best["b_h"]
-        lower_now = best["a_l"] * i + best["b_l"]
-        upper_prev = best["a_h"] * (i - 1) + best["b_h"]
-        lower_prev = best["a_l"] * (i - 1) + best["b_l"]
-
-        up_thr   = upper_now * (1 + buf)
-        down_thr = lower_now * (1 - buf)
-
-        direction = None
-        if prev_close <= upper_prev * (1 + buf) and close_bk > up_thr and close_bk > open_bk:
-            direction = "BUY"
-        elif prev_close >= lower_prev * (1 - buf) and close_bk < down_thr and close_bk < open_bk:
-            direction = "SELL"
-
-        if direction is None:
-            continue
-
         pattern = _build_pattern(df, i, best, direction, body_pct,
-                                 idxs, highs_arr, lows_arr, closes_arr)
+                                 highs, lows, closes, idxs, pivots)
         if pattern:
             patterns.append(pattern)
             last_signal_pos = i
@@ -412,20 +369,15 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     return patterns
 
 
-def _build_pattern(df, idx, tri, direction, body_pct,
-                   idxs, highs_arr, lows_arr, closes_arr):
-    entry = float(closes_arr[idx])
-    a_h, b_h = tri["a_h"], tri["b_h"]
-    a_l, b_l = tri["a_l"], tri["b_l"]
-
-    upper_at_break = a_h * idx + b_h
-    lower_at_break = a_l * idx + b_l
-
+def _build_pattern(df, idx, best, direction, body_pct,
+                   highs, lows, closes, idxs, pivots):
+    entry = float(closes[idx])
+    box_high = best["box_high"]
+    box_low  = best["box_low"]
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
     if direction == "BUY":
-        # الوقف تحت الخط السفلي عند الكسر
-        sl = lower_at_break * (1 - sl_buf)
+        sl = box_low * (1 - sl_buf)
         if sl >= entry:
             return None
         risk = entry - sl
@@ -433,7 +385,7 @@ def _build_pattern(df, idx, tri, direction, body_pct,
             return None
         tp = entry + CONFIG["TP_RR"] * risk
     else:
-        sl = upper_at_break * (1 + sl_buf)
+        sl = box_high * (1 + sl_buf)
         if sl <= entry:
             return None
         risk = sl - entry
@@ -447,39 +399,19 @@ def _build_pattern(df, idx, tri, direction, body_pct,
 
     bias = "Bullish" if direction == "BUY" else "Bearish"
 
-    mean_price = float(closes_arr[tri["start"]:idx].mean())
-    tri_type, _ = _classify_triangle(a_h, a_l, mean_price)
+    start_p = best["start"]
+    end_p   = idx - 1
 
-    # ── Nodes: بيفوتات على الخطين ────────────────────────────────────────
+    # ── Nodes: بيفوتات داخل المستطيل ────────────────────────────────────
     nodes = []
-    for x, y in tri["h_in"]:
-        nodes.append((idxs[x], float(y)))
-    for x, y in tri["l_in"]:
-        nodes.append((idxs[x], float(y)))
+    for p in pivots:
+        if start_p <= p["pos"] <= end_p:
+            nodes.append((idxs[p["pos"]], p["val"]))
     nodes.sort(key=lambda n: n[0])
     nodes.append((idxs[idx], entry))
 
-    # ── بيانات الخطين للرسم ─────────────────────────────────────────────
-    triangle_upper = {
-        "x0": idxs[tri["start"]],
-        "y0": float(a_h * tri["start"] + b_h),
-        "x1": idxs[tri["end"]],
-        "y1": float(a_h * tri["end"] + b_h),
-    }
-    triangle_lower = {
-        "x0": idxs[tri["start"]],
-        "y0": float(a_l * tri["start"] + b_l),
-        "x1": idxs[tri["end"]],
-        "y1": float(a_l * tri["end"] + b_l),
-    }
-    apex_x_int = int(min(max(tri["x_apex"], idx), len(df) - 1))
-    triangle_apex = {
-        "x": idxs[apex_x_int],
-        "y": float(a_h * apex_x_int + b_h),
-    }
-
     # ── سهم الهدف ───────────────────────────────────────────────────────
-    arrow_len = max(8, (tri["end"] - tri["start"]) // 3)
+    arrow_len = max(8, (end_p - start_p) // 3)
     x1_pos = min(idx + arrow_len, len(df) - 1)
     arrow = {
         "x0": idxs[idx], "y0": entry,
@@ -488,23 +420,24 @@ def _build_pattern(df, idx, tri, direction, body_pct,
     }
 
     box_data = {
-        "x_start": tri["start"],
+        "x_start": start_p,
         "x_end":   idx,
-        "high":    round(float(a_h * tri["start"] + b_h), 5),
-        "low":     round(float(a_l * tri["start"] + b_l), 5),
+        "high":    round(box_high, 5),
+        "low":     round(box_low, 5),
     }
 
+    trend_dir_str = "Bullish" if best["trend_up"] else "Bearish"
+
     pattern = {
-        "name": f"{tri_type} Triangle",
+        "name": "Trend → Consolidation → Continuation",
         "pattern": (
-            f"{tri_type} {direction} · "
-            f"T{tri['h_touches']}/B{tri['l_touches']} · "
-            f"{tri['width_start_pct']:.2f}% → {tri['width_start_pct']*tri['convergence']:.2f}%"
+            f"{trend_dir_str} trend → flat box ({best['W']} bars) → "
+            f"{direction} breakout"
         ),
         "bias": bias,
         "direction": direction,
-        "triangle_type": tri_type,
-        "match": float(min(100, 55 + (tri["h_touches"] + tri["l_touches"]) * 4 + tri["r2_h"] * 10)),
+        "trend_direction": trend_dir_str,
+        "match": float(min(100, 60 + abs(best["trend_move"]) * 5 + best["W"] / 10)),
         "entry": round(entry, 5),
         "entry_trigger": round(entry, 5),
         "sl": round(sl, 5),
@@ -514,29 +447,33 @@ def _build_pattern(df, idx, tri, direction, body_pct,
         "Entry": round(entry, 5),
         "nodes": nodes,
         "arrow": arrow,
-        "triangle_upper": triangle_upper,
-        "triangle_lower": triangle_lower,
-        "triangle_apex":  triangle_apex,
         "consolidation_box": box_data,
-        "resistance": round(float(upper_at_break), 5),
-        "support":    round(float(lower_at_break), 5),
-        "level_price": round(float(upper_at_break if direction == "BUY" else lower_at_break), 5),
-        "channel_start": idxs[tri["start"]],
-        "channel_end":   idxs[tri["end"]],
-        "channel_duration_bars": int(tri["window"]),
-        "neckline_start_idx": idxs[tri["start"]],
+        "resistance": round(box_high, 5),
+        "support":    round(box_low, 5),
+        "level_price": round(box_high if direction == "BUY" else box_low, 5),
+        "channel_start": idxs[start_p],
+        "channel_end":   idxs[end_p],
+        "channel_duration_bars": int(best["W"]),
+        "channel_range_pct": round(best["range_pct"], 3),
+        "neckline_start_idx": idxs[start_p],
         "neckline_end_idx":   idxs[idx],
         "end_pos": idx,
         "Entry Conditions": (
-            f"{tri_type} triangle · {tri['window']} bars · "
-            f"R² top {tri['r2_h']:.2f} / bottom {tri['r2_l']:.2f} · "
-            f"conv {tri['convergence']:.2f}"
+            f"{trend_dir_str} trend ({best['trend_move']:+.2f}%, "
+            f"{best['trend_dir_pct']:.0f}% dir) → flat box {best['W']} bars "
+            f"({best['range_pct']:.2f}%, slope {best['slope_pct']:.4f}%/bar) → "
+            f"close breakout"
         ),
-        "consol_bars": int(tri["window"]),
+        "consol_high": round(box_high, 5),
+        "consol_low":  round(box_low, 5),
+        "consol_bars": int(best["W"]),
+        "consol_range_pct": round(best["range_pct"], 3),
+        "consol_stability_pct": 100.0,
         "breakout_body_pct": round(body_pct, 3),
-        "triangle_r2_top": float(tri["r2_h"]),
-        "triangle_r2_bot": float(tri["r2_l"]),
-        "triangle_convergence": float(tri["convergence"]),
+        "trend_move_pct": round(best["trend_move"], 2),
+        "trend_dir_pct": round(best["trend_dir_pct"], 1),
+        "box_slope_pct": round(best["slope_pct"], 4),
+        "box_cv_pct": round(best["cv"], 3),
     }
 
     pattern.update(simulate_trade_outcome(pattern, df))
@@ -687,13 +624,10 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "sl": latest["sl"], "tp": latest["tp"],
         "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
         "arrow": latest.get("arrow"),
-        "triangle_upper": latest.get("triangle_upper"),
-        "triangle_lower": latest.get("triangle_lower"),
-        "triangle_apex":  latest.get("triangle_apex"),
-        "triangle_type":  latest.get("triangle_type"),
         "consolidation_box": latest.get("consolidation_box"),
         "resistance": latest.get("resistance"),
         "support": latest.get("support"),
+        "trend_direction": latest.get("trend_direction"),
         "all_patterns": all_patterns, "match": latest.get("match", 100.0),
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"),
@@ -728,7 +662,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Pattern": p["pattern"], "pattern": p["pattern"],
             "Bias": p["bias"], "bias": p["bias"],
             "Direction": p.get("direction", "BUY"),
-            "Triangle_Type": p.get("triangle_type", "—"),
+            "TrendDirection": p.get("trend_direction", "—"),
             "Result": p.get("Result", "OPEN"),
             "Head Result": p.get("Head Result", "OPEN"),
             "Entry": p["entry"], "Entry Price": p["entry"],
@@ -742,9 +676,6 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Entry Conditions": p.get("Entry Conditions", ""),
             "nodes": p["nodes"],
             "arrow": p.get("arrow"),
-            "triangle_upper": p.get("triangle_upper"),
-            "triangle_lower": p.get("triangle_lower"),
-            "triangle_apex":  p.get("triangle_apex"),
             "candles_to_exit": p.get("candles_to_exit", 0),
             "progress_ratio": p.get("progress_ratio", 0.0),
             "neckline_end_idx": p["neckline_end_idx"],
@@ -756,10 +687,17 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "channel_start": p.get("channel_start"),
             "channel_end":   p.get("channel_end"),
             "channel_duration_bars": p.get("channel_duration_bars"),
-            "triangle_r2_top": p.get("triangle_r2_top"),
-            "triangle_r2_bot": p.get("triangle_r2_bot"),
-            "triangle_convergence": p.get("triangle_convergence"),
+            "channel_range_pct": p.get("channel_range_pct"),
+            "consol_high": p.get("consol_high"),
+            "consol_low":  p.get("consol_low"),
+            "consol_bars": p.get("consol_bars"),
+            "consol_range_pct": p.get("consol_range_pct"),
+            "consol_stability_pct": p.get("consol_stability_pct"),
             "breakout_body_pct": p.get("breakout_body_pct"),
+            "trend_move_pct": p.get("trend_move_pct"),
+            "trend_dir_pct": p.get("trend_dir_pct"),
+            "box_slope_pct": p.get("box_slope_pct"),
+            "box_cv_pct": p.get("box_cv_pct"),
         })
     return trades
 
@@ -831,8 +769,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
     }
 
     result["stages"] = {
-        "1. Triangle detected":   {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Close Breakout":      {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "1. Strong pre-trend":  {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Flat box detected": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "3. Continuation break": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
     trade_analysis = []
@@ -867,8 +806,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Triangle / Wedge Breakout v10")
+    print("ENGINE.PY — Trend → Consolidation → Continuation v11")
     print(f"Windows: {CONFIG['WINDOW_SIZES']}")
-    print(f"Touches ≥ {CONFIG['MIN_TOUCHES_PER_LINE']} | R² ≥ {CONFIG['MIN_R2']}")
-    print(f"Width start: {CONFIG['MIN_WIDTH_START_PCT']}%–{CONFIG['MAX_WIDTH_START_PCT']}%")
-    print(f"Convergence ≥ {CONFIG['MIN_CONVERGENCE']} | TP = {CONFIG['TP_RR']}× risk")
+    print(f"Box: range {CONFIG['MIN_RANGE_PCT']}–{CONFIG['MAX_RANGE_PCT']}% | slope ≤ {CONFIG['MAX_SLOPE_PCT_PER_BAR']}%/bar | CV ≤ {CONFIG['MAX_STD_CV_PCT']}%")
+    print(f"Pre-trend: {CONFIG['TREND_LOOKBACK_DAYS']}d, move ≥ {CONFIG['MIN_TREND_MOVE_PCT']}%, dir ≥ {CONFIG['MIN_TREND_DIRECTIONAL_PCT']}%")
+    print(f"Breakout: body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}% | TP = {CONFIG['TP_RR']}× risk")
