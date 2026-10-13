@@ -1662,4 +1662,231 @@ else:
                 live_nodes = active_res.get("nodes") or active_res.get("pattern_nodes")
                 if isinstance(live_nodes, list) and live_nodes:
                     sn = sorted(live_nodes, key=lambda x: x[0])   # ← رقمي
-                    fig.add_trace(go.Scatter
+                    fig.add_trace(go.Scatter(
+    x=[n[0] for n in sn], y=[n[1] for n in sn],
+    mode="lines+markers", name="النمط المكتشف",
+    line=dict(color="#9C27B0", width=2), marker=dict(size=8)
+))
+                   
+                for val, col, txt in [
+                    (active_res.get('entry'), "#2196F3", "دخول"),
+                    (active_res.get('sl'),    "#F44336", "وقف"),
+                    (active_res.get('tp'),    "#4CAF50", "هدف"),
+                ]:
+                    if val:
+                        fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
+
+                # 🟢 Rectangle Box
+                if "consolidation_box" in active_res and active_res.get("consolidation_box"):
+                    _box = active_res["consolidation_box"]
+                    try:
+                        _x0 = max(0, min(int(_box["x_start"]), len(df_res) - 1))
+                        _x1 = max(0, min(int(_box["x_end"]),   len(df_res) - 1))
+                        fig.add_shape(
+                            type="rect",
+                            x0=_x0, x1=_x1,
+                            y0=_box["low"], y1=_box["high"],
+                            line=dict(color="#4CAF50", width=2, dash="dot"),
+                            fillcolor="rgba(76, 175, 80, 0.15)",
+                            layer="below",
+                        )
+                        fig.add_annotation(
+                            x=_x0, y=_box["high"],
+                            text="Rectangle",
+                            showarrow=False,
+                            font=dict(color="#4CAF50", size=11),
+                            yshift=12,
+                        )
+                    except Exception:
+                        pass
+
+                # ═══ Arrow ═══
+                _arr = active_res.get("arrow")
+                if isinstance(_arr, dict):
+                    _col = "#4CAF50" if _arr["direction"] == "BUY" else "#F44336"
+                    fig.add_annotation(
+                        x=_arr["x1"], y=_arr["y1"],
+                        ax=_arr["x0"], ay=_arr["y0"],
+                        xref="x", yref="y", axref="x", ayref="y",
+                        showarrow=True, arrowhead=3, arrowsize=2, arrowwidth=3,
+                        arrowcolor=_col, opacity=0.95,
+                        text="TP",
+                        font=dict(color=_col, size=11),
+                    )
+
+                _step = max(1, len(df_res) // 8)
+                _tick_vals = list(range(0, len(df_res), _step))
+                _tick_text = [str(_dates_live[i])[:10] if i < len(_dates_live) else "" for i in _tick_vals]
+
+                fig.update_layout(
+                    template="plotly_white", height=600, autosize=True,
+                    margin=dict(l=80, r=20, t=40, b=60),
+                    xaxis_rangeslider_visible=False,
+                    yaxis=dict(side="left", automargin=True,
+                               tickfont=dict(size=12, color="#333"),
+                               showgrid=True, gridcolor="#E5E5E5"),
+                    xaxis=dict(
+                        automargin=True, tickfont=dict(size=10),
+                        tickmode="array", tickvals=_tick_vals, ticktext=_tick_text,
+                    ),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
+
+            with st.expander("🔬 تشخيص النمط الحالي — Live", expanded=False):
+                df_for_live = active_res.get("df")
+                if df_for_live is not None and not df_for_live.empty and diagnose_filters is not None:
+                    try:
+                        with st.spinner("جاري التشخيص..."):
+                            diag_live = diagnose_filters(df_for_live,
+                                                        interval=selected_interval,
+                                                        symbol=active_sym)
+                        if not diag_live.get("error"):
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("أنماط خام", diag_live["total_raw_candidates"])
+                            col2.metric("بعد الفلاتر", diag_live["final_count"])
+                            col3.metric("نسبة القبول",
+                                f"{round(diag_live['final_count'] / max(diag_live['total_raw_candidates'], 1) * 100, 1)}%")
+
+                            smart = diag_live.get("smart_diagnosis", {})
+                            if smart.get("verdict"):
+                                st.markdown(f"### 🎯 {smart['verdict']}")
+
+                            if smart.get("action_plan"):
+                                st.markdown("#### 🎯 خطة العمل")
+                                for item in smart["action_plan"]:
+                                    if item.startswith("🔴"):   st.error(item)
+                                    elif item.startswith("🟡"): st.warning(item)
+                                    elif item.startswith("🟢"): st.success(item)
+                                    else:                       st.info(item)
+
+                            st.markdown("#### 📊 مراحل الفلترة")
+                            stages_data = []
+                            for stage_name, stage_data in diag_live["stages"].items():
+                                stages_data.append({
+                                    "الفلتر": stage_name,
+                                    "قبل": stage_data.get("before", 0),
+                                    "بعد": stage_data.get("after", 0),
+                                    "مرفوض": stage_data.get("rejected", 0),
+                                    "نسبة القبول": stage_data.get("pass_rate", "0%"),
+                                })
+                            st.dataframe(pd.DataFrame(stages_data), use_container_width=True)
+                    except Exception as e:
+                        st.error(f"⚠️ خطأ: {type(e).__name__}: {e}")
+                elif diagnose_filters is None:
+                    st.warning("⚠️ `diagnose_filters` oo maqan")
+                else:
+                    st.info("ℹ️ Xog ku filan ma jirto")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 TILMAAMAHA DEGDEGGA
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+
+if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
+    if st.session_state.backtest_scanned_signals:
+        _bt_item = st.session_state.backtest_scanned_signals[-1]
+        _bt_trades = _bt_item["trades_df"].copy()
+        _bt_trades = compute_pips(_bt_trades)
+        _bt_trades = compute_dollar_pnl(_bt_trades, lot=st.session_state.get("bt_lot_size", 0.01))
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
+            render_realtime_actions(_bt_trades, is_live=False)
+    else:
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
+            st.info("ℹ️ Bilow backtest si aad u aragto tilmaamaha")
+else:
+    if st.session_state.scanned_signals:
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=True):
+            _live_df = pd.DataFrame([{
+                "symbol": i["symbol"],
+                "Entry Price": i["result"].get("entry"),
+                "Stop Loss": i["result"].get("sl"),
+                "Take Profit": i["result"].get("tp"),
+                "bias": i["result"].get("bias"),
+                "Result": "OPEN",
+                "Max Reach %": i["result"].get("Max Reach %", 0),
+                "Lot": 0.01,
+            } for i in st.session_state.scanned_signals])
+            render_realtime_actions(_live_df, is_live=True)
+    else:
+        with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
+            st.info("ℹ️ Bilow scan-ka si aad u aragto tilmaamaha")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 💰 XISAABIYAHA KHATARTA
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
+    render_advanced_risk_calculator(unique_id="end")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⏳ LIISKA WAARITAANKA
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+
+with st.expander("⏳ ليستة المراقبة — Signals قريبة من الكسر", expanded=False):
+    if st.session_state.get("near_signals"):
+        render_near_signals(st.session_state.near_signals, unique_id="bottom")
+    else:
+        st.info("ℹ️ Riix '⏳ Raadi signals-ka dhow' ee Live Scan si aad u buuxiso liiska")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📊 JADWALKA GUUD — IC Markets Standard
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+st.markdown("### 📊 Jadwalka IC Markets Standard — 50 Pairs")
+
+ic_display = []
+for key, spec in IC_MARKETS_SPECS.items():
+    ic_display.append({
+        "Zoug": key,
+        "Nooca": spec["cat"],
+        "Contract": f"{spec['contract']:,}",
+        "Min Lot": spec["min_lot"],
+        "Step": spec["step"],
+        "Pip Size": spec["pip"],
+    })
+
+st.dataframe(
+    pd.DataFrame(ic_display),
+    use_container_width=True,
+    hide_index=True
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📖 SHARAXAAD
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+
+with st.expander("📖 Sida loo isticmaalo App-ka", expanded=False):
+    st.markdown("""
+    ## 🚀 Habka 1: Live Scan
+
+    1. Tag **🚀 الماسح الحي للأسواق**
+    2. Dooro: **"سهم فردي"** / **"🎯 مجموعة مخصصة"** / **"مسح كلي"**
+    3. Dooro **Interval** iyo **Period**
+    4. Riix **"🚀 بدء المسح والتحليل الفوري"**
+    5. Fur **🔽 اضغط لعرض نتائج التحليل**
+
+    ---
+
+    ## 🧪 Habka 2: Backtest
+
+    1. Tag **🧪 مختبر الاختبار الرجعي (Backtest)**
+    2. Dooro Period + Interval + Lot
+    3. Riix **"📊 بدء محاكاة الاختبار الرجعي"**
+    4. Fur **🔽 اضغط لعرض نتائج ...**
+
+    ---
+
+    ## ⚠️ Digniin
+
+    - **Risk per trade ≤ 5%**
+    - **Demo 3 bilood** ka hor live
+    - **Max 3-5 trades furan** isku mar
+    """) 
