@@ -1,18 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Strict Horizontal Rectangle Reversal (v18)
-========================================================
-🎯 الجديد في v18:
-  • الهدف (TP) = حجم الانطلاقة قبل التصحيح (impulse size)
-  • ليس 3× المخاطرة كما كان
-  • مع فلتر MIN_RR_ACCEPTED لضمان R:R معقول
-
-الشروط:
-  • عمر ≥ 1 أسبوع
-  • عرض ÷ ارتفاع ≥ 30 (يرفض المستطيلات العمودية)
-  • يبحث من النوافذ الأكبر للأصغر → يجد التصحيح الكامل
-  • تسطّح صارم: slope · CV · drift · flat_bars
-  • كسر بإغلاق شمعة · SL على الجهة المقابلة
+ENGINE.PY — Horizontal Rectangle Reversal (v19)
+=================================================
+🎯 الجديد في v19:
+  • الخطوط عند وسيط أعلى/أدنى 15% من القمم/القيعان (cluster center)
+  • اللمسات تُحسب حول الـ cluster لا حول أقصى قمة
+  • الخط يمر عبر تجمّع البيفوتات الفعلي (يُلامس الشموع)
+  • TP = حجم الانطلاقة قبل التصحيح
+  • رسم علامات على القمم/القيعان الحقيقية
 """
 import numpy as np
 import pandas as pd
@@ -23,7 +18,6 @@ from numpy.lib.stride_tricks import sliding_window_view
 # CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    # نوافذ أكبر — يبدأ من 60 شمعة
     "WINDOW_SIZES": [60, 90, 130, 180, 250, 340, 460],
 
     "MIN_TOP_TOUCHES": 3,
@@ -49,18 +43,17 @@ CONFIG = {
     "BREAKOUT_BUFFER_PCT": 0.05,
     "MIN_BREAKOUT_BODY_PCT": 0.08,
 
-    # ── SL ────────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
+    "MIN_RR_ACCEPTED": 1.2,
+    "TP_RR": 3.0,
 
-    # ── 🆕 TP = حجم الانطلاقة ─────────────────────────────────────────
-    "MIN_RR_ACCEPTED": 1.2,      # أدنى R:R مقبول (يرفض الصفقات الضعيفة)
-    "TP_RR": 3.0,                # احتياطي فقط (غير مستخدم أساساً)
-
-    # ── فلاتر عامة ────────────────────────────────────────────────────
     "MIN_BARS_BETWEEN": 15,
     "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
     "MIN_BARS_REQUIRED": 250,
+
+    # 🆕 نسبة القمم/القيعان المُستخدمة لحساب الـ cluster
+    "CLUSTER_TOP_PCT": 0.15,
 }
 
 
@@ -122,7 +115,7 @@ def get_chronological_pivots(df): return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# metrics
+# 🆕 _window_metrics — cluster-based lines
 # ══════════════════════════════════════════════════════════════════════════════
 def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
     n = len(closes)
@@ -132,9 +125,12 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
     os_ = sliding_window_view(opens, W); cs = sliding_window_view(closes, W)
     m = hs.shape[0]
 
-    win_high = hs.max(axis=1); win_low = ls.min(axis=1)
-    mean_c = cs.mean(axis=1); std_c = cs.std(axis=1, ddof=0)
+    win_high = hs.max(axis=1)
+    win_low  = ls.min(axis=1)
+    mean_c = cs.mean(axis=1)
+    std_c = cs.std(axis=1, ddof=0)
 
+    # slope
     xs = np.arange(W, dtype=float); xs_c = xs - xs.mean()
     denom = float((xs_c ** 2).sum())
     cs_c = cs - mean_c[:, None]
@@ -144,27 +140,47 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
     cv = std_c / np.where(mean_c > 0, mean_c, 1e-9) * 100
     drift = np.abs(cs[:, -1] - cs[:, 0]) / np.where(mean_c > 0, mean_c, 1e-9) * 100
 
-    top_thr = win_high * (1.0 - tol); bot_thr = win_low * (1.0 + tol)
-    top_touch = (hs >= top_thr[:, None]).sum(axis=1)
-    bot_touch = (ls <= bot_thr[:, None]).sum(axis=1)
+    # ═══ 🆕 cluster: وسيط أعلى/أدنى 15% من القمم/القيعان ═══
+    hs_sorted = np.sort(hs, axis=1)
+    ls_sorted = np.sort(ls, axis=1)
+    n_peak = max(1, int(W * CONFIG["CLUSTER_TOP_PCT"]))
 
-    top_masked = np.where(hs >= top_thr[:, None], hs, np.nan)
-    bot_masked = np.where(ls <= bot_thr[:, None], ls, np.nan)
+    top_cluster = np.median(hs_sorted[:, -n_peak:], axis=1)  # وسيط أعلى القمم
+    bot_cluster = np.median(ls_sorted[:, :n_peak], axis=1)   # وسيط أدنى القيعان
+
+    # touches حول الـ cluster (بمدى أوسع قليلاً)
+    touch_range = tol * 3.0
+    top_thr_lo = top_cluster * (1.0 - touch_range)
+    top_thr_hi = top_cluster * (1.0 + touch_range)
+    bot_thr_lo = bot_cluster * (1.0 - touch_range)
+    bot_thr_hi = bot_cluster * (1.0 + touch_range)
+
+    top_touch = ((hs >= top_thr_lo[:, None]) & (hs <= top_thr_hi[:, None])).sum(axis=1)
+    bot_touch = ((ls >= bot_thr_lo[:, None]) & (ls <= bot_thr_hi[:, None])).sum(axis=1)
+
+    # flatness: مدى القمم/القيعان حول الـ cluster
+    top_masked = np.where((hs >= top_thr_lo[:, None]) & (hs <= top_thr_hi[:, None]), hs, np.nan)
+    bot_masked = np.where((ls >= bot_thr_lo[:, None]) & (ls <= bot_thr_hi[:, None]), ls, np.nan)
     with np.errstate(invalid="ignore"):
         top_max = np.nanmax(top_masked, axis=1); top_min = np.nanmin(top_masked, axis=1)
         bot_max = np.nanmax(bot_masked, axis=1); bot_min = np.nanmin(bot_masked, axis=1)
 
-    top_flat_pct = np.where(win_high > 0, (top_max - top_min) / win_high * 100, np.inf)
-    bot_flat_pct = np.where(win_low > 0, (bot_max - bot_min) / win_low * 100, np.inf)
-    range_pct = np.where(win_low > 0, (win_high - win_low) / win_low * 100, np.inf)
+    top_flat_pct = np.where(top_cluster > 0, (top_max - top_min) / top_cluster * 100, np.inf)
+    bot_flat_pct = np.where(bot_cluster > 0, (bot_max - bot_min) / bot_cluster * 100, np.inf)
 
+    # range_pct: يُحسب من الـ clusters (وليس من القمة/القاع المطلق)
+    range_pct = np.where(bot_cluster > 0, (top_cluster - bot_cluster) / bot_cluster * 100, np.inf)
+
+    # flat bars: نسبة الشموع بجسم صغير
     bodies = np.abs(cs - os_)
-    box_h = np.where((win_high - win_low) > 0, win_high - win_low, 1e-9)
+    box_h = np.where((top_cluster - bot_cluster) > 0, top_cluster - bot_cluster, 1e-9)
     small_bodies = (bodies < (box_h[:, None] * 0.35)).sum(axis=1)
     flat_bars_pct = small_bodies / W * 100
 
+    # شكل: عرض ÷ ارتفاع %
     bars_per_pct = W / np.maximum(range_pct, 0.01)
 
+    # impulse قبل النافذة
     impulse_pct = np.full(m, 0.0, dtype=np.float32)
     for k in range(m):
         base_idx = k - 1
@@ -174,8 +190,12 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
         if p0 > 0: impulse_pct[k] = (p1 - p0) / p0 * 100
 
     return {
-        "top": win_high, "bottom": win_low, "range_pct": range_pct,
-        "top_touch": top_touch.astype(np.int32), "bot_touch": bot_touch.astype(np.int32),
+        "top": win_high, "bottom": win_low,
+        "top_cluster": top_cluster,
+        "bot_cluster": bot_cluster,
+        "range_pct": range_pct,
+        "top_touch": top_touch.astype(np.int32),
+        "bot_touch": bot_touch.astype(np.int32),
         "top_flat": top_flat_pct, "bot_flat": bot_flat_pct,
         "slope_pct": slope_pct, "cv": cv, "drift": drift,
         "flat_bars_pct": flat_bars_pct,
@@ -185,7 +205,7 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DETECTOR — يبحث من الأكبر للأصغر
+# DETECTOR
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
@@ -207,7 +227,7 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
     min_bars_required = _week_to_bars(interval, CONFIG["MIN_CONSOL_WEEKS"])
 
-    # احسب metrics لكل نافذة مرة واحدة
+    # metrics by window
     metrics_by_W = {}
     for W in CONFIG["WINDOW_SIZES"]:
         if W < min_bars_required: continue
@@ -216,7 +236,6 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if M is not None:
             metrics_by_W[W] = M
 
-    # ترتيب من الأكبر للأصغر
     windows_desc = sorted(metrics_by_W.keys(), reverse=True)
 
     patterns = []
@@ -232,7 +251,6 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
             continue
 
-        # جرّب النوافذ من الأكبر للأصغر — خذ أول (أكبر) ناجحة
         best_match = None
         for W in windows_desc:
             M = metrics_by_W[W]
@@ -252,7 +270,6 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
             bars_per_pct = float(M["bars_per_pct"][k])
             impulse = float(M["impulse"][k])
 
-            # كل الفلاتر
             if not (CONFIG["MIN_RANGE_PCT"] <= range_pct <= CONFIG["MAX_RANGE_PCT"]): continue
             if top_touch < CONFIG["MIN_TOP_TOUCHES"]: continue
             if bot_touch < CONFIG["MIN_BOT_TOUCHES"]: continue
@@ -276,7 +293,9 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if end_window != i - 1:
             continue
 
-        box_high = float(M["top"][k]); box_low = float(M["bottom"][k])
+        # 🆕 استخدم الـ cluster (مستوى المقاومة/الدعم الفعلي)
+        box_high = float(M["top_cluster"][k])
+        box_low  = float(M["bot_cluster"][k])
         impulse = float(M["impulse"][k])
         up_thr = box_high * (1 + buf); down_thr = box_low * (1 - buf)
 
@@ -312,14 +331,14 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# _build_pattern — 🆕 TP = حجم الانطلاقة
+# _build_pattern — TP = impulse size
 # ══════════════════════════════════════════════════════════════════════════════
 def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
     entry = float(closes[idx])
     box_high = info["top"]; box_low = info["bottom"]
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
-    # ═══ SL على الجهة المقابلة ═══════════════════════════════════════
+    # SL
     if direction == "BUY":
         sl = box_low * (1 - sl_buf)
         if sl >= entry: return None
@@ -331,16 +350,14 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
         risk = sl - entry
         if risk <= 0: return None
 
-    # ═══ 🆕 TP = حجم الانطلاقة قبل التصحيح ═══════════════════════════
+    # 🆕 TP = حجم الانطلاقة
     impulse_dist = abs(info["impulse_pct"]) / 100.0 * entry
-
-    # fallback: إذا كانت الانطلاقة صغيرة جداً، استخدم 2× المخاطرة
     if impulse_dist < 0.5 * risk:
         impulse_dist = 2.0 * risk
 
     tp = entry + impulse_dist if direction == "BUY" else entry - impulse_dist
 
-    # ═══ فلتر R:R مقبول ══════════════════════════════════════════════
+    # فلتر R:R
     rr = abs(tp - entry) / risk
     if rr < CONFIG["MIN_RR_ACCEPTED"]:
         return None
@@ -348,22 +365,29 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
     bias = "Bullish" if direction == "BUY" else "Bearish"
     start_p = info["start"]; end_p = info["end"]
 
-    # نقاط اللمسات
-    tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
+    # 🆕 نقاط اللمسات — عند السعر الفعلي لكل قمة/قاع قريب من الخط
+    tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 3.0
     seg_h = highs[start_p:end_p + 1]; seg_l = lows[start_p:end_p + 1]
-    top_hits = np.where(seg_h >= box_high * (1 - tol_vis))[0]
-    bot_hits = np.where(seg_l <= box_low * (1 + tol_vis))[0]
 
-    top_nodes = [(int(start_p + p), box_high) for p in top_hits]
-    bot_nodes = [(int(start_p + p), box_low) for p in bot_hits]
+    top_hits = np.where(np.abs(seg_h - box_high) <= box_high * tol_vis)[0]
+    bot_hits = np.where(np.abs(seg_l - box_low)  <= box_low  * tol_vis)[0]
+
+    # النقاط عند السعر الفعلي للشموع (تُلامس الشارت)
+    top_nodes = [(int(start_p + p), float(seg_h[p])) for p in top_hits]
+    bot_nodes = [(int(start_p + p), float(seg_l[p])) for p in bot_hits]
+
+    # خطان أفقيان عند الـ cluster
     top_line = [(int(start_p), box_high), (int(end_p), box_high)]
-    bot_line = [(int(start_p), box_low), (int(end_p), box_low)]
+    bot_line = [(int(start_p), box_low),  (int(end_p), box_low)]
+
     nodes = [(int(idx), entry)]
 
+    # سهم
     arrow_len = max(8, (end_p - start_p) // 3)
     x1_pos = min(idx + arrow_len, len(df) - 1)
     arrow = {"x0": int(idx), "y0": entry, "x1": int(x1_pos), "y1": tp, "direction": direction}
 
+    # المستطيل
     box_data = {"x_start": int(start_p), "x_end": int(end_p),
                 "high": float(box_high), "low": float(box_low)}
 
@@ -376,7 +400,7 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
         "sl": round(sl, 5), "tp": round(tp, 5),
         "SL": round(sl, 5), "TP": round(tp, 5), "Entry": round(entry, 5),
         "R:R": round(rr, 2),
-        "tp_source": "impulse_size",        # 🆕 مصدر الهدف
+        "tp_source": "impulse_size",
         "impulse_distance": round(impulse_dist, 5),
         "nodes": nodes, "top_nodes": top_nodes, "bot_nodes": bot_nodes,
         "top_line": top_line, "bot_line": bot_line, "arrow": arrow,
@@ -387,7 +411,7 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
         "channel_duration_bars": int(info["W"]),
         "channel_range_pct": round(info["range_pct"], 3),
         "neckline_start_idx": int(start_p), "neckline_end_idx": int(idx), "end_pos": int(idx),
-        "Entry Conditions": f"W{info['W']} rectangle · TP = impulse {info['impulse_pct']:+.2f}% · R:R {rr:.2f}",
+        "Entry Conditions": f"W{info['W']} rect · TP=impulse {info['impulse_pct']:+.2f}% · R:R {rr:.2f}",
         "consol_high": round(box_high, 5), "consol_low": round(box_low, 5),
         "consol_bars": int(info["W"]), "consol_range_pct": round(info["range_pct"], 3),
         "consol_stability_pct": 100.0,
@@ -632,8 +656,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Horizontal Rectangle v18 (TP = impulse size)")
+    print("ENGINE.PY — Horizontal Rectangle v19 (cluster-based lines)")
     print(f"Windows: {CONFIG['WINDOW_SIZES']}")
-    print(f"Min range: {CONFIG['MIN_RANGE_PCT']}% | Max range: {CONFIG['MAX_RANGE_PCT']}%")
-    print(f"Min R:R accepted: {CONFIG['MIN_RR_ACCEPTED']}")
-    print(f"TP source: impulse size before rectangle")
+    print(f"Cluster top %: {CONFIG['CLUSTER_TOP_PCT']*100}%")
+    print(f"Range: {CONFIG['MIN_RANGE_PCT']}% – {CONFIG['MAX_RANGE_PCT']}%")
+    print(f"TP source: impulse size")
+    print(f"Min R:R: {CONFIG['MIN_RR_ACCEPTED']}")
