@@ -1,19 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Rectangle Reversal Pattern (v14.1)
+ENGINE.PY — Rectangle Reversal Pattern (v14.2)
 ==============================================
-يكتشف نمط "اتجاه قوي → مستطيل بحدود متساوية → كسر":
+يكتشف نمط "اتجاه قوي → مستطيل أفقي → كسر بإغلاق شمعة":
 
 الشروط:
-  1) انطلاقة قوية قبل المستطيل (≥ 1% في ≤ 30 شمعة)
-  2) حدود المستطيل: كل قمة ≈ القمة الأعلى (≥ 3 لمسات)، كل قاع ≈ القاع الأدنى (≥ 3 لمسات)
-  3) تسطّح الحدود: الفرق بين أعلى وأدنى لمسة ≤ 0.25%
-  4) الكسر بإغلاق شمعة خارج الحد + جسم واضح
+  1) انطلاقة قوية قبل المستطيل (≥ 0.8% خلال 30 شمعة)
+  2) مستطيل بحدود أفقية: ≥ 3 لمسات علوية + ≥ 3 لمسات سفلية
+  3) تسطّح الحدود ≤ 0.45%
+  4) الكسر بإغلاق شمعة خارج الحد + جسم ≥ 0.08%
   5) SL على الجهة المقابلة، TP = 3× المخاطرة
 
-الإصلاح v14.1:
-  • nodes و arrow و box تستخدم positions (أرقام) لا تواريخ
-  • يتوافق مع reset_index في الواجهة
+الإضافات v14.2:
+  • top_line / bot_line (خطان أفقيان مستقيمان)
+  • top_nodes / bot_nodes (علامات على اللمسات)
+  • nodes = نقطة الدخول فقط
+  • consolidation_box لرسم المستطيل
 """
 import numpy as np
 import pandas as pd
@@ -21,23 +23,30 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 
 CONFIG = {
+    # ── نافذة المستطيل ─────────────────────────────────────────────────
     "WINDOW_SIZES": [35, 55, 80, 110, 155, 210],
+
+    # ── شروط اللمسات والتسطّح ───────────────────────────────────────────
     "MIN_TOP_TOUCHES": 3,
     "MIN_BOT_TOUCHES": 3,
-    "TOUCH_TOLERANCE_PCT": 0.18,
-    "FLATNESS_MAX_PCT": 0.30,
-    "MIN_RANGE_PCT": 0.30,
-    "MAX_RANGE_PCT": 3.50,
+    "TOUCH_TOLERANCE_PCT": 0.20,     # قمة "تلمس" الحد إذا كانت ضمن ±0.20%
+    "FLATNESS_MAX_PCT": 0.45,        # تسطّح الحد (max-min)/mean ≤ 0.45%
+    "MIN_RANGE_PCT": 0.25,
+    "MAX_RANGE_PCT": 4.00,
 
+    # ── الانطلاقة قبل المستطيل ──────────────────────────────────────────
     "IMPULSE_LOOKBACK": 30,
-    "MIN_IMPULSE_PCT": 1.00,
+    "MIN_IMPULSE_PCT": 0.80,
 
+    # ── الكسر ───────────────────────────────────────────────────────────
     "BREAKOUT_BUFFER_PCT": 0.05,
-    "MIN_BREAKOUT_BODY_PCT": 0.10,
+    "MIN_BREAKOUT_BODY_PCT": 0.08,
 
+    # ── SL / TP ─────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
     "TP_RR": 3.0,
 
+    # ── فلاتر عامة ──────────────────────────────────────────────────────
     "MIN_BARS_BETWEEN": 15,
     "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
@@ -126,16 +135,9 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
         bot_max = np.nanmax(bot_masked, axis=1)
         bot_min = np.nanmin(bot_masked, axis=1)
 
-    top_flat_pct = np.where(win_high > 0,
-                            (top_max - top_min) / win_high * 100,
-                            np.inf)
-    bot_flat_pct = np.where(win_low > 0,
-                            (bot_max - bot_min) / win_low * 100,
-                            np.inf)
-
-    range_pct = np.where(win_low > 0,
-                         (win_high - win_low) / win_low * 100,
-                         np.inf)
+    top_flat_pct = np.where(win_high > 0, (top_max - top_min) / win_high * 100, np.inf)
+    bot_flat_pct = np.where(win_low  > 0, (bot_max - bot_min) / win_low  * 100, np.inf)
+    range_pct    = np.where(win_low  > 0, (win_high - win_low) / win_low * 100, np.inf)
 
     impulse_pct = np.full(m, 0.0, dtype=np.float32)
     for k in range(m):
@@ -202,8 +204,8 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
             (M["range_pct"] <= CONFIG["MAX_RANGE_PCT"]) &
             (M["top_touch"] >= CONFIG["MIN_TOP_TOUCHES"]) &
             (M["bot_touch"] >= CONFIG["MIN_BOT_TOUCHES"]) &
-            (M["top_flat"] <= CONFIG["FLATNESS_MAX_PCT"]) &
-            (M["bot_flat"] <= CONFIG["FLATNESS_MAX_PCT"]) &
+            (M["top_flat"]  <= CONFIG["FLATNESS_MAX_PCT"]) &
+            (M["bot_flat"]  <= CONFIG["FLATNESS_MAX_PCT"]) &
             (np.abs(M["impulse"]) >= CONFIG["MIN_IMPULSE_PCT"])
         )
         valid_idx = np.where(valid)[0]
@@ -264,9 +266,7 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     return patterns
 
 
-def _build_pattern(df, idx, info, direction, body_pct,
-                   highs, lows, closes):
-    """ملاحظة: كل الإحداثيات positions (int) — متوافقة مع reset_index."""
+def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
     entry = float(closes[idx])
     box_high = info["top"]
     box_low  = info["bottom"]
@@ -297,7 +297,9 @@ def _build_pattern(df, idx, info, direction, body_pct,
     start_p = info["start"]
     end_p   = info["end"]
 
-    # ── nodes: positions (int) ───────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════
+    # 🎯 اللمسات: قمم علوية + قيعان سفلية كمجموعتين منفصلتين
+    # ═══════════════════════════════════════════════════════════════════
     tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
     seg_h = highs[start_p:end_p + 1]
     seg_l = lows [start_p:end_p + 1]
@@ -305,31 +307,33 @@ def _build_pattern(df, idx, info, direction, body_pct,
     top_thr = box_high * (1 - tol_vis)
     bot_thr = box_low  * (1 + tol_vis)
 
-    top_hits = np.where(seg_h >= top_thr)[0]
-    bot_hits = np.where(seg_l <= bot_thr)[0]
+    top_hits = np.where(seg_h >= top_thr)[0]   # مواضع القمم الملامسة
+    bot_hits = np.where(seg_l <= bot_thr)[0]   # مواضع القيعان الملامسة
 
-    touch_list = []
-    for p in top_hits:
-        touch_list.append((int(start_p + p), box_high))
-    for p in bot_hits:
-        touch_list.append((int(start_p + p), box_low))
-    touch_list.sort()
+    # ── علامات على كل لمسة ─────────────────────────────────────────────
+    top_nodes = [(int(start_p + p), box_high) for p in top_hits]
+    bot_nodes = [(int(start_p + p), box_low)  for p in bot_hits]
 
-    nodes = [(pos, val) for pos, val in touch_list]
-    nodes.append((int(idx), entry))
+    # ── خطان أفقيان مستقيمان (نقطتان فقط لكل خط) ───────────────────────
+    top_line = [(int(start_p), box_high), (int(end_p), box_high)]
+    bot_line = [(int(start_p), box_low),  (int(end_p), box_low)]
 
-    # ── arrow: positions (int) ───────────────────────────────────────
+    # ── نقطة الدخول فقط ────────────────────────────────────────────────
+    nodes = [(int(idx), entry)]
+
+    # ── سهم الهدف ─────────────────────────────────────────────────────
     arrow_len = max(8, (end_p - start_p) // 3)
     x1_pos = min(idx + arrow_len, len(df) - 1)
     arrow = {
-        "x0": int(idx),      "y0": entry,
-        "x1": int(x1_pos),   "y1": tp,
+        "x0": int(idx), "y0": entry,
+        "x1": int(x1_pos), "y1": tp,
         "direction": direction,
     }
 
+    # ── المستطيل ──────────────────────────────────────────────────────
     box_data = {
         "x_start": int(start_p),
-        "x_end":   int(idx),
+        "x_end":   int(end_p),
         "high":    round(box_high, 5),
         "low":     round(box_low, 5),
     }
@@ -351,9 +355,17 @@ def _build_pattern(df, idx, info, direction, body_pct,
         "SL": round(sl, 5),
         "TP": round(tp, 5),
         "Entry": round(entry, 5),
-        "nodes": nodes,
-        "arrow": arrow,
+
+        # نقاط الرسم
+        "nodes":       nodes,        # نقطة الدخول فقط
+        "top_nodes":   top_nodes,    # علامات القمم
+        "bot_nodes":   bot_nodes,    # علامات القيعان
+        "top_line":    top_line,     # خط المقاومة الأفقي
+        "bot_line":    bot_line,     # خط الدعم الأفقي
+        "arrow":       arrow,
         "consolidation_box": box_data,
+
+        # بيانات مساندة
         "resistance": round(box_high, 5),
         "support":    round(box_low, 5),
         "level_price": round(box_high if direction == "BUY" else box_low, 5),
@@ -391,7 +403,7 @@ def simulate_trade_outcome(pattern, df):
     entry   = float(pattern["entry"])
     sl      = float(pattern["sl"])
     tp      = float(pattern["tp"])
-    end_idx = pattern["neckline_end_idx"]   # position (int)
+    end_idx = pattern["neckline_end_idx"]
 
     stats = {
         "Result": "OPEN", "Head Result": "OPEN",
@@ -518,8 +530,13 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
         "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
         "sl": latest["sl"], "tp": latest["tp"],
-        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
-        "arrow": latest.get("arrow"),
+        "nodes":       latest.get("nodes", []),
+        "pattern_nodes": latest.get("nodes", []),
+        "top_nodes":   latest.get("top_nodes", []),
+        "bot_nodes":   latest.get("bot_nodes", []),
+        "top_line":    latest.get("top_line"),
+        "bot_line":    latest.get("bot_line"),
+        "arrow":       latest.get("arrow"),
         "consolidation_box": latest.get("consolidation_box"),
         "resistance": latest.get("resistance"),
         "support": latest.get("support"),
@@ -565,8 +582,13 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Max Reach %": p.get("Max Reach %", 0.0),
             "SL Safety %": p.get("SL Safety %", 0.0),
             "Entry Conditions": p.get("Entry Conditions", ""),
-            "nodes": p["nodes"],
-            "arrow": p.get("arrow"),
+            "nodes":       p.get("nodes", []),
+            "top_nodes":   p.get("top_nodes", []),
+            "bot_nodes":   p.get("bot_nodes", []),
+            "top_line":    p.get("top_line"),
+            "bot_line":    p.get("bot_line"),
+            "arrow":       p.get("arrow"),
+            "consolidation_box": p.get("consolidation_box"),
             "candles_to_exit": p.get("candles_to_exit", 0),
             "progress_ratio": p.get("progress_ratio", 0.0),
             "neckline_end_idx": p["neckline_end_idx"],
@@ -689,7 +711,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Rectangle Reversal v14.1 (positions-based)")
+    print("ENGINE.PY — Rectangle Reversal v14.2 (flat lines + separate markers)")
     print(f"Windows: {CONFIG['WINDOW_SIZES']}")
     print(f"Touches: top≥{CONFIG['MIN_TOP_TOUCHES']} | bot≥{CONFIG['MIN_BOT_TOUCHES']} | tol ±{CONFIG['TOUCH_TOLERANCE_PCT']}%")
     print(f"Flatness ≤ {CONFIG['FLATNESS_MAX_PCT']}% | Impulse ≥ {CONFIG['MIN_IMPULSE_PCT']}%")
