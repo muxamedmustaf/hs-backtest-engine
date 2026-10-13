@@ -1,18 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Chart Geometry Strategy Discovery (v13)
-====================================================
-بدلاً من المؤشرات، نستخرج من الشارت:
-  • قمم وقيعان (Swing High/Low)
-  • أحجام الحركات (Impulse size)
-  • نسب الارتداد (Retracement %)
-  • ميل خطوط القمم والقيعان
-  • المسافات الزمنية بين القمم والقيعان
-  • ضغط النطاق (Compression) وموقع السعر داخله
-  • شكل الشمعة (أجسام / فتائل)
-  • الاتجاه والانعكاسات
+ENGINE.PY — Rectangle Reversal Pattern (v14)
+=============================================
+يكتشف نمط "اتجاه قوي → مستطيل بحدود متساوية → كسر":
 
-ثم نربطها بنسبة الربح ونستخرج قواعد هندسية للدخول.
+الشروط:
+  1) انطلاقة قوية قبل المستطيل (≥ 1% في ≤ 30 شمعة)
+  2) حدود المستطيل: كل قمة ≈ القمة الأعلى (≥ 3 لمسات)، كل قاع ≈ القاع الأدنى (≥ 3 لمسات)
+  3) تسطّح الحدود: الفرق بين أعلى وأدنى لمسة ≤ 0.25%
+  4) الكسر بإغلاق شمعة خارج الحد + جسم واضح
+  5) SL على الجهة المقابلة، TP = 3× المخاطرة
 """
 import numpy as np
 import pandas as pd
@@ -20,26 +17,49 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 
 CONFIG = {
-    # ── تعريف الصفقة الرابحة ────────────────────────────────────────────
-    "LOOKAHEAD_BARS": 100,
-    "SL_PCT": 0.5,                   # الوقف = 0.5% من السعر (هندسي، بلا مؤشرات)
-    "TP_PCT": 1.5,                   # الهدف = 1.5% (1:3)
+    # ── المستطيل ────────────────────────────────────────────────────────
+    "WINDOW_SIZES": [35, 55, 80, 110, 155, 210],
+    "MIN_TOP_TOUCHES": 3,            # 3 قمم على الحد العلوي
+    "MIN_BOT_TOUCHES": 3,            # 3 قيعان على الحد السفلي
+    "TOUCH_TOLERANCE_PCT": 0.18,     # قمة "تلمس" الحد إذا كانت ضمن ±0.18%
+    "FLATNESS_MAX_PCT": 0.30,        # تسطّح الحد: (max-min)/mean ≤ 0.30%
+    "MIN_RANGE_PCT": 0.30,           # أدنى ارتفاع المستطيل
+    "MAX_RANGE_PCT": 3.50,           # أقصى ارتفاع
 
-    # ── معايير القواعد ──────────────────────────────────────────────────
-    "MIN_SAMPLES_FOR_RULE": 40,
-    "MIN_WIN_RATE": 60.0,
-    "N_BINS": 10,
+    # ── الانطلاقة قبل المستطيل ──────────────────────────────────────────
+    "IMPULSE_LOOKBACK": 30,          # آخر 30 شمعة قبل المستطيل
+    "MIN_IMPULSE_PCT": 1.00,         # حركة ≥ 1%
 
-    # ── Swing parameters ────────────────────────────────────────────────
-    "SWING_LOOKBACK": 3,             # 3-bar fractal لكل جانب
+    # ── الكسر ───────────────────────────────────────────────────────────
+    "BREAKOUT_BUFFER_PCT": 0.05,
+    "MIN_BREAKOUT_BODY_PCT": 0.10,
 
-    "MIN_BARS_REQUIRED": 250,
+    # ── SL / TP ─────────────────────────────────────────────────────────
+    "SL_BUFFER_PCT": 0.05,
+    "TP_RR": 3.0,
+
+    # ── فلاتر ───────────────────────────────────────────────────────────
+    "MIN_BARS_BETWEEN": 15,
+    "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
+    "MIN_BARS_REQUIRED": 120,
+}
+
+
+REASON_MAP = {
+    "immediate_rejection": {"reason": "رفض فوري.", "action": "انتظر.", "prevention": "—"},
+    "early_reversal":      {"reason": "انعكاس مبكر.", "action": "SL للتعادل.", "prevention": "Trailing."},
+    "mid_reversal":        {"reason": "انعكاس متوسط.", "action": "خروج 50%.", "prevention": "TP جزئي."},
+    "late_reversal":       {"reason": "انعكاس متأخر.", "action": "Trailing.", "prevention": "راقب."},
+    "timeout":             {"reason": "انتهى الوقت.", "action": "أغلق.", "prevention": "ADX."},
+    "breakeven":           {"reason": "تعادل.", "action": "—", "prevention": "—"},
+    "success":             {"reason": "وصل الهدف.", "action": "كرر.", "prevention": "—"},
+    "open":                {"reason": "مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Helpers (نفس التوقيع القديم)
+# Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_max_gap(interval):
     return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
@@ -51,691 +71,671 @@ def _get_max_pattern_duration(interval):
             "4h": 80, "1d": 60}.get(interval, 200)
 
 
+def _days_to_bars(days, interval):
+    bpd = {"1m": 1440, "5m": 288, "15m": 96, "30m": 48, "1h": 24,
+           "4h": 6, "1d": 1}.get(interval, 24)
+    return max(3, int(round(bpd * days)))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 Swing highs/lows detection (نقية بالكامل)
+# Indicators (متوافقة مع بقية الكود)
 # ══════════════════════════════════════════════════════════════════════════════
-def find_swings(highs, lows, k=3):
+def calculate_indicators(df):
+    df = df.copy()
+    hl = df["High"] - df["Low"]
+    hc = np.abs(df["High"] - df["Close"].shift())
+    lc = np.abs(df["Low"] - df["Close"].shift())
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    df["ATR"] = tr.rolling(14).mean()
+    df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
+    df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
+    if "Volume" in df.columns:
+        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df["Volume"] = v
+        df["Volume_MA"] = v.rolling(CONFIG["VOLUME_MA_PERIOD"]).mean().fillna(0.0)
+    else:
+        df["Volume"] = 0.0
+        df["Volume_MA"] = 0.0
+    return df
+
+
+def calculate_zigzag(df, *a, **kw):
+    return df.copy()
+
+
+def get_chronological_pivots(df):
+    return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚡ حوسبة خصائص المستطيل لنافذة حجم W لكل موضع انتهاء
+# ══════════════════════════════════════════════════════════════════════════════
+def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
     """
-    قمة = High[i] > High[i-k : i+k] (بدون i)
-    قاع  = Low[i]  < Low[i-k : i+k]  (بدون i)
-    يعيد (swing_high_idx, swing_low_idx) — كل منهما numpy array.
-    """
-    n = len(highs)
-    sh_mask = np.zeros(n, dtype=bool)
-    sl_mask = np.zeros(n, dtype=bool)
-    if n < 2 * k + 1:
-        return np.where(sh_mask)[0], np.where(sl_mask)[0]
-
-    for i in range(k, n - k):
-        h_win = highs[i - k:i + k + 1]
-        l_win = lows[i - k:i + k + 1]
-        if highs[i] == h_win.max() and np.sum(h_win == highs[i]) == 1:
-            sh_mask[i] = True
-        if lows[i] == l_win.min() and np.sum(l_win == lows[i]) == 1:
-            sl_mask[i] = True
-
-    return np.where(sh_mask)[0], np.where(sl_mask)[0]
-
-
-def build_swing_series(highs, lows, closes, k=3):
-    """
-    لكل موضع i، يعيد معلومات آخر قمة وقاع:
-      last_high_val, last_high_pos, last_low_val, last_low_pos
-    كمتجهات numpy بطول n (forward-filled).
+    يعيد dict من المصفوفات المتجهية:
+      top, bottom, range_pct,
+      top_touch, bot_touch, top_flat, bot_flat,
+      impulse_pct (قبل النافذة)
+    جميعها بطول m = n - W
     """
     n = len(closes)
-    sh_idx, sl_idx = find_swings(highs, lows, k)
+    if n < W + impulse_bars + 2:
+        return None
 
-    last_h_val = np.full(n, np.nan)
-    last_h_pos = np.full(n, -1, dtype=np.int32)
-    last_l_val = np.full(n, np.nan)
-    last_l_pos = np.full(n, -1, dtype=np.int32)
+    hs = sliding_window_view(highs, W)          # (m, W)
+    ls = sliding_window_view(lows,  W)
+    m = hs.shape[0]
 
-    # دمج الحوادث في تسلسل زمني موحّد
-    events = []
-    for i in sh_idx:
-        events.append((i, "H", float(highs[i])))
-    for i in sl_idx:
-        events.append((i, "L", float(lows[i])))
-    events.sort()
+    win_high = hs.max(axis=1)
+    win_low  = ls.min(axis=1)
 
-    cur_h_val, cur_h_pos = np.nan, -1
-    cur_l_val, cur_l_pos = np.nan, -1
-    ei = 0
-    for i in range(n):
-        while ei < len(events) and events[ei][0] <= i:
-            _, typ, val = events[ei]
-            if typ == "H":
-                cur_h_val, cur_h_pos = val, events[ei][0]
-            else:
-                cur_l_val, cur_l_pos = val, events[ei][0]
-            ei += 1
-        last_h_val[i] = cur_h_val
-        last_h_pos[i] = cur_h_pos
-        last_l_val[i] = cur_l_val
-        last_l_pos[i] = cur_l_pos
+    # touches
+    top_thr = win_high * (1.0 - tol)
+    bot_thr = win_low  * (1.0 + tol)
+    top_touch = (hs >= top_thr[:, None]).sum(axis=1)
+    bot_touch = (ls <= bot_thr[:, None]).sum(axis=1)
 
-    return last_h_val, last_h_pos, last_l_val, last_l_pos, sh_idx, sl_idx
+    # flatness: max−min من القيم القريبة من الحد
+    top_masked = np.where(hs >= top_thr[:, None], hs, np.nan)
+    bot_masked = np.where(ls <= bot_thr[:, None], ls, np.nan)
 
+    with np.errstate(invalid="ignore"):
+        top_max = np.nanmax(top_masked, axis=1)
+        top_min = np.nanmin(top_masked, axis=1)
+        bot_max = np.nanmax(bot_masked, axis=1)
+        bot_min = np.nanmin(bot_masked, axis=1)
 
-def _last_n_swing_values(swing_idx, swing_vals, n):
-    """قائمة قيم آخر n قمم/قيعان لكل موضع i."""
-    total = len(swing_idx)
-    last_vals = np.full((len(swing_vals), n), np.nan, dtype=np.float32)
-    last_pos = np.full((len(swing_vals), n), -1, dtype=np.int32)
-    ei = 0
-    for i in range(len(swing_vals)):
-        while ei < total and swing_idx[ei] <= i:
-            # shift
-            last_vals[i, 1:] = last_vals[i, :-1]
-            last_pos[i, 1:]  = last_pos[i, :-1]
-            last_vals[i, 0] = swing_vals[swing_idx[ei]] if False else 0
-            last_vals[i, 0] = float(swing_vals[ei]) if False else 0
-            ei += 1
-        # not used - replaced below
-    return last_vals, last_pos
+    top_flat_pct = np.where(win_high > 0,
+                            (top_max - top_min) / win_high * 100,
+                            np.inf)
+    bot_flat_pct = np.where(win_low > 0,
+                            (bot_max - bot_min) / win_low * 100,
+                            np.inf)
 
+    range_pct = np.where(win_low > 0,
+                         (win_high - win_low) / win_low * 100,
+                         np.inf)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎯 استخراج 20 خاصية هندسية خالصة من الشارت
-# ══════════════════════════════════════════════════════════════════════════════
-def compute_chart_features(df, k_swing=None):
-    """يعيد dict: feature_name → np.array بطول df."""
-    if k_swing is None:
-        k_swing = CONFIG["SWING_LOOKBACK"]
-
-    o = df["Open"].values.astype(float)
-    h = df["High"].values.astype(float)
-    l = df["Low"].values.astype(float)
-    c = df["Close"].values.astype(float)
-    n = len(c)
-
-    close_safe = np.where(c > 0, c, 1e-9)
-
-    # ── قمم وقيعان ───────────────────────────────────────────────────────
-    lh_val, lh_pos, ll_val, ll_pos, sh_idx, sl_idx = build_swing_series(h, l, c, k_swing)
-
-    # المسافة من آخر قمة / آخر قاع (%)
-    dist_from_high = np.where(np.isfinite(lh_val), (lh_val - c) / close_safe * 100, np.nan)
-    dist_from_low  = np.where(np.isfinite(ll_val), (c - ll_val) / close_safe * 100, np.nan)
-
-    bars_since_high = np.where(lh_pos >= 0, np.arange(n) - lh_pos, np.nan).astype(np.float32)
-    bars_since_low  = np.where(ll_pos >= 0, np.arange(n) - ll_pos, np.nan).astype(np.float32)
-
-    # آخر حدث
-    last_is_high = np.where(lh_pos > ll_pos, 1.0, -1.0).astype(np.float32)
-
-    # ── حجم آخر دفعة (impulse) — من آخر قمة لقاعها أو العكس ──────────────
-    impulse_pct = np.full(n, np.nan, dtype=np.float32)
-    for i in range(n):
-        if lh_pos[i] >= 0 and ll_pos[i] >= 0:
-            hi = lh_val[i]; lo = ll_val[i]
-            if lo > 0:
-                impulse_pct[i] = abs(hi - lo) / lo * 100
-
-    # ── الارتداد الحالي من آخر دفعة (%) ─────────────────────────────────
-    retracement_pct = np.full(n, np.nan, dtype=np.float32)
-    for i in range(n):
-        if not np.isfinite(impulse_pct[i]) or impulse_pct[i] == 0:
+    # impulse before window
+    # يقاس على closes: من closes[W_start - impulse_bars] إلى closes[W_start - 1]
+    # W_start = i - W + 1 لأقصى موضع في نافذة م = i + W - 1 ....
+    # سنقيس على مواضع: ends[k] = k + W - 1 ; start = ends - W + 1 = k
+    # impulse = من close[k - impulse_bars] إلى close[k - 1]
+    impulse_pct = np.full(m, 0.0, dtype=np.float32)
+    for k in range(m):
+        base_idx = k - 1
+        t_start = base_idx - impulse_bars
+        if t_start < 0:
+            impulse_pct[k] = 0.0
             continue
-        hi = lh_val[i]; lo = ll_val[i]
-        if lh_pos[i] > ll_pos[i]:
-            # آخر دفعة صاعدة → الارتداد هبوطي
-            if hi > lo:
-                retracement_pct[i] = (hi - c[i]) / (hi - lo) * 100
-        else:
-            if hi > lo:
-                retracement_pct[i] = (c[i] - lo) / (hi - lo) * 100
-
-    # ── ميل خطوط آخر 3 قمم / قيعان ──────────────────────────────────────
-    # نجمع آخر 3 قمم لكل موضع i ثم نحسب الميل (%/bar)
-    last3_h = np.full((n, 3), np.nan, dtype=np.float32)
-    last3_h_pos = np.full((n, 3), -1, dtype=np.int32)
-    last3_l = np.full((n, 3), np.nan, dtype=np.float32)
-    last3_l_pos = np.full((n, 3), -1, dtype=np.int32)
-
-    # تعبئة متسلسلة
-    from collections import deque
-    hq = deque(maxlen=3)
-    lq = deque(maxlen=3)
-    events = []
-    for i in sh_idx:
-        events.append((int(i), "H", float(h[i])))
-    for i in sl_idx:
-        events.append((int(i), "L", float(l[i])))
-    events.sort()
-
-    ei = 0
-    for i in range(n):
-        while ei < len(events) and events[ei][0] <= i:
-            pos, typ, val = events[ei]
-            if typ == "H":
-                hq.append((pos, val))
-            else:
-                lq.append((pos, val))
-            ei += 1
-        # خزّن آخر 3 (بترتيب زمني تصاعدي)
-        for j, (pp, vv) in enumerate(reversed(list(hq))):
-            last3_h[i, j] = vv
-            last3_h_pos[i, j] = pp
-        for j, (pp, vv) in enumerate(reversed(list(lq))):
-            last3_l[i, j] = vv
-            last3_l_pos[i, j] = pp
-
-    slope_highs_pct = np.full(n, np.nan, dtype=np.float32)
-    slope_lows_pct  = np.full(n, np.nan, dtype=np.float32)
-
-    for i in range(n):
-        # قمم
-        h_idx = last3_h_pos[i]
-        h_val = last3_h[i]
-        valid = h_idx >= 0
-        if valid.sum() >= 2:
-            xs = h_idx[valid].astype(float)
-            ys = h_val[valid].astype(float)
-            if xs.max() > xs.min():
-                s = np.polyfit(xs, ys, 1)[0]
-                slope_highs_pct[i] = s / max(abs(np.mean(ys)), 1e-9) * 100
-        # قيعان
-        l_idx = last3_l_pos[i]
-        l_val = last3_l[i]
-        valid = l_idx >= 0
-        if valid.sum() >= 2:
-            xs = l_idx[valid].astype(float)
-            ys = l_val[valid].astype(float)
-            if xs.max() > xs.min():
-                s = np.polyfit(xs, ys, 1)[0]
-                slope_lows_pct[i] = s / max(abs(np.mean(ys)), 1e-9) * 100
-
-    # ── عائدات بحتة (returns) ───────────────────────────────────────────
-    def ret(lag):
-        r = np.full(n, np.nan, dtype=np.float32)
-        if n > lag:
-            r[lag:] = (c[lag:] - c[:-lag]) / close_safe[:-lag] * 100
-        return r
-
-    ret5  = ret(5)
-    ret10 = ret(10)
-    ret20 = ret(20)
-    ret50 = ret(50)
-
-    # ── ضغط النطاق (compression) ────────────────────────────────────────
-    high_s = pd.Series(h)
-    low_s  = pd.Series(l)
-    r5  = (high_s.rolling(5 ).max() - low_s.rolling(5 ).min()).values
-    r10 = (high_s.rolling(10).max() - low_s.rolling(10).min()).values
-    r20 = (high_s.rolling(20).max() - low_s.rolling(20).min()).values
-    r50 = (high_s.rolling(50).max() - low_s.rolling(50).min()).values
-
-    comp_5_20  = np.where(r20 > 0, r5  / r20 * 100, np.nan)
-    comp_10_50 = np.where(r50 > 0, r10 / r50 * 100, np.nan)
-
-    # ── موقع السعر داخل النطاق (0 = القاع، 1 = القمة) ───────────────────
-    h20 = high_s.rolling(20).max().values
-    l20 = low_s.rolling(20).min().values
-    range_pos_20 = np.where(h20 > l20, (c - l20) / (h20 - l20), 0.5)
-
-    h50 = high_s.rolling(50).max().values
-    l50 = low_s.rolling(50).min().values
-    range_pos_50 = np.where(h50 > l50, (c - l50) / (h50 - l50), 0.5)
-
-    # ── شموع متتالية بنفس الاتجاه ───────────────────────────────────────
-    bull = (c > o).astype(np.int32)
-    consec_bull = np.zeros(n, dtype=np.float32)
-    consec_bear = np.zeros(n, dtype=np.float32)
-    for i in range(1, n):
-        if bull[i]:
-            consec_bull[i] = consec_bull[i-1] + 1
-        else:
-            consec_bear[i] = consec_bear[i-1] + 1
-
-    # ── شكل الشمعة (body / wicks) ───────────────────────────────────────
-    rng = h - l
-    body = np.abs(c - o)
-    upper_wick = h - np.maximum(c, o)
-    lower_wick = np.minimum(c, o) - l
-    rng_safe = np.where(rng > 0, rng, 1e-9)
-
-    body_ratio        = body / rng_safe
-    upper_wick_ratio  = upper_wick / rng_safe
-    lower_wick_ratio  = lower_wick / rng_safe
-
-    # ── اختراق قمة/قاع حديث ─────────────────────────────────────────────
-    breakout_up = np.where(np.isfinite(lh_val), (c - lh_val) / close_safe * 100, np.nan)
-    breakout_dn = np.where(np.isfinite(ll_val), (ll_val - c) / close_safe * 100, np.nan)
+        p0 = closes[t_start]
+        p1 = closes[base_idx]
+        if p0 > 0:
+            impulse_pct[k] = (p1 - p0) / p0 * 100
 
     return {
-        # مسافات من قمم/قيعان
-        "dist_from_high_pct": dist_from_high,
-        "dist_from_low_pct":  dist_from_low,
-        "bars_since_high":    bars_since_high,
-        "bars_since_low":     bars_since_low,
-        "last_is_high":       last_is_high,
-        # حركات
-        "impulse_pct":        impulse_pct,
-        "retracement_pct":    retracement_pct,
-        "slope_highs_pct":    slope_highs_pct,
-        "slope_lows_pct":     slope_lows_pct,
-        # عائدات بحتة
-        "ret_5_pct":          ret5,
-        "ret_10_pct":         ret10,
-        "ret_20_pct":         ret20,
-        "ret_50_pct":         ret50,
-        # ضغط وموقع
-        "compression_5_20":   comp_5_20,
-        "compression_10_50":  comp_10_50,
-        "range_pos_20":       range_pos_20,
-        "range_pos_50":       range_pos_50,
-        # شموع
-        "consec_bull":        consec_bull,
-        "consec_bear":        consec_bear,
-        "body_ratio":         body_ratio,
-        "upper_wick_ratio":   upper_wick_ratio,
-        "lower_wick_ratio":   lower_wick_ratio,
-        # اختراق
-        "breakout_up_pct":    breakout_up,
-        "breakout_dn_pct":    breakout_dn,
+        "top":       win_high,
+        "bottom":    win_low,
+        "range_pct": range_pct,
+        "top_touch": top_touch.astype(np.int32),
+        "bot_touch": bot_touch.astype(np.int32),
+        "top_flat":  top_flat_pct,
+        "bot_flat":  bot_flat_pct,
+        "impulse":   impulse_pct,
+        "W":         W,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# حساب النتائج التاريخية (SL/TP نسب مئوية)
+# 🎯 DETECTOR
 # ══════════════════════════════════════════════════════════════════════════════
-def compute_outcomes(highs, lows, closes, horizon, sl_pct, tp_pct):
-    n = len(closes)
-    outcomes = np.zeros(n, dtype=np.int8)
-    achieved_rr = np.zeros(n, dtype=np.float32)
-    if n <= horizon + 1:
-        return outcomes, achieved_rr
-
-    fh = sliding_window_view(highs, horizon)[1:]
-    fl = sliding_window_view(lows,  horizon)[1:]
-    m = fh.shape[0]
-
-    entry = closes[:m]
-    sl_dist = entry * (sl_pct / 100.0)
-    tp_dist = entry * (tp_pct / 100.0)
-
-    buy_sl  = entry - sl_dist
-    buy_tp  = entry + tp_dist
-    sell_sl = entry + sl_dist
-    sell_tp = entry - tp_dist
-
-    hit_tp_b = fh >= buy_tp[:, None]
-    hit_sl_b = fl <= buy_sl[:, None]
-    hit_tp_s = fl <= sell_tp[:, None]
-    hit_sl_s = fh >= sell_sl[:, None]
-
-    BIG = horizon + 1
-    ftp_b = np.where(hit_tp_b.any(axis=1), np.argmax(hit_tp_b, axis=1), BIG)
-    fsl_b = np.where(hit_sl_b.any(axis=1), np.argmax(hit_sl_b, axis=1), BIG)
-    ftp_s = np.where(hit_tp_s.any(axis=1), np.argmax(hit_tp_s, axis=1), BIG)
-    fsl_s = np.where(hit_sl_s.any(axis=1), np.argmax(hit_sl_s, axis=1), BIG)
-
-    buy_win  = (ftp_b < fsl_b)
-    sell_win = (ftp_s < fsl_s) & ~buy_win
-
-    outcomes[:m][buy_win]  = 1
-    outcomes[:m][sell_win] = -1
-
-    max_up   = (fh.max(axis=1) - entry) / np.where(entry > 0, entry, 1e-9) * 100
-    max_down = (entry - fl.min(axis=1)) / np.where(entry > 0, entry, 1e-9) * 100
-    rr_buy   = np.where(sl_pct > 0, max_up   / sl_pct, 0)
-    rr_sell  = np.where(sl_pct > 0, max_down / sl_pct, 0)
-
-    achieved_rr[:m][buy_win]  = rr_buy[buy_win].astype(np.float32)
-    achieved_rr[:m][sell_win] = rr_sell[sell_win].astype(np.float32)
-
-    return outcomes, achieved_rr
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Rule mining (نفس المنطق لكن على الخصائص الهندسية)
-# ══════════════════════════════════════════════════════════════════════════════
-def _analyze_feature(fvals, outcomes, direction, n_bins):
-    valid = np.isfinite(fvals) & ~np.isnan(fvals)
-    fv = fvals[valid]
-    mw = outcomes[valid] == direction
-    ml = outcomes[valid] == -direction
-    if len(fv) < 80 or mw.sum() + ml.sum() < 40:
-        return None
-    try:
-        qs = np.percentile(fv, np.linspace(0, 100, n_bins + 1))
-    except Exception:
-        return None
-    qs = np.unique(qs)
-    if len(qs) < 3:
-        return None
-
-    bins_res = []
-    for i in range(len(qs) - 1):
-        lo, hi = qs[i], qs[i+1]
-        if i < len(qs) - 2:
-            in_bin = (fv >= lo) & (fv < hi)
-        else:
-            in_bin = (fv >= lo) & (fv <= hi)
-        w = int(mw[in_bin].sum())
-        l = int(ml[in_bin].sum())
-        tot = w + l
-        if tot < 20:
-            continue
-        wr = w / tot * 100
-        bins_res.append({
-            "lo": float(lo), "hi": float(hi),
-            "win_rate": float(wr), "samples": tot,
-            "wins": w, "losses": l,
-        })
-    return bins_res
-
-
-def analyze_features(features, outcomes, direction, n_bins):
-    results = {}
-    for fname, fvals in features.items():
-        bins_res = _analyze_feature(fvals, outcomes, direction, n_bins)
-        if not bins_res:
-            continue
-        best_bin = max(bins_res, key=lambda b: b["win_rate"] * np.log1p(b["samples"]))
-        results[fname] = {
-            "bins": bins_res,
-            "best_bin": best_bin,
-            "score": float(best_bin["win_rate"] * np.log1p(best_bin["samples"])),
-            "overall_baseline": (
-                (outcomes == direction).sum() /
-                max(((outcomes == direction) | (outcomes == -direction)).sum(), 1) * 100
-            ),
-        }
-    return results
-
-
-def discover_rules(features, outcomes, direction, n_bins,
-                   min_samples, min_win_rate, top_k=6):
-    fa = analyze_features(features, outcomes, direction, n_bins)
-    if not fa:
-        return [], {}
-
-    singles = []
-    for fname, res in fa.items():
-        for b in res["bins"]:
-            if b["win_rate"] >= min_win_rate and b["samples"] >= min_samples:
-                singles.append({
-                    "type": "single",
-                    "conditions": [{"feature": fname, "lo": b["lo"], "hi": b["hi"]}],
-                    "win_rate": b["win_rate"], "samples": b["samples"],
-                    "wins": b["wins"], "losses": b["losses"],
-                    "score": b["win_rate"] * np.log1p(b["samples"]),
-                    "_feature": fname,
-                    "_lo": b["lo"], "_hi": b["hi"],
-                })
-
-    top_features = sorted(fa.items(), key=lambda kv: kv[1]["score"], reverse=True)[:4]
-    doubles = []
-    for i in range(len(top_features)):
-        for j in range(i + 1, len(top_features)):
-            f1n, f1r = top_features[i]
-            f2n, f2r = top_features[j]
-            f1v = features[f1n]
-            f2v = features[f2n]
-
-            b1_sorted = sorted(f1r["bins"], key=lambda b: b["win_rate"] * np.log1p(b["samples"]), reverse=True)[:2]
-            b2_sorted = sorted(f2r["bins"], key=lambda b: b["win_rate"] * np.log1p(b["samples"]), reverse=True)[:2]
-
-            for b1 in b1_sorted:
-                for b2 in b2_sorted:
-                    mask = (
-                        (f1v >= b1["lo"]) & (f1v <= b1["hi"]) &
-                        (f2v >= b2["lo"]) & (f2v <= b2["hi"])
-                    )
-                    w = int(((outcomes == direction) & mask).sum())
-                    l = int(((outcomes == -direction) & mask).sum())
-                    tot = w + l
-                    if tot < min_samples:
-                        continue
-                    wr = w / tot * 100
-                    if wr < min_win_rate:
-                        continue
-                    doubles.append({
-                        "type": "double",
-                        "conditions": [
-                            {"feature": f1n, "lo": b1["lo"], "hi": b1["hi"]},
-                            {"feature": f2n, "lo": b2["lo"], "hi": b2["hi"]},
-                        ],
-                        "win_rate": float(wr), "samples": tot,
-                        "wins": w, "losses": l,
-                        "score": wr * np.log1p(tot),
-                        "_feature": f"{f1n}+{f2n}",
-                    })
-
-    all_rules = singles + doubles
-    all_rules.sort(key=lambda r: r["score"], reverse=True)
-
-    dedup = []
-    for r in all_rules:
-        is_dup = False
-        for d in dedup:
-            if d["_feature"] == r["_feature"]:
-                if (abs(d["conditions"][0]["lo"] - r["conditions"][0]["lo"]) /
-                    max(abs(d["conditions"][0]["lo"]), 1e-9) < 0.15):
-                    is_dup = True
-                    break
-        if not is_dup:
-            dedup.append(r)
-        if len(dedup) >= top_k:
-            break
-
-    return dedup, fa
-
-
-def evaluate_live_signal(features, rules, direction):
-    if not rules or not features:
-        return None
-    last_values = {k: float(v[-1]) for k, v in features.items() if np.isfinite(v[-1])}
-    matched = []
-    for r in rules:
-        ok = True
-        for cond in r["conditions"]:
-            fname = cond["feature"]
-            if fname not in last_values:
-                ok = False
-                break
-            v = last_values[fname]
-            if v < cond["lo"] or v > cond["hi"]:
-                ok = False
-                break
-        if ok:
-            matched.append(r)
-    if not matched:
-        return None
-    best = max(matched, key=lambda r: r["score"])
-    return {
-        "direction": direction,
-        "rule": best,
-        "last_values": last_values,
-        "matched_count": len(matched),
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎯 الواجهة الرئيسية
-# ══════════════════════════════════════════════════════════════════════════════
-def discover_strategy(df, interval="1h", symbol=None):
-    empty = {
-        "error": None, "symbol": symbol or "N/A",
-        "stats": {}, "features": {}, "rules_buy": [], "rules_sell": [],
-        "feature_analysis_buy": {}, "feature_analysis_sell": {},
-        "live_buy": None, "live_sell": None,
-    }
+def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        empty["error"] = f"بيانات غير كافية: {0 if df is None else len(df)}"
-        return empty
+        return []
 
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
         if c not in df.columns:
-            empty["error"] = f"مفقود: {c}"
-            return empty
+            return []
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=False)
+    if "index" not in df.columns:
+        df = df.reset_index(drop=False)
+    df = df.set_index("index", drop=False)
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
+        return []
+
+    df = calculate_indicators(df)
+
+    highs  = df["High"].values.astype(float)
+    lows   = df["Low"].values.astype(float)
+    opens  = df["Open"].values.astype(float)
+    closes = df["Close"].values.astype(float)
+    idxs   = df.index.values
+    n      = len(df)
+
+    tol = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0
+    buf = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
+    imp_bars = CONFIG["IMPULSE_LOOKBACK"]
+
+    patterns = []
+    last_signal_pos = -10**9
+
+    # لكل حجم نافذة نحوس كل مقاييسها دفعة واحدة
+    for W in CONFIG["WINDOW_SIZES"]:
+        if W + imp_bars + 5 > n:
+            continue
+        M = _window_metrics(highs, lows, opens, closes, W, tol, imp_bars)
+        if M is None:
+            continue
+
+        # قناع النوافذ الصالحة
+        valid = (
+            (M["range_pct"] >= CONFIG["MIN_RANGE_PCT"]) &
+            (M["range_pct"] <= CONFIG["MAX_RANGE_PCT"]) &
+            (M["top_touch"] >= CONFIG["MIN_TOP_TOUCHES"]) &
+            (M["bot_touch"] >= CONFIG["MIN_BOT_TOUCHES"]) &
+            (M["top_flat"] <= CONFIG["FLATNESS_MAX_PCT"]) &
+            (M["bot_flat"] <= CONFIG["FLATNESS_MAX_PCT"]) &
+            (np.abs(M["impulse"]) >= CONFIG["MIN_IMPULSE_PCT"])
+        )
+        valid_idx = np.where(valid)[0]
+        if len(valid_idx) == 0:
+            continue
+
+        # نافذة k تنتهي عند k + W - 1 → الكسر عند k + W
+        for k in valid_idx:
+            end_window = int(k + W - 1)
+            breakout_idx = end_window + 1
+            if breakout_idx >= n:
+                continue
+            if breakout_idx - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
+                continue
+
+            close_bk = closes[breakout_idx]
+            open_bk  = opens[breakout_idx]
+            prev_c   = closes[breakout_idx - 1]
+
+            body_pct = abs(close_bk - open_bk) / max(close_bk, 1e-9) * 100
+            if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
+                continue
+
+            box_high = float(M["top"][k])
+            box_low  = float(M["bottom"][k])
+            impulse  = float(M["impulse"][k])
+            up_thr   = box_high * (1 + buf)
+            down_thr = box_low  * (1 - buf)
+
+            direction = None
+            if prev_c <= up_thr and close_bk > up_thr and close_bk > open_bk:
+                direction = "BUY"
+            elif prev_c >= down_thr and close_bk < down_thr and close_bk < open_bk:
+                direction = "SELL"
+
+            if direction is None:
+                continue
+
+            info = {
+                "top":         box_high,
+                "bottom":      box_low,
+                "range_pct":   float(M["range_pct"][k]),
+                "top_touch":   int(M["top_touch"][k]),
+                "bot_touch":   int(M["bot_touch"][k]),
+                "top_flat":    float(M["top_flat"][k]),
+                "bot_flat":    float(M["bot_flat"][k]),
+                "impulse_pct": impulse,
+                "start":       int(k),
+                "end":         end_window,
+                "W":           W,
+            }
+            pattern = _build_pattern(df, breakout_idx, info, direction, body_pct,
+                                     highs, lows, closes, idxs)
+            if pattern:
+                patterns.append(pattern)
+                last_signal_pos = breakout_idx
+
+    patterns.sort(key=lambda p: p["end_pos"])
+    return patterns
+
+
+def _build_pattern(df, idx, info, direction, body_pct,
+                   highs, lows, closes, idxs):
+    entry = float(closes[idx])
+    box_high = info["top"]
+    box_low  = info["bottom"]
+    sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
+
+    if direction == "BUY":
+        sl = box_low * (1 - sl_buf)
+        if sl >= entry:
+            return None
+        risk = entry - sl
+        if risk <= 0:
+            return None
+        tp = entry + CONFIG["TP_RR"] * risk
+    else:
+        sl = box_high * (1 + sl_buf)
+        if sl <= entry:
+            return None
+        risk = sl - entry
+        if risk <= 0:
+            return None
+        tp = entry - CONFIG["TP_RR"] * risk
+
+    rr = abs(tp - entry) / risk
+    if rr < CONFIG["TP_RR"] - 0.05:
+        return None
+
+    bias = "Bullish" if direction == "BUY" else "Bearish"
+    start_p = info["start"]
+    end_p   = info["end"]
+
+    # ── Nodes: قمم وقيعان ملامسة للحدين + نقطة الكسر ──────────────────
+    tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
+    seg_h = highs[start_p:end_p + 1]
+    seg_l = lows [start_p:end_p + 1]
+
+    top_thr = box_high * (1 - tol_vis)
+    bot_thr = box_low  * (1 + tol_vis)
+
+    top_hits = np.where(seg_h >= top_thr)[0]
+    bot_hits = np.where(seg_l <= bot_thr)[0]
+
+    touch_list = []
+    for p in top_hits:
+        touch_list.append((int(start_p + p), box_high))
+    for p in bot_hits:
+        touch_list.append((int(start_p + p), box_low))
+    touch_list.sort()
+
+    nodes = [(idxs[pos], val) for pos, val in touch_list]
+    nodes.append((idxs[idx], entry))
+
+    # ── سهم الهدف ─────────────────────────────────────────────────────
+    arrow_len = max(8, (end_p - start_p) // 3)
+    x1_pos = min(idx + arrow_len, len(df) - 1)
+    arrow = {
+        "x0": idxs[idx], "y0": entry,
+        "x1": idxs[x1_pos], "y1": tp,
+        "direction": direction,
+    }
+
+    box_data = {
+        "x_start": start_p,
+        "x_end":   idx,
+        "high":    round(box_high, 5),
+        "low":     round(box_low, 5),
+    }
+
+    pattern = {
+        "name": "Rectangle Reversal",
+        "pattern": (
+            f"Rectangle {direction} · "
+            f"T{info['top_touch']}/B{info['bot_touch']} · "
+            f"imp {info['impulse_pct']:+.2f}%"
+        ),
+        "bias": bias,
+        "direction": direction,
+        "match": float(min(100, 55 + (info["top_touch"] + info["bot_touch"]) * 6)),
+        "entry": round(entry, 5),
+        "entry_trigger": round(entry, 5),
+        "sl": round(sl, 5),
+        "tp": round(tp, 5),
+        "SL": round(sl, 5),
+        "TP": round(tp, 5),
+        "Entry": round(entry, 5),
+        "nodes": nodes,
+        "arrow": arrow,
+        "consolidation_box": box_data,
+        "resistance": round(box_high, 5),
+        "support":    round(box_low, 5),
+        "level_price": round(box_high if direction == "BUY" else box_low, 5),
+        "channel_start": idxs[start_p],
+        "channel_end":   idxs[end_p],
+        "channel_duration_bars": int(info["W"]),
+        "channel_range_pct": round(info["range_pct"], 3),
+        "neckline_start_idx": idxs[start_p],
+        "neckline_end_idx":   idxs[idx],
+        "end_pos": idx,
+        "Entry Conditions": (
+            f"Impulse {info['impulse_pct']:+.2f}% → rectangle {info['W']} bars "
+            f"({info['range_pct']:.2f}%, T{info['top_touch']}/B{info['bot_touch']}, "
+            f"flat {info['top_flat']:.2f}/{info['bot_flat']:.2f}) → close breakout"
+        ),
+        "consol_high": round(box_high, 5),
+        "consol_low":  round(box_low, 5),
+        "consol_bars": int(info["W"]),
+        "consol_range_pct": round(info["range_pct"], 3),
+        "consol_stability_pct": 100.0,
+        "breakout_body_pct": round(body_pct, 3),
+        "top_touches": info["top_touch"],
+        "bot_touches": info["bot_touch"],
+        "top_flatness_pct": round(info["top_flat"], 4),
+        "bot_flatness_pct": round(info["bot_flat"], 4),
+        "impulse_pct": round(info["impulse_pct"], 3),
+    }
+
+    pattern.update(simulate_trade_outcome(pattern, df))
+    return pattern
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Simulation
+# ══════════════════════════════════════════════════════════════════════════════
+def simulate_trade_outcome(pattern, df):
+    bias    = pattern["bias"]
+    entry   = float(pattern["entry"])
+    sl      = float(pattern["sl"])
+    tp      = float(pattern["tp"])
+    end_idx = pattern["neckline_end_idx"]
+
+    stats = {
+        "Result": "OPEN", "Head Result": "OPEN",
+        "progress_ratio": 0.0, "candles_to_exit": 0,
+        "exit_idx": None, "exit_price": None,
+        "Entry Date": None, "Exit Date": None,
+        "Max Reach %": 0.0, "SL Safety %": 0.0,
+        "Breakeven Activated": False, "Breakeven Exit": False,
+        "Trailing Stage": 0,
+        "Initial SL": sl, "Final SL": sl,
+        "Loss Category": None,
+        "Pattern Duration": 50,
+        "Timeout Used": CONFIG["MAX_TIMEOUT_BARS"],
+    }
+
+    if end_idx not in df.index:
+        return stats
+
+    post = df.loc[end_idx:]
+    if len(post) <= 1:
+        return stats
+
+    stats["Entry Date"] = str(end_idx)
+    total_tp = abs(tp - entry)
+    total_sl = abs(sl - entry)
+    max_fav = 0.0
+    max_adv = 0.0
+
+    highs_arr = post["High"].values.astype(float)
+    lows_arr  = post["Low"].values.astype(float)
+    closes_arr = post["Close"].values.astype(float)
+    dates_arr = post.index.values
+
+    is_bear = (bias == "Bearish")
+    for i in range(1, len(post)):
+        high = highs_arr[i]; low = lows_arr[i]
+        if is_bear:
+            fav = max(0.0, entry - low); adv = max(0.0, high - entry)
+        else:
+            fav = max(0.0, high - entry); adv = max(0.0, entry - low)
+
+        if total_tp > 0:
+            max_fav = max(max_fav, fav / total_tp * 100)
+        if total_sl > 0:
+            max_adv = max(max_adv, adv / total_sl * 100)
+
+        hit_sl = (high >= sl) if is_bear else (low <= sl)
+        hit_tp = (low  <= tp) if is_bear else (high >= tp)
+
+        if hit_sl:
+            stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
+            r = max_fav
+            if r < 5:      stats["Loss Category"] = "immediate_rejection"
+            elif r < 30:   stats["Loss Category"] = "early_reversal"
+            elif r < 70:   stats["Loss Category"] = "mid_reversal"
+            else:          stats["Loss Category"] = "late_reversal"
+            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = sl
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i])
+            break
+
+        if hit_tp:
+            stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
+            stats["Loss Category"] = "success"
+            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = tp
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i])
+            break
+
+        if i >= CONFIG["MAX_TIMEOUT_BARS"]:
+            stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
+            stats["Loss Category"] = "timeout"
+            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = float(closes_arr[i])
+            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i])
+            break
+    else:
+        stats["candles_to_exit"] = max(0, len(post) - 1)
+        stats["Exit Date"] = str(dates_arr[-1])
+        stats["Loss Category"] = "open"
+
+    stats["Max Reach %"] = round(max_fav, 1)
+    stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
+    stats["Final SL"] = sl
+
+    if stats["Result"] == "WIN":
+        stats["progress_ratio"] = 100.0
+    elif stats["Result"] in ["LOSS", "BREAKEVEN"]:
+        stats["progress_ratio"] = 0.0
+
+    return stats
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# run_full_analysis
+# ══════════════════════════════════════════════════════════════════════════════
+def run_full_analysis(df, interval="1h", symbol=None):
+    default_empty = {
+        "df": df, "symbol": symbol or "N/A",
+        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
+        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
+        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
+    }
+    if df is None or df.empty:
+        return default_empty
+
+    df = df.copy()
+    for c in ["Open", "High", "Low", "Close"]:
+        if c not in df.columns:
+            default_empty["error"] = f"Missing column: {c}"
+            return default_empty
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
     if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        empty["error"] = f"بيانات غير كافية بعد التنظيف: {len(df)}"
-        return empty
+        default_empty["error"] = f"Insufficient data: {len(df)}"
+        return default_empty
 
-    features = compute_chart_features(df)
-    highs  = df["High"].values.astype(float)
-    lows   = df["Low"].values.astype(float)
-    closes = df["Close"].values.astype(float)
+    df_active = df.tail(800).copy()
+    all_patterns = detect_all_patterns(df_active, interval=interval, symbol=symbol)
 
-    outcomes, achieved_rr = compute_outcomes(
-        highs, lows, closes,
-        CONFIG["LOOKAHEAD_BARS"],
-        CONFIG["SL_PCT"],
-        CONFIG["TP_PCT"],
-    )
+    if not all_patterns:
+        default_empty["df"] = df_active
+        return default_empty
 
-    n_buy  = int((outcomes ==  1).sum())
-    n_sell = int((outcomes == -1).sum())
-    n_neutral = int((outcomes == 0).sum())
-    denom = max(n_buy + n_sell, 1)
-
-    stats = {
-        "total_bars":    int(len(outcomes)),
-        "buy_wins":      n_buy,
-        "sell_wins":     n_sell,
-        "neutral":       n_neutral,
-        "buy_win_rate":  round(n_buy  / denom * 100, 2),
-        "sell_win_rate": round(n_sell / denom * 100, 2),
-        "avg_rr_buy":    round(float(achieved_rr[outcomes ==  1].mean()) if n_buy  else 0, 2),
-        "avg_rr_sell":   round(float(achieved_rr[outcomes == -1].mean()) if n_sell else 0, 2),
-    }
-
-    rules_buy,   fa_buy  = discover_rules(
-        features, outcomes, +1,
-        CONFIG["N_BINS"], CONFIG["MIN_SAMPLES_FOR_RULE"], CONFIG["MIN_WIN_RATE"], top_k=6)
-    rules_sell, fa_sell = discover_rules(
-        features, outcomes, -1,
-        CONFIG["N_BINS"], CONFIG["MIN_SAMPLES_FOR_RULE"], CONFIG["MIN_WIN_RATE"], top_k=6)
-
-    live_buy  = evaluate_live_signal(features, rules_buy,  "BUY")
-    live_sell = evaluate_live_signal(features, rules_sell, "SELL")
+    latest = all_patterns[-1]
+    signal = "STRONG BUY" if latest["bias"] == "Bullish" else "STRONG SELL"
 
     return {
+        "df": df_active, "symbol": symbol or "N/A",
+        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
+        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
+        "sl": latest["sl"], "tp": latest["tp"],
+        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
+        "arrow": latest.get("arrow"),
+        "consolidation_box": latest.get("consolidation_box"),
+        "resistance": latest.get("resistance"),
+        "support": latest.get("support"),
+        "all_patterns": all_patterns, "match": latest.get("match", 100.0),
+        "Result": latest.get("Result", "OPEN"),
+        "Entry Date": latest.get("Entry Date"),
+        "Exit Date": latest.get("Exit Date"),
+        "Max Reach %": latest.get("Max Reach %", 0),
         "error": None,
-        "symbol": symbol or "N/A",
-        "stats": stats,
-        "features": {k: v.tolist() if hasattr(v, "tolist") else v
-                     for k, v in features.items()},
-        "feature_analysis_buy":  fa_buy,
-        "feature_analysis_sell": fa_sell,
-        "rules_buy":  [{k: v for k, v in r.items() if not k.startswith("_")} for r in rules_buy],
-        "rules_sell": [{k: v for k, v in r.items() if not k.startswith("_")} for r in rules_sell],
-        "live_buy":  live_buy,
-        "live_sell": live_sell,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# واجهات متوافقة
+# backtest_strategy
 # ══════════════════════════════════════════════════════════════════════════════
-def calculate_indicators(df): return df.copy()
-def calculate_zigzag(df, *a, **kw): return df.copy()
-def get_chronological_pivots(df): return []
-def detect_all_patterns(df, **kw): return []
-def detect_all_head_shoulders(*a, **kw): return []
-def backtest_strategy(df, **kw): return []
+def backtest_strategy(df, interval="1h", symbol=None):
+    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
+        return []
+
+    df = df.copy()
+    for c in ["Open", "High", "Low", "Close"]:
+        if c not in df.columns:
+            return []
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
+        return []
+
+    patterns = detect_all_patterns(df, interval=interval, symbol=symbol)
+
+    trades = []
+    for p in patterns:
+        trades.append({
+            "Symbol": symbol or "N/A", "symbol": symbol or "N/A",
+            "Pattern": p["pattern"], "pattern": p["pattern"],
+            "Bias": p["bias"], "bias": p["bias"],
+            "Direction": p.get("direction", "BUY"),
+            "Result": p.get("Result", "OPEN"),
+            "Head Result": p.get("Head Result", "OPEN"),
+            "Entry": p["entry"], "Entry Price": p["entry"],
+            "SL": p["sl"], "Stop Loss": p["sl"],
+            "TP": p["tp"], "Take Profit": p["tp"],
+            "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
+            "Exit Price": p.get("exit_price"),
+            "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
+            "Max Reach %": p.get("Max Reach %", 0.0),
+            "SL Safety %": p.get("SL Safety %", 0.0),
+            "Entry Conditions": p.get("Entry Conditions", ""),
+            "nodes": p["nodes"],
+            "arrow": p.get("arrow"),
+            "candles_to_exit": p.get("candles_to_exit", 0),
+            "progress_ratio": p.get("progress_ratio", 0.0),
+            "neckline_end_idx": p["neckline_end_idx"],
+            "Loss Category": p.get("Loss Category"),
+            "resistance": p.get("resistance"),
+            "support":    p.get("support"),
+            "channel_start": p.get("channel_start"),
+            "channel_end":   p.get("channel_end"),
+            "channel_duration_bars": p.get("channel_duration_bars"),
+            "channel_range_pct": p.get("channel_range_pct"),
+            "consol_high": p.get("consol_high"),
+            "consol_low":  p.get("consol_low"),
+            "consol_bars": p.get("consol_bars"),
+            "consol_range_pct": p.get("consol_range_pct"),
+            "breakout_body_pct": p.get("breakout_body_pct"),
+            "top_touches":  p.get("top_touches"),
+            "bot_touches":  p.get("bot_touches"),
+            "top_flatness_pct": p.get("top_flatness_pct"),
+            "bot_flatness_pct": p.get("bot_flatness_pct"),
+            "impulse_pct":  p.get("impulse_pct"),
+        })
+    return trades
 
 
-def run_full_analysis(df, interval="1h", symbol=None):
-    result = discover_strategy(df, interval=interval, symbol=symbol)
-    live_buy  = result.get("live_buy")
-    live_sell = result.get("live_sell")
-
-    sig = "WAITING"; pattern = "—"; bias = "Neutral"
-    entry = sl = tp = None
-
-    if live_buy:
-        sig = "STRONG BUY"
-        pattern = f"Rule: {live_buy['rule']['win_rate']:.1f}% / N={live_buy['rule']['samples']}"
-        bias = "Bullish"
-    elif live_sell:
-        sig = "STRONG SELL"
-        pattern = f"Rule: {live_sell['rule']['win_rate']:.1f}% / N={live_sell['rule']['samples']}"
-        bias = "Bearish"
-
-    if sig != "WAITING":
-        closes = pd.to_numeric(df["Close"], errors="coerce").values
-        entry = float(closes[-1])
-        if bias == "Bullish":
-            sl = entry * (1 - CONFIG["SL_PCT"] / 100)
-            tp = entry * (1 + CONFIG["TP_PCT"] / 100)
-        else:
-            sl = entry * (1 + CONFIG["SL_PCT"] / 100)
-            tp = entry * (1 - CONFIG["TP_PCT"] / 100)
-
-    return {
-        "df": df, "symbol": symbol or "N/A",
-        "signal": sig, "pattern": pattern, "bias": bias,
-        "entry": round(entry, 5) if entry else None,
-        "entry_trigger": round(entry, 5) if entry else None,
-        "sl": round(sl, 5) if sl else None,
-        "tp": round(tp, 5) if tp else None,
-        "nodes": [], "pattern_nodes": [], "all_patterns": [],
-        "discovery": result,
-        "error": result.get("error"),
-    }
+def detect_all_head_shoulders(*a, **kw):
+    return []
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# diagnose_filters
+# ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
-    result = discover_strategy(df, interval=interval, symbol=symbol)
-    if result.get("error"):
-        return {"error": result["error"]}
-
-    stats = result["stats"]
-    rules_buy = result["rules_buy"]
-    rules_sell = result["rules_sell"]
-
-    return {
-        "error": None,
-        "total_raw_candidates": stats["total_bars"],
-        "final_count": len(rules_buy) + len(rules_sell),
-        "stages": {
-            "1. تصنيف الشموع": {
-                "before": stats["total_bars"],
-                "after": stats["buy_wins"] + stats["sell_wins"],
-                "rejected": stats["neutral"],
-                "pass_rate": f"{(stats['buy_wins']+stats['sell_wins'])/max(stats['total_bars'],1)*100:.1f}%",
-            },
-            "2. استخراج القواعد": {
-                "before": stats["buy_wins"] + stats["sell_wins"],
-                "after": len(rules_buy) + len(rules_sell),
-                "rejected": 0,
-                "pass_rate": "—",
-            },
-        },
-        "smart_diagnosis": {
-            "verdict": (
-                f"BUY {stats['buy_win_rate']}% ({stats['buy_wins']}) | "
-                f"SELL {stats['sell_win_rate']}% ({stats['sell_wins']})"
-            ),
-            "win_breakdown": {
-                "total_wins": stats["buy_wins"] + stats["sell_wins"],
-                "avg_max_reach": stats["avg_rr_buy"],
-            },
-            "loss_breakdown": {
-                "immediate_rejection": 0, "early_reversal": 0,
-                "mid_reversal": 0, "late_reversal": 0,
-                "unavoidable": 0, "avoidable": 0,
-            },
-            "action_plan": (
-                [f"🟢 قاعدة شراء: {r['win_rate']:.1f}% / N={r['samples']}" for r in rules_buy[:3]] +
-                [f"🔴 قاعدة بيع: {r['win_rate']:.1f}% / N={r['samples']}" for r in rules_sell[:3]]
-            ) or ["لم توجد قواعد قوية"],
-        },
-        "trade_analysis": [],
-        "recommendations": [],
-        "discovery": result,
+    result = {
+        "error": None, "total_raw_candidates": 0, "final_count": 0,
+        "stages": {}, "smart_diagnosis": {}, "recommendations": [],
+        "trade_analysis": [], "rejection_samples": {},
     }
+    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
+        result["error"] = "بيانات غير كافية"
+        return result
+
+    df = df.copy()
+    for c in ["Open", "High", "Low", "Close"]:
+        if c not in df.columns:
+            result["error"] = f"مفقود: {c}"
+            return result
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+
+    trades = backtest_strategy(df, interval=interval, symbol=symbol)
+    result["final_count"] = len(trades)
+    result["total_raw_candidates"] = len(trades)
+
+    wins     = [t for t in trades if "WIN" in str(t.get("Result", "")).upper()]
+    losses   = [t for t in trades if "LOSS" in str(t.get("Result", "")).upper()]
+    timeouts = [t for t in trades if "TIMEOUT" in str(t.get("Result", "")).upper()]
+
+    total_closed = len(wins) + len(losses)
+    win_rate = round(len(wins) / total_closed * 100, 1) if total_closed else 0
+
+    if total_closed == 0:
+        verdict = "لا توجد صفقات كافية"
+    elif win_rate >= 70:
+        verdict = f"ممتاز — {win_rate}%"
+    elif win_rate >= 50:
+        verdict = f"جيد — {win_rate}%"
+    elif win_rate >= 35:
+        verdict = f"متوسط — {win_rate}%"
+    else:
+        verdict = f"ضعيف — {win_rate}%"
+
+    avg_reach = 0.0
+    if wins:
+        avg_reach = round(sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1)
+
+    result["smart_diagnosis"] = {
+        "verdict": verdict,
+        "win_breakdown": {"total_wins": len(wins), "avg_max_reach": avg_reach},
+        "loss_breakdown": {
+            "immediate_rejection": 0, "early_reversal": len(losses),
+            "mid_reversal": 0, "late_reversal": 0,
+            "unavoidable": 0, "avoidable": len(losses),
+        },
+        "action_plan": [
+            f"🟢 WIN: {len(wins)} | ❌ LOSS: {len(losses)} | ⏰ TIMEOUT: {len(timeouts)}"
+        ],
+    }
+
+    result["stages"] = {
+        "1. Rectangle + impulse": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Close breakout":      {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+    }
+
+    trade_analysis = []
+    for i, t in enumerate(trades):
+        cat = t.get("Loss Category") or "open"
+        info = REASON_MAP.get(cat, REASON_MAP.get("open"))
+        entry = t.get("Entry", 0) or 0
+        sl = t.get("SL", 0) or 0
+        tp = t.get("TP", 0) or 0
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+        rr = round(reward / risk, 2) if risk > 0 else "—"
+        trade_analysis.append({
+            "trade_num": i + 1,
+            "bias": t.get("Bias", "—"),
+            "result": t.get("Result", "—"),
+            "category": cat,
+            "max_reach_%": t.get("Max Reach %", 0),
+            "rr_ratio": rr,
+            "is_unavoidable": t.get("Max Reach %", 0) >= 60 and "LOSS" in str(t.get("Result", "")).upper(),
+            "reason": info.get("reason", "—"),
+            "action": info.get("action", "—"),
+            "prevention": info.get("prevention", "—"),
+        })
+    result["trade_analysis"] = trade_analysis
+
+    recommendations = []
+    if len(timeouts) > len(wins):
+        recommendations.append({"severity": "حرج", "message": "الصفقات المنتهية بالوقت كثيرة."})
+    result["recommendations"] = recommendations
+    return result
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Chart Geometry Strategy Discovery v13")
-    print(f"Features: pure price action (swings, impulses, slopes, compression, ...)")
-    print(f"SL = {CONFIG['SL_PCT']}% | TP = {CONFIG['TP_PCT']}% | Lookahead = {CONFIG['LOOKAHEAD_BARS']} bars")
+    print("ENGINE.PY — Rectangle Reversal v14")
+    print(f"Windows: {CONFIG['WINDOW_SIZES']}")
+    print(f"Touches: top≥{CONFIG['MIN_TOP_TOUCHES']} | bot≥{CONFIG['MIN_BOT_TOUCHES']} | tol ±{CONFIG['TOUCH_TOLERANCE_PCT']}%")
+    print(f"Flatness ≤ {CONFIG['FLATNESS_MAX_PCT']}% | Impulse ≥ {CONFIG['MIN_IMPULSE_PCT']}%")
+    print(f"Breakout body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}% | TP = {CONFIG['TP_RR']}×")
