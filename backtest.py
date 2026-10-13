@@ -1,670 +1,631 @@
 # -*- coding: utf-8 -*-
-"""
-ENGINE.PY — Strict Horizontal Rectangle Reversal (v15)
-=======================================================
-يقبل فقط مستطيلاً أفقياً حقيقياً بعمر ≥ أسبوع واحد:
-  • فترة التجميع ≥ 1 أسبوع (يُحسب حسب الإطار الزمني)
-  • ميل خط الانحدار ≈ 0  (slope ≤ 0.008%/شمعة)
-  • معامل الاختلاف صغير  (CV ≤ 0.45%)
-  • الانجراف صغير        (|آخر-أول| ≤ 0.55%)
-  • ≥ 65% من الشموع جسمها صغير (تجميع فعلي)
-  • ≥ 3 لمسات على الحد العلوي + ≥ 3 على الحد السفلي
-  • الحدود مسطحة (flatness ≤ 0.45%)
-  • انطلاقة قوية قبل المستطيل (≥ 0.80%)
-  • كسر بإغلاق شمعة خارج الحد
-  • SL على الجهة المقابلة، TP = 3× المخاطرة
-"""
-import numpy as np
-import pandas as pd
-from numpy.lib.stride_tricks import sliding_window_view
+import calendar, datetime
+import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
+from data_provider import fetch_data, get_provider_info, PROVIDER
+from engine import run_full_analysis, backtest_strategy
+try:
+    from engine import diagnose_filters
+except ImportError:
+    diagnose_filters = None
 
+try:
+    from ffff import get_symbols_from_sheet
+except ImportError:
+    def get_symbols_from_sheet(*args, **kwargs):
+        return [["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "NZDUSD=X",
+                 "USDCAD=X", "USDCHF=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X",
+                 "NZDCAD=X", "GBPAUD=X", "EURGBP=X", "USDTRY=X", "USDTHB=X",
+                 "GBPNOK=X", "CADJPY=X", "AUDNZD=X"]]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎯 CONFIG — صارم جداً
-# ══════════════════════════════════════════════════════════════════════════════
-CONFIG = {
-    # ── نوافذ التجميع المُختبَرة ────────────────────────────────────────
-    "WINDOW_SIZES": [42, 60, 84, 120, 168, 240, 336],
+st.set_page_config(page_title="Smart Market Analyzer", page_icon="📈",
+                   layout="wide", initial_sidebar_state="collapsed")
 
-    # ── لمسات الحدود ────────────────────────────────────────────────────
-    "MIN_TOP_TOUCHES": 3,
-    "MIN_BOT_TOUCHES": 3,
-    "TOUCH_TOLERANCE_PCT": 0.20,
+st.markdown("""
+<head><meta charset="UTF-8"></head>
+<style>
+    .main .block-container { max-width: 100% !important; padding: 0.1rem !important; }
+    div[data-testid='stPlotlyChart'] { width: 100% !important; }
+    iframe { width: 100% !important; }
+    html, body, [class*="css"] { direction: rtl; text-align: right; }
+    h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
+    label, .stRadio label, .stTextInput label, .stSelectbox label {
+        direction: rtl; text-align: right;
+    }
+    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; }
+    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; }
+    .stButton > button { direction: rtl; text-align: center; }
+    .stAlert, .stInfo, .stSuccess, .stWarning, .stError {
+        direction: rtl; text-align: right;
+    }
+    .stDataFrame { direction: ltr; }
+    * { transition: none !important; animation: none !important; }
+    section.main > div { contain: layout style !important; }
+    .stDataFrame, .stPlotlyChart { contain: content !important; }
+    .stExpander, .stMetric, .stDataFrame { box-shadow: none !important; }
+    details { padding: 0.2rem !important; }
+    div[data-testid="stMetric"] { padding: 4px !important; }
+</style>
+""", unsafe_allow_html=True)
 
-    # ── تسطّح الحدود ────────────────────────────────────────────────────
-    "FLATNESS_MAX_PCT": 0.45,
+SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
+DEFAULT_SHEET_NAME = "GOLD"
+DEFAULT_COL_NAME = "TOKENS"
 
-    # ── حجم المستطيل ────────────────────────────────────────────────────
-    "MIN_RANGE_PCT": 0.30,
-    "MAX_RANGE_PCT": 3.50,
+ALL_GLOBAL_INTERVALS = [
+    "1m", "2m", "3m", "4m", "5m", "10m", "15m", "30m", "45m",
+    "1h", "2h", "3h", "4h", "6h", "8h", "12h",
+    "1d", "2d", "3d", "1wk", "1mo", "3mo", "6mo", "1y"
+]
 
-    # ── 🆕 فحوصات التسطّح الفعلي — صارمة ────────────────────────────────
-    "MAX_SLOPE_PCT_PER_BAR": 0.006,   # ميل خط الانحدار ≤ 0.006%/شمعة
-    "MAX_STD_CV_PCT":        0.35,    # std/mean ≤ 0.35%
-    "MAX_DRIFT_PCT":         0.45,    # |آخر - أول| ≤ 0.45%
-    "MIN_FLAT_BARS_PCT":     0.70,    # ≥70% شموع بأجسام صغيرة
-
-    # ── عمر المستطيل الأدنى ─────────────────────────────────────────────
-    "MIN_CONSOL_WEEKS": 1.0,          # أسبوع واحد على الأقل
-
-    # ── الانطلاقة قبل المستطيل ──────────────────────────────────────────
-    "IMPULSE_LOOKBACK": 30,
-    "MIN_IMPULSE_PCT": 0.80,
-
-    # ── الكسر ───────────────────────────────────────────────────────────
-    "BREAKOUT_BUFFER_PCT": 0.05,
-    "MIN_BREAKOUT_BODY_PCT": 0.08,
-
-    # ── SL / TP ─────────────────────────────────────────────────────────
-    "SL_BUFFER_PCT": 0.05,
-    "TP_RR": 3.0,
-
-    # ── فلاتر عامة ──────────────────────────────────────────────────────
-    "MIN_BARS_BETWEEN": 15,
-    "MAX_TIMEOUT_BARS": 300,
-    "VOLUME_MA_PERIOD": 20,
-    "MIN_BARS_REQUIRED": 200,
+INTERVAL_LIMITS = {
+    "1m": 7, "2m": 60, "5m": 60, "15m": 60, "30m": 60,
+    "60m": 730, "90m": 60, "1h": 730,
 }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🕐 حساب عدد الشموع لأسبوع واحد حسب الإطار
-# ══════════════════════════════════════════════════════════════════════════════
-_BARS_PER_WEEK = {
-    "1m": 7200, "2m": 3600, "3m": 2400, "4m": 1800, "5m": 1440,
-    "10m": 720, "15m": 480, "30m": 240, "45m": 160,
-    "1h": 120, "2h": 60, "3h": 40, "4h": 30, "6h": 20, "8h": 15, "12h": 10,
-    "1d": 5, "2d": 3, "3d": 2, "1wk": 1, "1mo": 1,
+IC_MARKETS_SPECS = {
+    "BTC-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "ETH-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 JPY"},
+    "USDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "AUDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "NZDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "EURGBP=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "EURCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURAUD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "GBPCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPAUD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "GBPNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "AUDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "NZDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "NZDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "NZDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "CADJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "CHFJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "USDTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "USDNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
+    "USDTHB=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "GBPNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
 }
 
-def _week_to_bars(interval, weeks=1.0):
-    """عدد الشموع لأسبوع واحد (5 أيام تداول)."""
-    b = _BARS_PER_WEEK.get(interval, 120)
-    return max(10, int(b * weeks))
+def fix_symbol(sym):
+    sym = str(sym).strip().upper()
+    if sym in ["XAUUSD", "XAUUSD=X", "GOLD"]: return "GC=F"
+    if sym in ["XAGUSD", "XAGUSD=X", "SILVER"]: return "SI=F"
+    if sym == "GBPADY=X": return "GBPNZD=X"
+    if len(sym) == 6 and sym.isalpha(): return f"{sym}=X"
+    return sym
+
+def pip_size_for(symbol):
+    s = str(symbol).upper()
+    for key, spec in IC_MARKETS_SPECS.items():
+        if key.upper() == s: return spec["pip"]
+    if "XAU" in s or "GOLD" in s: return 0.1
+    if "XAG" in s or "SILVER" in s: return 0.01
+    if any(x in s for x in ["BTC", "ETH"]): return 1.0
+    if any(x in s for x in ["US30", "NAS", "SPX", "US100", "US500"]): return 1.0
+    if "JPY" in s: return 0.01
+    if any(c in s for c in ["HUF","TRY","SEK","NOK","CZK","MXN","ZAR","PLN","INR","THB","DKK","HKD","SGD","PHP","IDR"]):
+        return 0.01
+    return 0.0001
+
+def get_default_lot_for_symbol(symbol):
+    s = str(symbol).upper()
+    for key, spec in IC_MARKETS_SPECS.items():
+        if key.upper() == s: return spec["min_lot"]
+    return 0.01
 
 
-REASON_MAP = {
-    "immediate_rejection": {"reason": "رفض فوري.", "action": "انتظر.", "prevention": "—"},
-    "early_reversal": {"reason": "انعكاس مبكر.", "action": "SL للتعادل.", "prevention": "Trailing."},
-    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج 50%.", "prevention": "TP جزئي."},
-    "late_reversal": {"reason": "انعكاس متأخر.", "action": "Trailing.", "prevention": "راقب."},
-    "timeout": {"reason": "انتهى الوقت.", "action": "أغلق.", "prevention": "ADX."},
-    "breakeven": {"reason": "تعادل.", "action": "—", "prevention": "—"},
-    "success": {"reason": "وصل الهدف.", "action": "كرر.", "prevention": "—"},
-    "open": {"reason": "مفتوحة.", "action": "راقب.", "prevention": "—"},
-}
-
-
-def _get_max_gap(interval):
-    return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
-            "4h": 15, "1d": 10}.get(interval, 50)
-
-
-def _get_max_pattern_duration(interval):
-    return {"1m": 600, "5m": 200, "15m": 150, "30m": 120, "1h": 100,
-            "4h": 80, "1d": 60}.get(interval, 200)
-
-
-def _days_to_bars(days, interval):
-    bpd = {"1m": 1440, "5m": 288, "15m": 96, "30m": 48, "1h": 24,
-           "4h": 6, "1d": 1}.get(interval, 24)
-    return max(3, int(round(bpd * days)))
-
-
-def calculate_indicators(df):
-    df = df.copy()
-    hl = df["High"] - df["Low"]
-    hc = np.abs(df["High"] - df["Close"].shift())
-    lc = np.abs(df["Low"] - df["Close"].shift())
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
-    df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
-    df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
-    if "Volume" in df.columns:
-        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
-        df["Volume"] = v
-        df["Volume_MA"] = v.rolling(CONFIG["VOLUME_MA_PERIOD"]).mean().fillna(0.0)
-    else:
-        df["Volume"] = 0.0
-        df["Volume_MA"] = 0.0
+def compute_pips(trades_df):
+    if trades_df is None or trades_df.empty: return trades_df
+    df = trades_df.copy()
+    def to_float(v):
+        try: return float(v)
+        except (TypeError, ValueError): return None
+    def pick(row, names):
+        for n in names:
+            if n in row and pd.notna(row[n]):
+                v = to_float(row[n])
+                if v is not None: return v
+        return None
+    pips_l, risk_l, reward_l, rr_l = [], [], [], []
+    for _, row in df.iterrows():
+        sym = row.get("symbol") or row.get("Symbol") or ""
+        pip = pip_size_for(sym)
+        entry = pick(row, ["Entry Price", "Entry", "entry"])
+        exit_ = pick(row, ["Exit Price", "Exit", "exit", "Close Price"])
+        sl = pick(row, ["Stop Loss", "SL", "sl"])
+        tp = pick(row, ["Take Profit", "TP", "tp"])
+        bias = str(row.get("bias") or row.get("Bias") or "").upper()
+        is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
+        pips = (entry - exit_) / pip if is_sell else (exit_ - entry) / pip if entry and exit_ else None
+        risk = abs((sl - entry) / pip if is_sell else (entry - sl) / pip) if entry and sl else None
+        reward = abs((entry - tp) / pip if is_sell else (tp - entry) / pip) if entry and tp else None
+        rr = round(reward / risk, 2) if (risk and reward and risk > 0) else None
+        pips_l.append(round(pips, 1) if pips is not None else None)
+        risk_l.append(round(risk, 1) if risk is not None else None)
+        reward_l.append(round(reward, 1) if reward is not None else None)
+        rr_l.append(rr)
+    df["Pips"] = pips_l; df["Risk_Pips"] = risk_l
+    df["Reward_Pips"] = reward_l; df["RR_Ratio"] = rr_l
     return df
 
 
-def calculate_zigzag(df, *a, **kw):
-    return df.copy()
+def get_available_symbols():
+    symbols_set = set(IC_MARKETS_SPECS.keys())
+    try:
+        for s in get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]:
+            symbols_set.add(str(s).strip())
+    except Exception: pass
+    return sorted(list(symbols_set))
 
 
-def get_chronological_pivots(df):
-    return []
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ⚡ حساب كل خصائص النافذة (متجهي)
-# ══════════════════════════════════════════════════════════════════════════════
-def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
-    n = len(closes)
-    if n < W + impulse_bars + 2:
-        return None
-
-    hs = sliding_window_view(highs, W)
-    ls = sliding_window_view(lows,  W)
-    os_ = sliding_window_view(opens, W)
-    cs = sliding_window_view(closes, W)
-    m = hs.shape[0]
-
-    win_high = hs.max(axis=1)
-    win_low  = ls.min(axis=1)
-    mean_c   = cs.mean(axis=1)
-    std_c    = cs.std(axis=1, ddof=0)
-
-    # slope (linear regression closed form)
-    xs = np.arange(W, dtype=float)
-    xs_c = xs - xs.mean()
-    denom = float((xs_c ** 2).sum())
-    cs_c = cs - mean_c[:, None]
-    slopes = (cs_c * xs_c).sum(axis=1) / denom
-    slope_pct = np.abs(slopes) / np.where(mean_c > 0, mean_c, 1e-9) * 100
-
-    cv = std_c / np.where(mean_c > 0, mean_c, 1e-9) * 100
-    drift = np.abs(cs[:, -1] - cs[:, 0]) / np.where(mean_c > 0, mean_c, 1e-9) * 100
-
-    top_thr = win_high * (1.0 - tol)
-    bot_thr = win_low  * (1.0 + tol)
-    top_touch = (hs >= top_thr[:, None]).sum(axis=1)
-    bot_touch = (ls <= bot_thr[:, None]).sum(axis=1)
-
-    top_masked = np.where(hs >= top_thr[:, None], hs, np.nan)
-    bot_masked = np.where(ls <= bot_thr[:, None], ls, np.nan)
-    with np.errstate(invalid="ignore"):
-        top_max = np.nanmax(top_masked, axis=1); top_min = np.nanmin(top_masked, axis=1)
-        bot_max = np.nanmax(bot_masked, axis=1); bot_min = np.nanmin(bot_masked, axis=1)
-
-    top_flat_pct = np.where(win_high > 0, (top_max - top_min) / win_high * 100, np.inf)
-    bot_flat_pct = np.where(win_low  > 0, (bot_max - bot_min) / win_low  * 100, np.inf)
-    range_pct    = np.where(win_low  > 0, (win_high - win_low) / win_low  * 100, np.inf)
-
-    # نسبة الشموع بأجسام صغيرة
-    bodies = np.abs(cs - os_)
-    box_h = np.where((win_high - win_low) > 0, win_high - win_low, 1e-9)
-    small_bodies = (bodies < (box_h[:, None] * 0.35)).sum(axis=1)
-    flat_bars_pct = small_bodies / W * 100
-
-    # impulse قبل النافذة
-    impulse_pct = np.full(m, 0.0, dtype=np.float32)
-    for k in range(m):
-        base_idx = k - 1
-        t_start = base_idx - impulse_bars
-        if t_start < 0:
-            continue
-        p0 = closes[t_start]; p1 = closes[base_idx]
-        if p0 > 0:
-            impulse_pct[k] = (p1 - p0) / p0 * 100
-
-    return {
-        "top": win_high, "bottom": win_low, "range_pct": range_pct,
-        "top_touch": top_touch.astype(np.int32), "bot_touch": bot_touch.astype(np.int32),
-        "top_flat": top_flat_pct, "bot_flat": bot_flat_pct,
-        "slope_pct": slope_pct, "cv": cv, "drift": drift,
-        "flat_bars_pct": flat_bars_pct,
-        "impulse": impulse_pct, "W": W,
-    }
+def _week_to_bars_label(interval):
+    mapping = {"1m": "7 أيام", "5m": "7 أيام", "15m": "7 أيام", "30m": "7 أيام",
+               "1h": "7 أيام", "4h": "7 أيام", "1d": "7 أيام"}
+    return mapping.get(interval, "7 أيام")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 DETECTOR
+# 🎨 draw_rectangle_pattern — مستطيل مثالي بحواف مستقيمة
 # ══════════════════════════════════════════════════════════════════════════════
-def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
-    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        return []
+def draw_rectangle_pattern(fig, source):
+    if source is None: return
+    box = source.get("consolidation_box") if isinstance(source, dict) else source.get("consolidation_box")
+    if box is None: return
 
-    df = df.copy()
-    for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns:
-            return []
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=True)
-    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        return []
+    x_start  = int(box["x_start"]); x_end = int(box["x_end"])
+    box_high = float(box["high"]);   box_low = float(box["low"])
 
-    df = calculate_indicators(df)
-    highs  = df["High"].values.astype(float)
-    lows   = df["Low"].values.astype(float)
-    opens  = df["Open"].values.astype(float)
-    closes = df["Close"].values.astype(float)
-    n      = len(df)
+    # تعبئة
+    fig.add_shape(type="rect", x0=x_start, y0=box_low, x1=x_end, y1=box_high,
+                  line=dict(width=0), fillcolor="rgba(156, 39, 176, 0.07)", layer="below")
+    # حدود أفقية
+    fig.add_shape(type="line", x0=x_start, y0=box_high, x1=x_end, y1=box_high,
+                  line=dict(color="#2962FF", width=4), layer="above")
+    fig.add_shape(type="line", x0=x_start, y0=box_low, x1=x_end, y1=box_low,
+                  line=dict(color="#FF5252", width=4), layer="above")
+    # حدود عمودية
+    fig.add_shape(type="line", x0=x_start, y0=box_low, x1=x_start, y1=box_high,
+                  line=dict(color="#9C27B0", width=2, dash="dot"), layer="above")
+    fig.add_shape(type="line", x0=x_end, y0=box_low, x1=x_end, y1=box_high,
+                  line=dict(color="#9C27B0", width=2, dash="dot"), layer="above")
 
-    tol = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0
-    buf = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
-    imp_bars = CONFIG["IMPULSE_LOOKBACK"]
+    # علامات القمم
+    top_nodes = source.get("top_nodes") or []
+    bot_nodes = source.get("bot_nodes") or []
+    if top_nodes:
+        fig.add_trace(go.Scatter(
+            x=[n[0] for n in top_nodes], y=[n[1] for n in top_nodes],
+            mode="markers", name="قمم",
+            marker=dict(size=13, color="#2962FF", symbol="circle",
+                        line=dict(color="white", width=2.5)), showlegend=True))
+    if bot_nodes:
+        fig.add_trace(go.Scatter(
+            x=[n[0] for n in bot_nodes], y=[n[1] for n in bot_nodes],
+            mode="markers", name="قيعان",
+            marker=dict(size=13, color="#FF5252", symbol="circle",
+                        line=dict(color="white", width=2.5)), showlegend=True))
 
-    # 🆕 حساب الحد الأدنى للعمر = أسبوع واحد
-    min_bars_required = _week_to_bars(interval, CONFIG["MIN_CONSOL_WEEKS"])
-
-    patterns = []
-    last_signal_pos = -10**9
-
-    for W in CONFIG["WINDOW_SIZES"]:
-        if W < min_bars_required:      # 🆕 رفض أي نافذة أقل من أسبوع
-            continue
-        if W + imp_bars + 5 > n:
-            continue
-
-        M = _window_metrics(highs, lows, opens, closes, W, tol, imp_bars)
-        if M is None:
-            continue
-
-        # ═══════════════════════════════════════════════════════════════
-        # 🎯 قناع صارم جداً — يقبل فقط المستطيلات الأفقية الحقيقية
-        # ═══════════════════════════════════════════════════════════════
-        valid = (
-            (M["range_pct"]      >= CONFIG["MIN_RANGE_PCT"]) &
-            (M["range_pct"]      <= CONFIG["MAX_RANGE_PCT"]) &
-            (M["top_touch"]      >= CONFIG["MIN_TOP_TOUCHES"]) &
-            (M["bot_touch"]      >= CONFIG["MIN_BOT_TOUCHES"]) &
-            (M["top_flat"]       <= CONFIG["FLATNESS_MAX_PCT"]) &
-            (M["bot_flat"]       <= CONFIG["FLATNESS_MAX_PCT"]) &
-            # 🆕 تسطّح فعلي
-            (M["slope_pct"]      <= CONFIG["MAX_SLOPE_PCT_PER_BAR"]) &
-            (M["cv"]             <= CONFIG["MAX_STD_CV_PCT"]) &
-            (M["drift"]          <= CONFIG["MAX_DRIFT_PCT"]) &
-            (M["flat_bars_pct"]  >= CONFIG["MIN_FLAT_BARS_PCT"]) &
-            # انطلاقة
-            (np.abs(M["impulse"]) >= CONFIG["MIN_IMPULSE_PCT"])
-        )
-        valid_idx = np.where(valid)[0]
-        if len(valid_idx) == 0:
-            continue
-
-        for k in valid_idx:
-            end_window = int(k + W - 1)
-            breakout_idx = end_window + 1
-            if breakout_idx >= n:
-                continue
-            if breakout_idx - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
-                continue
-
-            close_bk = closes[breakout_idx]
-            open_bk  = opens[breakout_idx]
-            prev_c   = closes[breakout_idx - 1]
-            body_pct = abs(close_bk - open_bk) / max(close_bk, 1e-9) * 100
-            if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
-                continue
-
-            box_high = float(M["top"][k])
-            box_low  = float(M["bottom"][k])
-            impulse  = float(M["impulse"][k])
-            up_thr   = box_high * (1 + buf)
-            down_thr = box_low  * (1 - buf)
-
-            direction = None
-            if prev_c <= up_thr and close_bk > up_thr and close_bk > open_bk:
-                direction = "BUY"
-            elif prev_c >= down_thr and close_bk < down_thr and close_bk < open_bk:
-                direction = "SELL"
-
-            if direction is None:
-                continue
-
-            info = {
-                "top": box_high, "bottom": box_low,
-                "range_pct": float(M["range_pct"][k]),
-                "top_touch": int(M["top_touch"][k]),
-                "bot_touch": int(M["bot_touch"][k]),
-                "top_flat": float(M["top_flat"][k]),
-                "bot_flat": float(M["bot_flat"][k]),
-                "slope_pct": float(M["slope_pct"][k]),
-                "cv": float(M["cv"][k]),
-                "drift": float(M["drift"][k]),
-                "flat_bars_pct": float(M["flat_bars_pct"][k]),
-                "impulse_pct": impulse,
-                "start": int(k), "end": end_window, "W": W,
-            }
-            pattern = _build_pattern(df, breakout_idx, info, direction, body_pct,
-                                     highs, lows, closes)
-            if pattern:
-                patterns.append(pattern)
-                last_signal_pos = breakout_idx
-
-    patterns.sort(key=lambda p: p["end_pos"])
-    return patterns
-
-
-def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
-    entry = float(closes[idx])
-    box_high = info["top"]
-    box_low  = info["bottom"]
-    sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
-
-    if direction == "BUY":
-        sl = box_low * (1 - sl_buf)
-        if sl >= entry: return None
-        risk = entry - sl
-        if risk <= 0: return None
-        tp = entry + CONFIG["TP_RR"] * risk
-    else:
-        sl = box_high * (1 + sl_buf)
-        if sl <= entry: return None
-        risk = sl - entry
-        if risk <= 0: return None
-        tp = entry - CONFIG["TP_RR"] * risk
-
-    rr = abs(tp - entry) / risk
-    if rr < CONFIG["TP_RR"] - 0.05:
-        return None
-
-    bias = "Bullish" if direction == "BUY" else "Bearish"
-    start_p = info["start"]; end_p = info["end"]
-
-    # نقاط اللمسات
-    tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
-    seg_h = highs[start_p:end_p + 1]
-    seg_l = lows[start_p:end_p + 1]
-    top_hits = np.where(seg_h >= box_high * (1 - tol_vis))[0]
-    bot_hits = np.where(seg_l <= box_low * (1 + tol_vis))[0]
-
-    top_nodes = [(int(start_p + p), box_high) for p in top_hits]
-    bot_nodes = [(int(start_p + p), box_low) for p in bot_hits]
-
-    # خطان أفقيان مستقيمان
-    top_line = [(int(start_p), box_high), (int(end_p), box_high)]
-    bot_line = [(int(start_p), box_low),  (int(end_p), box_low)]
-
-    nodes = [(int(idx), entry)]
+    # نجمة الدخول
+    entry_nodes = source.get("nodes") or []
+    if entry_nodes:
+        fig.add_trace(go.Scatter(
+            x=[n[0] for n in entry_nodes], y=[n[1] for n in entry_nodes],
+            mode="markers", name="الدخول",
+            marker=dict(size=22, color="#FFC107", symbol="star",
+                        line=dict(color="black", width=2)), showlegend=True))
 
     # سهم
-    arrow_len = max(8, (end_p - start_p) // 3)
-    x1_pos = min(idx + arrow_len, len(df) - 1)
-    arrow = {"x0": int(idx), "y0": entry, "x1": int(x1_pos), "y1": tp, "direction": direction}
-
-    # صندوق — بدون تقريب لتفادي الإزاحة
-    box_data = {
-        "x_start": int(start_p),
-        "x_end":   int(end_p),
-        "high":    float(box_high),
-        "low":     float(box_low),
-    }
-
-    pattern = {
-        "name": "Horizontal Rectangle Reversal",
-        "pattern": (
-            f"Rect {direction} · T{info['top_touch']}/B{info['bot_touch']} · "
-            f"W{info['W']}bars · imp {info['impulse_pct']:+.2f}%"
-        ),
-        "bias": bias, "direction": direction,
-        "match": float(min(100, 55 + (info["top_touch"] + info["bot_touch"]) * 6)),
-        "entry": round(entry, 5), "entry_trigger": round(entry, 5),
-        "sl": round(sl, 5), "tp": round(tp, 5),
-        "SL": round(sl, 5), "TP": round(tp, 5), "Entry": round(entry, 5),
-
-        "nodes": nodes,
-        "top_nodes": top_nodes,
-        "bot_nodes": bot_nodes,
-        "top_line": top_line,
-        "bot_line": bot_line,
-        "arrow": arrow,
-        "consolidation_box": box_data,
-
-        "resistance": round(box_high, 5),
-        "support": round(box_low, 5),
-        "level_price": round(box_high if direction == "BUY" else box_low, 5),
-        "channel_start": int(start_p), "channel_end": int(end_p),
-        "channel_duration_bars": int(info["W"]),
-        "channel_range_pct": round(info["range_pct"], 3),
-        "neckline_start_idx": int(start_p), "neckline_end_idx": int(idx), "end_pos": int(idx),
-        "Entry Conditions": (
-            f"W{info['W']} flat rectangle · slope {info['slope_pct']:.4f}%/bar · "
-            f"CV {info['cv']:.3f}% · drift {info['drift']:.3f}% · "
-            f"flat_bars {info['flat_bars_pct']:.1f}% → close breakout"
-        ),
-        "consol_high": round(box_high, 5), "consol_low": round(box_low, 5),
-        "consol_bars": int(info["W"]),
-        "consol_range_pct": round(info["range_pct"], 3),
-        "consol_stability_pct": 100.0,
-        "breakout_body_pct": round(body_pct, 3),
-        "top_touches": info["top_touch"], "bot_touches": info["bot_touch"],
-        "top_flatness_pct": round(info["top_flat"], 4),
-        "bot_flatness_pct": round(info["bot_flat"], 4),
-        "impulse_pct": round(info["impulse_pct"], 3),
-        "slope_pct": round(info["slope_pct"], 4),
-        "cv_pct": round(info["cv"], 4),
-        "drift_pct": round(info["drift"], 4),
-        "flat_bars_pct": round(info["flat_bars_pct"], 2),
-    }
-
-    pattern.update(simulate_trade_outcome(pattern, df))
-    return pattern
+    arrow = source.get("arrow")
+    if isinstance(arrow, dict):
+        col = "#00C853" if arrow.get("direction") == "BUY" else "#D50000"
+        fig.add_annotation(x=arrow["x1"], y=arrow["y1"], ax=arrow["x0"], ay=arrow["y0"],
+                           xref="x", yref="y", axref="x", ayref="y",
+                           showarrow=True, arrowhead=3, arrowsize=2.5, arrowwidth=4,
+                           arrowcolor=col, opacity=0.95, text="TP",
+                           font=dict(color=col, size=13))
 
 
-def simulate_trade_outcome(pattern, df):
-    bias = pattern["bias"]; entry = float(pattern["entry"])
-    sl = float(pattern["sl"]); tp = float(pattern["tp"])
-    end_idx = pattern["neckline_end_idx"]
+# ══════════════════════════════════════════════════════════════════════════════
+# Session State
+# ══════════════════════════════════════════════════════════════════════════════
+for k, v in [
+    ("current_symbol", "NZDCAD=X"),
+    ("status_summary", "⚡ Live Scan & Backtest Lab • جاهز"),
+    ("scanned_signals", []),
+    ("backtest_scanned_signals", []),
+    ("backtest_dfs", {}),
+    ("backtest_period", ""),
+    ("backtest_start", ""),
+    ("backtest_end", ""),
+    ("active_signal_symbol", None),
+    ("active_signal_entry", None),
+    ("active_signal_sl", None),
+    ("active_signal_tp", None),
+    ("active_signal_bias", None),
+    ("live_picked_symbols", []),
+    ("bt_picked_symbols", []),
+    ("signal_index", 0),   # 🆕 تنقل الإشارات
+]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-    stats = {
-        "Result": "OPEN", "Head Result": "OPEN",
-        "progress_ratio": 0.0, "candles_to_exit": 0,
-        "exit_idx": None, "exit_price": None,
-        "Entry Date": None, "Exit Date": None,
-        "Max Reach %": 0.0, "SL Safety %": 0.0,
-        "Breakeven Activated": False, "Breakeven Exit": False,
-        "Trailing Stage": 0, "Initial SL": sl, "Final SL": sl,
-        "Loss Category": None, "Pattern Duration": 50,
-        "Timeout Used": CONFIG["MAX_TIMEOUT_BARS"],
-    }
+st.markdown(f'''<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;direction:rtl;">
+    <div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📈 {st.session_state.current_symbol}</div>
+    <div style="border:1px solid #DADCE0;background:#FFF;border-radius:30px;padding:8px 14px;font-weight:700;color:#0B57D0;">{st.session_state.status_summary}</div>
+</div>''', unsafe_allow_html=True)
 
-    if end_idx < 0 or end_idx >= len(df): return stats
-    post = df.iloc[end_idx:]
-    if len(post) <= 1: return stats
+app_mode = st.radio("وضع التطبيق:",
+    ["🚀 الماسح الحي للأسواق", "🧪 مختبر الاختبار الرجعي (Backtest)"],
+    horizontal=True)
+st.markdown("---")
 
-    stats["Entry Date"] = str(df.index[end_idx])
-    total_tp = abs(tp - entry); total_sl = abs(sl - entry)
-    max_fav = 0.0; max_adv = 0.0
 
-    highs_arr = post["High"].values.astype(float)
-    lows_arr = post["Low"].values.astype(float)
-    closes_arr = post["Close"].values.astype(float)
-    dates_arr = post.index.values
-    is_bear = (bias == "Bearish")
+# ══════════════════════════════════════════════════════════════════════════════
+# ================= BACKTEST MODE =================
+# ══════════════════════════════════════════════════════════════════════════════
+if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
-    for i in range(1, len(post)):
-        high = highs_arr[i]; low = lows_arr[i]
-        if is_bear:
-            fav = max(0.0, entry - low); adv = max(0.0, high - entry)
-        else:
-            fav = max(0.0, high - entry); adv = max(0.0, entry - low)
-        if total_tp > 0: max_fav = max(max_fav, fav / total_tp * 100)
-        if total_sl > 0: max_adv = max(max_adv, adv / total_sl * 100)
-        hit_sl = (high >= sl) if is_bear else (low <= sl)
-        hit_tp = (low <= tp) if is_bear else (high >= tp)
-        if hit_sl:
-            stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
-            r = max_fav
-            if r < 5: stats["Loss Category"] = "immediate_rejection"
-            elif r < 30: stats["Loss Category"] = "early_reversal"
-            elif r < 70: stats["Loss Category"] = "mid_reversal"
-            else: stats["Loss Category"] = "late_reversal"
-            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = sl
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i]); break
-        if hit_tp:
-            stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
-            stats["Loss Category"] = "success"
-            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = tp
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i]); break
-        if i >= CONFIG["MAX_TIMEOUT_BARS"]:
-            stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
-            stats["Loss Category"] = "timeout"
-            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = float(closes_arr[i])
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i]); break
+    st.markdown("### 🧪 مختبر تحليل الأداء التاريخي")
+
+    bt_scan_mode = st.radio("طريقة فحص الاختبار الرجعي:",
+        ["سهم فردي", "🎯 مجموعة مخصصة"],
+        horizontal=True, key="bt_scan_mode")
+
+    if bt_scan_mode == "سهم فردي":
+        bt_symbols = [st.text_input("رمز الأصل", value="EURUSD=X", key="bt_single_symbol")]
     else:
-        stats["candles_to_exit"] = max(0, len(post) - 1)
-        stats["Exit Date"] = str(dates_arr[-1]); stats["Loss Category"] = "open"
+        all_available = get_available_symbols()
+        default_picks = st.session_state.get("bt_picked_symbols", [])
+        default_picks = [s for s in default_picks if s in all_available]
+        picked = st.multiselect("🔽 اختر العملات:", options=all_available,
+            default=default_picks, key="bt_multi_symbols")
+        st.session_state["bt_picked_symbols"] = picked
+        bt_symbols = picked if picked else []
+        if not bt_symbols: st.warning("⚠️ اختر عملة")
 
-    stats["Max Reach %"] = round(max_fav, 1)
-    stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
-    stats["Final SL"] = sl
-    if stats["Result"] == "WIN": stats["progress_ratio"] = 100.0
-    elif stats["Result"] in ["LOSS", "BREAKEVEN"]: stats["progress_ratio"] = 0.0
-    return stats
+    now = datetime.datetime.now()
+    available_years = [now.year, now.year - 1, now.year - 2]
+    months_dict = {1:"يناير",2:"فبراير",3:"مارس",4:"إبريل",5:"مايو",6:"يونيو",
+                   7:"يوليو",8:"أغسطس",9:"سبتمبر",10:"أكتوبر",11:"نوفمبر",12:"ديسمبر"}
+
+    st.markdown("#### 📅 الفترة")
+    period_mode = st.radio("نمط الفترة:",
+        ["📆 شهر واحد", "📅 نطاق مخصص", "🗓️ سنة كاملة"],
+        horizontal=True, key="bt_period_mode")
+
+    start_date = None; end_date = None; period_label = ""
+
+    if period_mode == "📆 شهر واحد":
+        c_yr, c_mo = st.columns(2)
+        selected_year = c_yr.selectbox("📅 السنة:", available_years, index=0, key="bt_single_year")
+        selected_month = c_mo.selectbox("🗓️ الشهر:", list(months_dict.keys()),
+            format_func=lambda x: months_dict[x], index=now.month - 1, key="bt_single_month")
+        _, last_day = calendar.monthrange(selected_year, selected_month)
+        start_date = f"{selected_year}-{selected_month:02d}-01"
+        end_date   = f"{selected_year}-{selected_month:02d}-{last_day:02d}"
+        period_label = f"{months_dict[selected_month]} {selected_year}"
+    elif period_mode == "📅 نطاق مخصص":
+        c1, c2 = st.columns(2)
+        start_pick = c1.date_input("📅 من:", value=datetime.date(now.year, max(1, now.month-1), 1),
+            min_value=datetime.date(now.year - 5, 1, 1), max_value=datetime.date.today(), key="bt_custom_start")
+        end_pick = c2.date_input("📅 إلى:", value=datetime.date.today(),
+            min_value=datetime.date(now.year - 5, 1, 1), max_value=datetime.date.today(), key="bt_custom_end")
+        if start_pick < end_pick:
+            start_date = start_pick.strftime("%Y-%m-%d")
+            end_date = end_pick.strftime("%Y-%m-%d")
+            period_label = f"{start_date} → {end_date}"
+    else:
+        year_pick = st.columns(1)[0].selectbox("📅 السنة:", available_years, index=0, key="bt_full_year")
+        start_date = f"{year_pick}-01-01"; end_date = f"{year_pick}-12-31"
+        period_label = f"السنة {year_pick}"
+
+    st.markdown("---")
+    selected_interval = st.selectbox("⏱️ الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=9, key="bt_interval")
+    st.info(f"⏱️ **عمر المستطيل الأدنى:** {_week_to_bars_label(selected_interval)} — أقل من ذلك يُرفض")
+
+    lot_size = st.number_input("حجم اللوت:", min_value=0.01, max_value=100.0,
+        value=0.01, step=0.01, format="%.2f", key="bt_lot_size")
+
+    if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols and start_date and end_date:
+        results, dfs = [], {}
+        p_bar = st.progress(0); s_txt = st.empty(); error_log = []
+
+        for idx, sym in enumerate(bt_symbols):
+            s_txt.text(f"({idx+1}/{len(bt_symbols)}): {sym}...")
+            p_bar.progress((idx + 1) / len(bt_symbols))
+            try:
+                df = fetch_data(fix_symbol(sym), interval=selected_interval,
+                                start_date=start_date, end_date=end_date, cache_hours=1)
+                if df is None or df.empty:
+                    error_log.append(f"⚠️ {sym}: لا توجد بيانات"); continue
+                trades = backtest_strategy(df, interval=selected_interval, symbol=sym)
+                if trades:
+                    tdf = pd.DataFrame(trades)
+                    if "symbol" not in tdf.columns: tdf["symbol"] = sym
+                    results.append({"symbol": sym, "trades_df": tdf, "total_signals": len(tdf)})
+                    dfs[sym] = df
+            except Exception as e:
+                error_log.append(f"❌ {sym}: {e}")
+
+        s_txt.empty(); p_bar.empty()
+        st.session_state.backtest_scanned_signals = results
+        st.session_state.backtest_dfs = dfs
+        st.session_state.backtest_period = period_label
+        st.session_state.backtest_start = start_date
+        st.session_state.backtest_end = end_date
+        st.session_state.signal_index = 0  # reset
+        if error_log:
+            with st.expander(f"⚠️ تحذيرات ({len(error_log)})"):
+                for m in error_log: st.text(m)
+
+    if st.session_state.backtest_scanned_signals:
+        res_list = st.session_state.backtest_scanned_signals
+        dfs_dict = st.session_state.backtest_dfs
+        period_display = st.session_state.get("backtest_period", "غير محدد")
+
+        all_dfs = [i["trades_df"] for i in res_list if "trades_df" in i and not i["trades_df"].empty]
+
+        if all_dfs:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            combined_df = compute_pips(combined_df)
+
+            g_res_col = None
+            for col in ["Result", "Head Result"]:
+                if col in combined_df.columns: g_res_col = col; break
+
+            if g_res_col:
+                g_series = combined_df[g_res_col].astype(str).str.upper()
+                g_wins = len(combined_df[g_series.str.contains("WIN")])
+                g_losses = len(combined_df[g_series.str.contains("LOSS")])
+                g_opens = len(combined_df[g_series.str.contains("OPEN")])
+            else:
+                g_wins = g_losses = g_opens = 0
+
+            g_closed = g_wins + g_losses
+            g_win_rate = round((g_wins / g_closed) * 100, 1) if g_closed > 0 else 0.0
+            g_total = len(combined_df)
+
+            st.markdown(f"#### 🌍 الملخص الإجمالي — **{period_display}**")
+            gm1, gm2, gm3, gm4 = st.columns(4)
+            gm1.metric("📊 إجمالي الصفقات", g_total)
+            gm2.metric("✅ ناجحة", g_wins, delta=f"{g_win_rate}%")
+            gm3.metric("❌ خاسرة", g_losses)
+            gm4.metric("⏳ مفتوحة", g_opens)
+            st.markdown("---")
+
+        if bt_scan_mode == "🎯 مجموعة مخصصة" and len(res_list) > 1:
+            opts = [f"{i['symbol']} | إشارات: {i['total_signals']}" for i in res_list]
+            active_item = res_list[opts.index(st.selectbox("👇 اختر الأصل:", opts))]
+        else:
+            active_item = res_list[0]
+
+        active_sym = active_item["symbol"]
+        trades_df = active_item["trades_df"]
+        trades_df = compute_pips(trades_df)
+        st.session_state.current_symbol = active_sym
+
+        if len(trades_df) == 0:
+            st.warning(f"⚠️ **{active_sym}** — لا توجد مستطيلات أفقية مطابقة (تحقق من الشروط الصارمة).")
+        else:
+            # ═══════════════════════════════════════════════════════════════
+            # 🔽🔼 تنقل بين الإشارات
+            # ═══════════════════════════════════════════════════════════════
+            st.markdown(f"### 📊 {active_sym} — {len(trades_df)} إشارة")
+
+            # reset index إذا تغير الرمز
+            if st.session_state.get("_last_bt_sym") != active_sym:
+                st.session_state.signal_index = len(trades_df) - 1
+                st.session_state["_last_bt_sym"] = active_sym
+
+            sig_idx = st.session_state.signal_index
+            sig_idx = max(0, min(sig_idx, len(trades_df) - 1))
+
+            nav1, nav2, nav3, nav4, nav5 = st.columns([1, 1, 3, 1, 1])
+            with nav1:
+                if st.button("⏮️ الأولى", use_container_width=True):
+                    st.session_state.signal_index = 0; st.rerun()
+            with nav2:
+                if st.button("◀ السابقة", use_container_width=True):
+                    st.session_state.signal_index = max(0, sig_idx - 1); st.rerun()
+            with nav3:
+                st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold'>"
+                            f"إشارة {sig_idx + 1} من {len(trades_df)}</div>",
+                            unsafe_allow_html=True)
+            with nav4:
+                if st.button("التالية ▶", use_container_width=True):
+                    st.session_state.signal_index = min(len(trades_df) - 1, sig_idx + 1); st.rerun()
+            with nav5:
+                if st.button("الأخيرة ⏭️", use_container_width=True):
+                    st.session_state.signal_index = len(trades_df) - 1; st.rerun()
+
+            current_sig = trades_df.iloc[sig_idx]
+
+            # metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("🎯 الدخول", f"{current_sig.get('Entry Price', '—')}")
+            m2.metric("🛑 SL", f"{current_sig.get('Stop Loss', '—')}")
+            m3.metric("🏆 TP", f"{current_sig.get('Take Profit', '—')}")
+            m4.metric("📊 النتيجة", f"{current_sig.get('Result', '—')}")
+
+            # الرسم
+            if active_sym in dfs_dict and not dfs_dict[active_sym].empty:
+                _orig = dfs_dict[active_sym].copy()
+                _dates = _orig.index.tolist()
+                df_res = _orig.reset_index(drop=True)
+                df_res['EMA50'] = df_res['Close'].ewm(span=50, adjust=False).mean()
+                df_res['EMA200'] = df_res['Close'].ewm(span=200, adjust=False).mean()
+                _x = list(range(len(df_res)))
+
+                fig = go.Figure(data=[go.Candlestick(
+                    x=_x, open=df_res["Open"], high=df_res["High"],
+                    low=df_res["Low"], close=df_res["Close"], name="السعر")])
+                fig.add_trace(go.Scatter(x=_x, y=df_res['EMA50'],
+                    line=dict(color='orange', width=1.2), name="EMA 50"))
+                fig.add_trace(go.Scatter(x=_x, y=df_res['EMA200'],
+                    line=dict(color='blue', width=1.2), name="EMA 200"))
+
+                draw_rectangle_pattern(fig, current_sig)
+
+                _step = max(1, len(df_res) // 8)
+                _tick_vals = list(range(0, len(df_res), _step))
+                _tick_text = [str(_dates[i])[:10] if i < len(_dates) else "" for i in _tick_vals]
+
+                fig.update_layout(template="plotly_white", height=650, autosize=True,
+                    margin=dict(l=80, r=20, t=40, b=60), xaxis_rangeslider_visible=False,
+                    yaxis=dict(side="left", automargin=True, tickfont=dict(size=12, color="#333"),
+                               showgrid=True, gridcolor="#E5E5E5"),
+                    xaxis=dict(automargin=True, tickfont=dict(size=10),
+                               tickmode="array", tickvals=_tick_vals, ticktext=_tick_text),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
+
+            # تفاصيل
+            with st.expander("📋 تفاصيل الإشارة الحالية", expanded=False):
+                for col in ["Entry Date", "Exit Date", "Bias", "Result", "Entry Price", "Stop Loss",
+                            "Take Profit", "Pips", "RR_Ratio", "top_touches", "bot_touches",
+                            "impulse_pct", "slope_pct", "cv_pct", "drift_pct", "flat_bars_pct"]:
+                    if col in current_sig:
+                        st.text(f"{col}: {current_sig[col]}")
 
 
-def run_full_analysis(df, interval="1h", symbol=None):
-    default_empty = {
-        "df": df, "symbol": symbol or "N/A",
-        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
-        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
-        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
-    }
-    if df is None or df.empty: return default_empty
-    df = df.copy()
-    for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns:
-            default_empty["error"] = f"Missing column: {c}"; return default_empty
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        default_empty["error"] = f"Insufficient data: {len(df)}"; return default_empty
+# ══════════════════════════════════════════════════════════════════════════════
+# ================= LIVE SCAN MODE =================
+# ══════════════════════════════════════════════════════════════════════════════
+else:
 
-    df_active = df.tail(1000).copy().reset_index(drop=True)
-    all_patterns = detect_all_patterns(df_active, interval=interval, symbol=symbol)
+    scan_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة مخصصة"],
+        horizontal=True, key="live_scan_mode")
 
-    if not all_patterns:
-        default_empty["df"] = df_active; return default_empty
+    if scan_mode == "سهم فردي":
+        symbols = [st.text_input("رمز الأصل", value="EURUSD=X", key="live_single_symbol")]
+    else:
+        all_available = get_available_symbols()
+        default_picks = st.session_state.get("live_picked_symbols", [])
+        default_picks = [s for s in default_picks if s in all_available]
+        picked = st.multiselect("🔽 اختر العملات:", options=all_available,
+            default=default_picks, key="live_multi_symbols")
+        st.session_state["live_picked_symbols"] = picked
+        symbols = picked if picked else []
+        if not symbols: st.warning("⚠️ اختر عملة")
 
-    latest = all_patterns[-1]
-    signal = "STRONG BUY" if latest["bias"] == "Bullish" else "STRONG SELL"
+    c1, c2 = st.columns(2)
+    selected_interval = c1.selectbox("⏱️ الإطار:", ALL_GLOBAL_INTERVALS, index=9, key="live_interval")
+    selected_period = c2.selectbox("📅 النطاق:",
+        ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"],
+        index=4, key="live_period")
 
-    return {
-        "df": df_active, "symbol": symbol or "N/A",
-        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
-        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
-        "sl": latest["sl"], "tp": latest["tp"],
-        "nodes": latest.get("nodes", []),
-        "pattern_nodes": latest.get("nodes", []),
-        "top_nodes": latest.get("top_nodes", []),
-        "bot_nodes": latest.get("bot_nodes", []),
-        "top_line": latest.get("top_line"), "bot_line": latest.get("bot_line"),
-        "arrow": latest.get("arrow"),
-        "consolidation_box": latest.get("consolidation_box"),
-        "resistance": latest.get("resistance"), "support": latest.get("support"),
-        "all_patterns": all_patterns,
-        "match": latest.get("match", 100.0),
-        "Result": latest.get("Result", "OPEN"),
-        "Entry Date": latest.get("Entry Date"),
-        "Exit Date": latest.get("Exit Date"),
-        "Max Reach %": latest.get("Max Reach %", 0),
-        "error": None,
-    }
+    st.info(f"⏱️ عمر المستطيل الأدنى: {_week_to_bars_label(selected_interval)}")
 
+    if st.button("🚀 بدء المسح", use_container_width=True) and symbols:
+        valid = []; p_bar = st.progress(0); s_txt = st.empty(); error_log = []
 
-def backtest_strategy(df, interval="1h", symbol=None):
-    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        return []
-    df = df.copy()
-    for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns: return []
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
+        for idx, sym in enumerate(symbols):
+            s_txt.text(f"({idx+1}/{len(symbols)}): {sym}...")
+            p_bar.progress((idx + 1) / len(symbols))
+            try:
+                df = fetch_data(fix_symbol(sym), interval=selected_interval,
+                                period=selected_period, cache_hours=1)
+                if df is None or df.empty:
+                    error_log.append(f"⚠️ {sym}: لا توجد بيانات"); continue
+                if len(df) >= 20:
+                    res = run_full_analysis(df, interval=selected_interval, symbol=sym)
+                    if res["signal"] in ["STRONG BUY", "STRONG SELL"]:
+                        valid.append({"symbol": sym, "result": res})
+                    elif scan_mode == "سهم فردي":
+                        st.info(f"ℹ️ {sym}: لا يوجد مستطيل أفقي مطابق")
+            except Exception as e:
+                error_log.append(f"❌ {sym}: {e}")
 
-    patterns = detect_all_patterns(df, interval=interval, symbol=symbol)
+        s_txt.empty(); p_bar.empty()
+        st.session_state.scanned_signals = valid
+        st.session_state.signal_index = 0
+        if error_log:
+            with st.expander(f"⚠️ تحذيرات ({len(error_log)})"):
+                for m in error_log: st.text(m)
 
-    trades = []
-    for p in patterns:
-        trades.append({
-            "Symbol": symbol or "N/A", "symbol": symbol or "N/A",
-            "Pattern": p["pattern"], "pattern": p["pattern"],
-            "Bias": p["bias"], "bias": p["bias"], "Direction": p.get("direction", "BUY"),
-            "Result": p.get("Result", "OPEN"), "Head Result": p.get("Head Result", "OPEN"),
-            "Entry": p["entry"], "Entry Price": p["entry"],
-            "SL": p["sl"], "Stop Loss": p["sl"],
-            "TP": p["tp"], "Take Profit": p["tp"],
-            "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
-            "Exit Price": p.get("exit_price"),
-            "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
-            "Max Reach %": p.get("Max Reach %", 0.0), "SL Safety %": p.get("SL Safety %", 0.0),
-            "Entry Conditions": p.get("Entry Conditions", ""),
-            "nodes": p.get("nodes", []), "top_nodes": p.get("top_nodes", []),
-            "bot_nodes": p.get("bot_nodes", []), "top_line": p.get("top_line"),
-            "bot_line": p.get("bot_line"), "arrow": p.get("arrow"),
-            "consolidation_box": p.get("consolidation_box"),
-            "candles_to_exit": p.get("candles_to_exit", 0),
-            "progress_ratio": p.get("progress_ratio", 0.0),
-            "neckline_end_idx": p["neckline_end_idx"], "Loss Category": p.get("Loss Category"),
-            "resistance": p.get("resistance"), "support": p.get("support"),
-            "channel_start": p.get("channel_start"), "channel_end": p.get("channel_end"),
-            "channel_duration_bars": p.get("channel_duration_bars"),
-            "channel_range_pct": p.get("channel_range_pct"),
-            "consol_high": p.get("consol_high"), "consol_low": p.get("consol_low"),
-            "consol_bars": p.get("consol_bars"), "consol_range_pct": p.get("consol_range_pct"),
-            "breakout_body_pct": p.get("breakout_body_pct"),
-            "top_touches": p.get("top_touches"), "bot_touches": p.get("bot_touches"),
-            "top_flatness_pct": p.get("top_flatness_pct"),
-            "bot_flatness_pct": p.get("bot_flatness_pct"),
-            "impulse_pct": p.get("impulse_pct"),
-            "slope_pct": p.get("slope_pct"),
-            "cv_pct": p.get("cv_pct"),
-            "drift_pct": p.get("drift_pct"),
-            "flat_bars_pct": p.get("flat_bars_pct"),
-        })
-    return trades
+    if st.session_state.scanned_signals:
+        sigs = st.session_state.scanned_signals
+        st.success(f"✅ تم العثور على **{len(sigs)}** إشارة")
 
+        _show = st.toggle("🔽 عرض النتائج", value=False, key="live_show_results")
 
-def detect_all_head_shoulders(*a, **kw): return []
+        if _show:
+            # تنقل
+            sig_idx = st.session_state.signal_index
+            sig_idx = max(0, min(sig_idx, len(sigs) - 1))
 
+            nav1, nav2, nav3, nav4, nav5 = st.columns([1, 1, 3, 1, 1])
+            with nav1:
+                if st.button("⏮️ الأولى", use_container_width=True, key="live_nav_first"):
+                    st.session_state.signal_index = 0; st.rerun()
+            with nav2:
+                if st.button("◀ السابقة", use_container_width=True, key="live_nav_prev"):
+                    st.session_state.signal_index = max(0, sig_idx - 1); st.rerun()
+            with nav3:
+                st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold'>"
+                            f"إشارة {sig_idx + 1} من {len(sigs)}</div>",
+                            unsafe_allow_html=True)
+            with nav4:
+                if st.button("التالية ▶", use_container_width=True, key="live_nav_next"):
+                    st.session_state.signal_index = min(len(sigs) - 1, sig_idx + 1); st.rerun()
+            with nav5:
+                if st.button("الأخيرة ⏭️", use_container_width=True, key="live_nav_last"):
+                    st.session_state.signal_index = len(sigs) - 1; st.rerun()
 
-def diagnose_filters(df, interval="1h", symbol=None):
-    result = {
-        "error": None, "total_raw_candidates": 0, "final_count": 0,
-        "stages": {}, "smart_diagnosis": {}, "recommendations": [],
-        "trade_analysis": [], "rejection_samples": {},
-    }
-    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        result["error"] = "بيانات غير كافية"; return result
-    df = df.copy()
-    for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns:
-            result["error"] = f"مفقود: {c}"; return result
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+            active_res = sigs[sig_idx]['result']
+            active_sym = active_res.get("symbol", "N/A")
 
-    trades = backtest_strategy(df, interval=interval, symbol=symbol)
-    result["final_count"] = len(trades)
-    result["total_raw_candidates"] = len(trades)
+            e1, e2, e3 = st.columns(3)
+            e1.metric("🎯 الدخول", f"{active_res.get('entry', 0)}")
+            e2.metric("🛑 SL", f"{active_res.get('sl', 0)}")
+            e3.metric("🏆 TP", f"{active_res.get('tp', 0)}")
 
-    wins = [t for t in trades if "WIN" in str(t.get("Result", "")).upper()]
-    losses = [t for t in trades if "LOSS" in str(t.get("Result", "")).upper()]
-    timeouts = [t for t in trades if "TIMEOUT" in str(t.get("Result", "")).upper()]
-    total_closed = len(wins) + len(losses)
-    win_rate = round(len(wins) / total_closed * 100, 1) if total_closed else 0
+            df_res_orig = active_res.get("df")
+            if df_res_orig is not None and not df_res_orig.empty:
+                _dates_live = df_res_orig.index.tolist()
+                df_res = df_res_orig.reset_index(drop=True)
+                df_res['EMA50'] = df_res['Close'].ewm(span=50, adjust=False).mean()
+                df_res['EMA200'] = df_res['Close'].ewm(span=200, adjust=False).mean()
+                _x = list(range(len(df_res)))
 
-    if total_closed == 0: verdict = "لا توجد صفقات كافية"
-    elif win_rate >= 70: verdict = f"ممتاز — {win_rate}%"
-    elif win_rate >= 50: verdict = f"جيد — {win_rate}%"
-    elif win_rate >= 35: verdict = f"متوسط — {win_rate}%"
-    else: verdict = f"ضعيف — {win_rate}%"
+                fig = go.Figure(data=[go.Candlestick(
+                    x=_x, open=df_res["Open"], high=df_res["High"],
+                    low=df_res["Low"], close=df_res["Close"], name="السعر")])
+                fig.add_trace(go.Scatter(x=_x, y=df_res['EMA50'],
+                    line=dict(color='orange', width=1.2), name="EMA 50"))
+                fig.add_trace(go.Scatter(x=_x, y=df_res['EMA200'],
+                    line=dict(color='blue', width=1.2), name="EMA 200"))
 
-    avg_reach = 0.0
-    if wins: avg_reach = round(sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1)
+                draw_rectangle_pattern(fig, active_res)
 
-    result["smart_diagnosis"] = {
-        "verdict": verdict,
-        "win_breakdown": {"total_wins": len(wins), "avg_max_reach": avg_reach},
-        "loss_breakdown": {
-            "immediate_rejection": 0, "early_reversal": len(losses),
-            "mid_reversal": 0, "late_reversal": 0,
-            "unavoidable": 0, "avoidable": len(losses),
-        },
-        "action_plan": [f"🟢 WIN: {len(wins)} | ❌ LOSS: {len(losses)} | ⏰ TIMEOUT: {len(timeouts)}"],
-    }
-    result["stages"] = {
-        "1. Flat rectangle ≥1 week": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Close breakout":          {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-    }
-    return result
+                _step = max(1, len(df_res) // 8)
+                _tick_vals = list(range(0, len(df_res), _step))
+                _tick_text = [str(_dates_live[i])[:10] if i < len(_dates_live) else "" for i in _tick_vals]
+
+                fig.update_layout(template="plotly_white", height=650, autosize=True,
+                    margin=dict(l=80, r=20, t=40, b=60), xaxis_rangeslider_visible=False,
+                    yaxis=dict(side="left", automargin=True, tickfont=dict(size=12, color="#333"),
+                               showgrid=True, gridcolor="#E5E5E5"),
+                    xaxis=dict(automargin=True, tickfont=dict(size=10),
+                               tickmode="array", tickvals=_tick_vals, ticktext=_tick_text),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
 
 
-if __name__ == "__main__":
-    print("ENGINE.PY — Strict Horizontal Rectangle v15")
-    print(f"Min age: {CONFIG['MIN_CONSOL_WEEKS']} week(s)")
-    print(f"Windows: {CONFIG['WINDOW_SIZES']}")
-    print(f"Flat filters: slope ≤ {CONFIG['MAX_SLOPE_PCT_PER_BAR']}%/bar | CV ≤ {CONFIG['MAX_STD_CV_PCT']}% | drift ≤ {CONFIG['MAX_DRIFT_PCT']}% | flat_bars ≥ {CONFIG['MIN_FLAT_BARS_PCT']}%")
+# ══════════════════════════════════════════════════════════════════════════════
+# Footer
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+st.caption("🎯 Strict Horizontal Rectangle · Min Age 1 Week · Navigate with ◀ ▶")
