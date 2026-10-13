@@ -1,46 +1,53 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Horizontal Channel Breakout (v6)
-=============================================
-منطق مطابق للصور:
-  • صندوق تصحيح أفقي ≥ 5 أيام بقمم وقيعان متساوية.
-  • القمة = أعلى High، القاع = أدنى Low في نافذة التصحيح.
-  • الصندوق يمتد من أول بيفوت حتى شمعة الكسر (حافتان أفقيتان تامّتان).
-  • الإشارة فقط بعد إغلاق شمعة تكسر المقاومة/الدعم.
-  • الوقف تحت القاع / فوق القمة، الهدف = 3× الوقف (1:3).
-  • zigzag نظيف + سهم من الدخول إلى الهدف.
+ENGINE.PY — Strict Horizontal Range Breakout (v7)
+==================================================
+يرفض أي منطقة ليست مستطيلة أفقية حقيقية:
+  • كل القمم يجب أن تكون في نطاق 0.10% من بعضها (لا تدّرّج).
+  • كل القيعان يجب أن تكون في نطاق 0.10% من بعضها.
+  • ميل خط القمم ≈ 0 (regression slope).
+  • ميل خط القيعان ≈ 0.
+  • ≥ 3 لمسات لكل جهة (لا اكتفاء بلمستين).
+  • نصف النافذة الأول = الثاني في المتوسط (لا اتجاه داخلي).
+  • لا شمعة بجسم > 50% من ارتفاع الصندوق داخل المنطقة.
 """
 import pandas as pd
 import numpy as np
 
 
 CONFIG = {
-    # ── ZigZag: عمق أكبر + فلتر تأرجح أقوى → خط نظيف ───────────────────
-    "ZIGZAG_DEPTH": 6,
-    "ZIGZAG_BACKSTEP": 4,
-    "MIN_SWING_PCT": 0.30,           # ⬆ 0.20 → 0.30 (ضد الضجيج)
+    # ── ZigZag نظيف جدًا ─────────────────────────────────────────────────
+    "ZIGZAG_DEPTH": 8,
+    "ZIGZAG_BACKSTEP": 5,
+    "MIN_SWING_PCT": 0.40,           # ⬆ 0.30 → 0.40 (ضجيج أقل)
 
-    # ── القناة الأفقية ──────────────────────────────────────────────────
+    # ── القناة الأفقية — شروط صارمة ─────────────────────────────────────
     "MIN_CONSOL_DAYS": 5,
-    "MAX_CONSOL_DAYS": 60,
-    "LEVEL_TOLERANCE_PCT": 0.30,     # ⬆ 0.25 → 0.30 (قبول أكثر للقمم المتقاربة)
-    "MIN_TOUCHES": 2,
-    "MIN_RANGE_PCT": 0.30,           # ⬆ 0.25 → 0.30
-    "MAX_RANGE_PCT": 5.0,
+    "MAX_CONSOL_DAYS": 40,
+    "MIN_CONSOL_BARS_H4": 30,        # ≥ 30 شمعة على H4 لتصحيح حقيقي
+    "MIN_TOUCHES": 3,                # ⬆ 2 → 3 لمسات لكل جهة
+    "TOP_FLATNESS_PCT": 0.10,        # كل القمم في نطاق 0.10% من بعضها
+    "BOT_FLATNESS_PCT": 0.10,        # كل القيعان في نطاق 0.10% من بعضها
+    "MAX_SLOPE_PCT": 0.02,           # ميل خط القمم/القيعان ≤ 0.02% لكل شمعة
+    "MIN_RANGE_PCT": 0.20,           # أدنى ارتفاع الصندوق
+    "MAX_RANGE_PCT": 3.0,            # أقصى ارتفاع (نمط التصحيح عادة ضيّق)
+    "MAX_BODY_INSIDE_PCT": 50,       # لا شمعة جسمها > 50% من ارتفاع الصندوق داخل المنطقة
+    "MAX_DIRECTIONAL_CANDLES_PCT": 65,  # ≤ 65% شموع بنفس الاتجاه (وإلا اتجاه وليس تصحيح)
 
     # ── الكسر ────────────────────────────────────────────────────────────
     "BREAKOUT_BUFFER_PCT": 0.03,
-    "MIN_BREAKOUT_BODY_PCT": 0.05,
+    "MIN_BREAKOUT_BODY_PCT": 0.08,   # ⬆ 0.05 → 0.08 جسم شمعة الكسر أقوى
+    "CONFIRM_BARS_AFTER": 1,         # يجب إغلاق شمعة واحدة على الأقل بعد الكسر
 
     # ── SL / TP ──────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
     "TP_RR": 3.0,
 
     # ── فلاتر ────────────────────────────────────────────────────────────
-    "MIN_BARS_BETWEEN": 5,
+    "MIN_BARS_BETWEEN": 10,
     "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
-    "MIN_BARS_REQUIRED": 100,
+    "MIN_BARS_REQUIRED": 120,
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 200
@@ -58,9 +65,6 @@ REASON_MAP = {
 }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Helpers
-# ══════════════════════════════════════════════════════════════════════════════
 def _get_max_gap(interval):
     return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
             "4h": 15, "1d": 10}.get(interval, 50)
@@ -82,9 +86,6 @@ def _days_to_bars(days, interval):
     return max(3, int(round(bpd * days)))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Indicators
-# ══════════════════════════════════════════════════════════════════════════════
 def calculate_indicators(df):
     df = df.copy()
     hl = df["High"] - df["Low"]
@@ -141,7 +142,6 @@ def get_chronological_pivots(df, min_swing_pct=None):
     if not raw:
         return []
 
-    # 1) دمج المتتاليات من نفس النوع
     collapsed = [raw[0]]
     for p in raw[1:]:
         if collapsed[-1]["type"] == p["type"]:
@@ -152,7 +152,6 @@ def get_chronological_pivots(df, min_swing_pct=None):
         else:
             collapsed.append(p)
 
-    # 2) فلتر أدنى تأرجح
     filtered = [collapsed[0]]
     for p in collapsed[1:]:
         last = filtered[-1]
@@ -169,86 +168,110 @@ def get_chronological_pivots(df, min_swing_pct=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Clustering
+# 🎯 فحص الصندوق الأفقي الحقيقي (STRICT)
 # ══════════════════════════════════════════════════════════════════════════════
-def cluster_levels(pivots, tolerance):
-    if not pivots:
-        return []
-    sorted_p = sorted(pivots, key=lambda p: p["val"])
-    levels = []
-    for p in sorted_p:
-        merged = False
-        for lvl in levels:
-            if abs(p["val"] - lvl["price"]) / max(lvl["price"], 1e-9) <= tolerance:
-                lvl["values"].append(p["val"])
-                lvl["price"] = float(np.mean(lvl["values"]))
-                lvl["touches"] += 1
-                lvl["first_pos"] = min(lvl["first_pos"], p["pos"])
-                lvl["last_pos"]  = max(lvl["last_pos"],  p["pos"])
-                lvl["members"].append(p)
-                merged = True
-                break
-        if not merged:
-            levels.append({
-                "price":     p["val"],
-                "values":    [p["val"]],
-                "touches":   1,
-                "first_pos": p["pos"],
-                "last_pos":  p["pos"],
-                "members":   [p],
-            })
-    return levels
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Find horizontal channel
-# ══════════════════════════════════════════════════════════════════════════════
-def _find_horizontal_channel(active, min_bars, max_bars, tol):
-    highs = [p for p in active if p["type"] == "H"]
-    lows  = [p for p in active if p["type"] == "L"]
-    if len(highs) < CONFIG["MIN_TOUCHES"] or len(lows) < CONFIG["MIN_TOUCHES"]:
+def _is_true_horizontal_range(df, start_pos, end_pos, high_pivots, low_pivots):
+    """
+    يفحص إن كانت المنطقة مستطيلًا أفقيًا حقيقيًا:
+      1) كل القمم متقاربة جدًا
+      2) كل القيعان متقاربة جدًا
+      3) ميل خط القمم ≈ 0
+      4) ميل خط القيعان ≈ 0
+      5) متوسط النصف الأول ≈ النصف الثاني (لا اتجاه)
+      6) شموع المنطقة محصورة بين الخطين
+      7) ارتفاع الصندوق ضمن الحدود
+    """
+    n = end_pos - start_pos + 1
+    if n < CONFIG["MIN_CONSOL_BARS_H4"]:
         return None
 
-    h_levels = [l for l in cluster_levels(highs, tol) if l["touches"] >= CONFIG["MIN_TOUCHES"]]
-    l_levels = [l for l in cluster_levels(lows,  tol) if l["touches"] >= CONFIG["MIN_TOUCHES"]]
-    if not h_levels or not l_levels:
+    seg = df.iloc[start_pos:end_pos + 1]
+    if len(seg) < 5:
         return None
 
-    best = None
-    for h in h_levels:
-        for l in l_levels:
-            if h["price"] <= l["price"]:
-                continue
-            first = min(h["first_pos"], l["first_pos"])
-            last  = max(h["last_pos"],  l["last_pos"])
-            duration = last - first
-            if duration < min_bars or duration > max_bars:
-                continue
-            range_pct = (h["price"] - l["price"]) / max(l["price"], 1e-9) * 100
-            if range_pct < CONFIG["MIN_RANGE_PCT"] or range_pct > CONFIG["MAX_RANGE_PCT"]:
-                continue
+    res = float(seg["High"].max())
+    sup = float(seg["Low"].min())
+    if sup <= 0 or res <= sup:
+        return None
 
-            # تغطية زمنية: لمسات في النصفين
-            mid = first + duration * 0.4
-            h_early = sum(1 for m in h["members"] if m["pos"] <= mid)
-            l_early = sum(1 for m in l["members"] if m["pos"] <= mid)
-            h_late  = sum(1 for m in h["members"] if m["pos"] >  mid)
-            l_late  = sum(1 for m in l["members"] if m["pos"] >  mid)
-            if (h_early + l_early) < 1 or (h_late + l_late) < 1:
-                continue
+    range_pct = (res - sup) / sup * 100
+    if range_pct < CONFIG["MIN_RANGE_PCT"] or range_pct > CONFIG["MAX_RANGE_PCT"]:
+        return None
 
-            score = h["touches"] + l["touches"] + duration / 30.0 + range_pct
-            if best is None or score > best["score"]:
-                best = {
-                    "resistance": h,
-                    "support":    l,
-                    "start_pos":  first,
-                    "end_pos":    last,
-                    "score":      score,
-                    "range_pct":  range_pct,
-                    "duration_bars": duration,
-                }
-    return best
+    # 1) تقارب القمم
+    if len(high_pivots) < CONFIG["MIN_TOUCHES"]:
+        return None
+    top_vals = [p["val"] for p in high_pivots]
+    top_spread_pct = (max(top_vals) - min(top_vals)) / min(top_vals) * 100
+    if top_spread_pct > CONFIG["TOP_FLATNESS_PCT"]:
+        return None
+
+    # 2) تقارب القيعان
+    if len(low_pivots) < CONFIG["MIN_TOUCHES"]:
+        return None
+    bot_vals = [p["val"] for p in low_pivots]
+    bot_spread_pct = (max(bot_vals) - min(bot_vals)) / min(bot_vals) * 100
+    if bot_spread_pct > CONFIG["BOT_FLATNESS_PCT"]:
+        return None
+
+    # 3) ميل خط القمم ≈ 0
+    top_xs = np.array([p["pos"] for p in high_pivots], dtype=float)
+    top_ys = np.array(top_vals, dtype=float)
+    if len(top_xs) >= 2:
+        top_slope = np.polyfit(top_xs, top_ys, 1)[0]  # price per bar
+        top_slope_pct = abs(top_slope) / np.mean(top_ys) * 100
+        if top_slope_pct > CONFIG["MAX_SLOPE_PCT"]:
+            return None
+
+    # 4) ميل خط القيعان ≈ 0
+    bot_xs = np.array([p["pos"] for p in low_pivots], dtype=float)
+    bot_ys = np.array(bot_vals, dtype=float)
+    if len(bot_xs) >= 2:
+        bot_slope = np.polyfit(bot_xs, bot_ys, 1)[0]
+        bot_slope_pct = abs(bot_slope) / np.mean(bot_ys) * 100
+        if bot_slope_pct > CONFIG["MAX_SLOPE_PCT"]:
+            return None
+
+    # 5) لا اتجاه داخلي: متوسط النصفين متقارب
+    mid = len(seg) // 2
+    first_half = seg.iloc[:mid]["Close"].mean()
+    second_half = seg.iloc[mid:]["Close"].mean()
+    if first_half == 0:
+        return None
+    half_diff_pct = abs(second_half - first_half) / first_half * 100
+    if half_diff_pct > range_pct * 0.5:   # الفرق بين النصفين لا يزيد عن نصف ارتفاع الصندوق
+        return None
+
+    # 6) لا شمعة بجسم ضخم داخل المنطقة
+    box_height = res - sup
+    for _, row in seg.iterrows():
+        body = abs(float(row["Close"]) - float(row["Open"]))
+        if box_height > 0 and body / box_height * 100 > CONFIG["MAX_BODY_INSIDE_PCT"]:
+            return None
+
+    # 7) نسبة الشموع الاتجاهية ≤ الحد
+    up_candles = int((seg["Close"] > seg["Open"]).sum())
+    down_candles = int((seg["Close"] < seg["Open"]).sum())
+    total_dir = up_candles + down_candles
+    if total_dir > 0:
+        dir_ratio = max(up_candles, down_candles) / total_dir * 100
+        if dir_ratio > CONFIG["MAX_DIRECTIONAL_CANDLES_PCT"]:
+            return None
+
+    return {
+        "resistance": res,
+        "support":    sup,
+        "start_pos":  start_pos,
+        "end_pos":    end_pos,
+        "range_pct":  range_pct,
+        "duration":   n,
+        "top_touches": len(high_pivots),
+        "bot_touches": len(low_pivots),
+        "top_spread_pct": round(top_spread_pct, 3),
+        "bot_spread_pct": round(bot_spread_pct, 3),
+        "high_pivot_positions": [p["pos"] for p in high_pivots],
+        "low_pivot_positions":  [p["pos"] for p in low_pivots],
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -270,12 +293,12 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     df = calculate_indicators(df)
     df = calculate_zigzag(df)
     pivots = get_chronological_pivots(df)
-    if len(pivots) < 4:
+    if len(pivots) < 6:  # 3 highs + 3 lows minimum
         return []
 
-    min_bars = _days_to_bars(CONFIG["MIN_CONSOL_DAYS"], interval)
+    min_bars = max(_days_to_bars(CONFIG["MIN_CONSOL_DAYS"], interval),
+                   CONFIG["MIN_CONSOL_BARS_H4"])
     max_bars = _days_to_bars(CONFIG["MAX_CONSOL_DAYS"], interval)
-    tol      = CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0
     buf      = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
     backstep = CONFIG["ZIGZAG_BACKSTEP"]
 
@@ -284,73 +307,80 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     last_signal_pos = -10**9
 
     for i in range(CONFIG["MIN_BARS_REQUIRED"], n):
+        # البيفوتات المؤكدة قبل i
         active = [p for p in pivots
                   if (p["pos"] + backstep) <= i and (i - p["pos"]) <= max_bars]
-        if len(active) < 4:
+        if len(active) < 6:
             continue
 
-        channel = _find_horizontal_channel(active, min_bars, max_bars, tol)
-        if channel is None:
+        highs = [p for p in active if p["type"] == "H"]
+        lows  = [p for p in active if p["type"] == "L"]
+        if len(highs) < CONFIG["MIN_TOUCHES"] or len(lows) < CONFIG["MIN_TOUCHES"]:
             continue
 
-        candle = df.iloc[i]
-        prev   = df.iloc[i - 1]
-        close      = float(candle["Close"])
-        open_      = float(candle["Open"])
-        prev_close = float(prev["Close"])
+        # اختبار كل نافذة محتملة تنتهي قبل الكسر
+        # نجرب نوافذ متعددة بأطوال مختلفة
+        for start_offset in range(CONFIG["MIN_TOUCHES"] * 2, len(active) + 1):
+            window_pivots = active[-start_offset:]
+            wh = [p for p in window_pivots if p["type"] == "H"]
+            wl = [p for p in window_pivots if p["type"] == "L"]
+            if len(wh) < CONFIG["MIN_TOUCHES"] or len(wl) < CONFIG["MIN_TOUCHES"]:
+                continue
 
-        body_pct = abs(close - open_) / max(close, 1e-9) * 100
-        if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
-            continue
+            # نافذة زمنية من أول بيفوت لآخر بيفوت (قبل i)
+            p_start = min(p["pos"] for p in window_pivots)
+            p_end   = max(p["pos"] for p in window_pivots)
 
-        res = float(channel["resistance"]["price"])
-        sup = float(channel["support"]["price"])
-        up_thr   = res * (1 + buf)
-        down_thr = sup * (1 - buf)
+            # امتد حتى i-1 (شمعة الكسر)
+            if i - p_start < min_bars:
+                continue
 
-        direction = None
-        if prev_close <= up_thr and close > up_thr and close > open_:
-            direction = "BUY"
-        elif prev_close >= down_thr and close < down_thr and close < open_:
-            direction = "SELL"
+            box = _is_true_horizontal_range(df, p_start, i - 1, wh, wl)
+            if box is None:
+                continue
 
-        if direction is None:
-            continue
-        if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
-            continue
+            # الآن افحص شمعة الكسر عند i
+            candle = df.iloc[i]
+            prev   = df.iloc[i - 1]
+            close      = float(candle["Close"])
+            open_      = float(candle["Open"])
+            prev_close = float(prev["Close"])
 
-        pattern = _build_channel_pattern(df, i, channel, direction, body_pct)
-        if pattern:
-            patterns.append(pattern)
-            last_signal_pos = i
+            body_pct = abs(close - open_) / max(close, 1e-9) * 100
+            if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
+                break
+
+            res = box["resistance"]
+            sup = box["support"]
+            up_thr   = res * (1 + buf)
+            down_thr = sup * (1 - buf)
+
+            direction = None
+            if prev_close <= up_thr and close > up_thr and close > open_:
+                direction = "BUY"
+            elif prev_close >= down_thr and close < down_thr and close < open_:
+                direction = "SELL"
+
+            if direction is None:
+                break
+
+            if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
+                break
+
+            pattern = _build_pattern(df, i, box, direction, body_pct)
+            if pattern:
+                patterns.append(pattern)
+                last_signal_pos = i
+                break  # اخرج من حلقة start_offset بعد إيجاد النمط
 
     return patterns
 
 
-def _build_channel_pattern(df, idx, channel, direction, body_pct):
+def _build_pattern(df, idx, box, direction, body_pct):
     candle = df.iloc[idx]
     entry  = float(candle["Close"])
-
-    start_p = int(channel["start_pos"])
-    end_p   = int(channel["end_pos"])
-
-    # ═════════════════════════════════════════════════════════════════════
-    #  الصندوق الفعلي: من أعلى High وأدنى Low في نافذة التصحيح
-    #  (باستثناء شمعة الكسر نفسها)
-    # ═════════════════════════════════════════════════════════════════════
-    seg_end_exclusive = idx
-    if seg_end_exclusive <= start_p:
-        return None
-    seg = df.iloc[start_p:seg_end_exclusive]
-
-    box_high = float(seg["High"].max())
-    box_low  = float(seg["Low"].min())
-    if box_low <= 0 or box_high <= box_low:
-        return None
-
-    res = box_high
-    sup = box_low
-
+    res    = box["resistance"]
+    sup    = box["support"]
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
     if direction == "BUY":
@@ -376,40 +406,31 @@ def _build_channel_pattern(df, idx, channel, direction, body_pct):
 
     bias = "Bullish" if direction == "BUY" else "Bearish"
 
-    # ── Zigzag nodes: قمم/قيعان تلامس حواف الصندوق ─────────────────────
-    touch_tol = CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0 * 2.0
+    # ── النقاط: قمم وقيعان حقيقية على الحدين ─────────────────────────────
+    start_p = box["start_pos"]
+    end_p   = box["end_pos"]
+
+    # نجمع كل بيفوتات المنطقة (نستخدم بيانات البيفوت من df مباشرة)
     nodes = []
-    for pos in range(start_p, seg_end_exclusive):
+    for pos in range(start_p, min(end_p + 1, len(df))):
         row = df.iloc[pos]
         if not pd.isna(row["Pivot_H"]):
-            v = float(row["Pivot_H"])
-            if abs(v - res) / max(res, 1e-9) <= touch_tol:
-                nodes.append((df.index[pos], v))
+            nodes.append((df.index[pos], float(row["Pivot_H"])))
         elif not pd.isna(row["Pivot_L"]):
-            v = float(row["Pivot_L"])
-            if abs(v - sup) / max(sup, 1e-9) <= touch_tol:
-                nodes.append((df.index[pos], v))
+            nodes.append((df.index[pos], float(row["Pivot_L"])))
 
-    if len(nodes) < 2:
-        nodes = [
-            (df.index[start_p], res),
-            (df.index[seg_end_exclusive - 1], sup),
-        ]
+    # nضيف نقطة الدخول
     nodes.append((df.index[idx], entry))
 
-    # ── Arrow: from entry to TP ─────────────────────────────────────────
-    arrow_len = max(10, (seg_end_exclusive - start_p) // 3)
-    x1_pos = min(idx + arrow_len, len(df) - 1)
+    # السهم
+    x1_pos = min(idx + max(8, (end_p - start_p) // 3), len(df) - 1)
     arrow = {
-        "x0": df.index[idx],
-        "y0": entry,
-        "x1": df.index[x1_pos],
-        "y1": tp,
+        "x0": df.index[idx], "y0": entry,
+        "x1": df.index[x1_pos], "y1": tp,
         "direction": direction,
     }
 
-    # ── Consolidation Box ───────────────────────────────────────────────
-    box = {
+    box_data = {
         "x_start": start_p,
         "x_end":   idx,
         "high":    round(res, 5),
@@ -417,14 +438,15 @@ def _build_channel_pattern(df, idx, channel, direction, body_pct):
     }
 
     pattern = {
-        "name": "Horizontal Channel Breakout",
+        "name": "Horizontal Range Breakout",
         "pattern": (
-            f"Channel {direction} · "
-            f"R×{channel['resistance']['touches']} / S×{channel['support']['touches']}"
+            f"Range {direction} · "
+            f"T{box['top_touches']}/B{box['bot_touches']} · "
+            f"{box['range_pct']:.2f}%"
         ),
         "bias": bias,
         "direction": direction,
-        "match": float(min(100, 60 + (channel["resistance"]["touches"] + channel["support"]["touches"]) * 5)),
+        "match": float(min(100, 50 + (box["top_touches"] + box["bot_touches"]) * 8)),
         "entry": round(entry, 5),
         "entry_trigger": round(entry, 5),
         "sl": round(sl, 5),
@@ -434,27 +456,26 @@ def _build_channel_pattern(df, idx, channel, direction, body_pct):
         "Entry": round(entry, 5),
         "nodes": nodes,
         "arrow": arrow,
-        "consolidation_box": box,
+        "consolidation_box": box_data,
         "resistance": round(res, 5),
         "support":    round(sup, 5),
         "level_price": round(res if direction == "BUY" else sup, 5),
-        "level_touches": (channel["resistance"]["touches"] if direction == "BUY"
-                          else channel["support"]["touches"]),
+        "level_touches": (box["top_touches"] if direction == "BUY" else box["bot_touches"]),
         "channel_start": df.index[start_p],
         "channel_end":   df.index[end_p],
-        "channel_duration_bars": int(channel["duration_bars"]),
-        "channel_range_pct": round((res - sup) / max(sup, 1e-9) * 100, 3),
+        "channel_duration_bars": int(box["duration"]),
+        "channel_range_pct": round(box["range_pct"], 3),
         "neckline_start_idx": df.index[start_p],
         "neckline_end_idx":   df.index[idx],
         "end_pos": idx,
         "Entry Conditions": (
-            f"Horizontal channel ≥{CONFIG['MIN_CONSOL_DAYS']}d · "
-            f"R×{channel['resistance']['touches']} / S×{channel['support']['touches']} → close breakout"
+            f"True horizontal range · T{box['top_touches']}/B{box['bot_touches']} touches · "
+            f"top_spread {box['top_spread_pct']}% / bot_spread {box['bot_spread_pct']}%"
         ),
         "consol_high": round(res, 5),
         "consol_low":  round(sup, 5),
-        "consol_bars": int(seg_end_exclusive - start_p),
-        "consol_range_pct": round((res - sup) / max(sup, 1e-9) * 100, 3),
+        "consol_bars": int(box["duration"]),
+        "consol_range_pct": round(box["range_pct"], 3),
         "consol_stability_pct": 100.0,
         "breakout_body_pct": round(body_pct, 3),
     }
@@ -463,9 +484,6 @@ def _build_channel_pattern(df, idx, channel, direction, body_pct):
     return pattern
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Simulation
-# ══════════════════════════════════════════════════════════════════════════════
 def simulate_trade_outcome(pattern, df):
     bias    = pattern["bias"]
     entry   = float(pattern["entry"])
@@ -560,9 +578,6 @@ def simulate_trade_outcome(pattern, df):
     return stats
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# run_full_analysis
-# ══════════════════════════════════════════════════════════════════════════════
 def run_full_analysis(df, interval="1h", symbol=None):
     default_empty = {
         "df": df, "symbol": symbol or "N/A",
@@ -613,9 +628,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# backtest_strategy
-# ══════════════════════════════════════════════════════════════════════════════
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
@@ -678,18 +690,12 @@ def backtest_strategy(df, interval="1h", symbol=None):
     return trades
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Backward-compat alias
-# ══════════════════════════════════════════════════════════════════════════════
 def detect_all_head_shoulders(pivots=None, df=None, is_backtest=False, **kwargs):
     if df is None:
         return []
     return detect_all_patterns(df)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# diagnose_filters
-# ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
     result = {
         "error": None, "total_raw_candidates": 0, "final_count": 0,
@@ -748,7 +754,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
     }
 
     result["stages"] = {
-        f"1. Channel ≥{CONFIG['MIN_CONSOL_DAYS']}d": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        f"1. True Range ≥{CONFIG['MIN_CONSOL_DAYS']}d": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
         "2. Close Breakout":                          {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
@@ -784,9 +790,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Horizontal Channel Breakout v6")
+    print("ENGINE.PY — Strict Horizontal Range Breakout v7")
     print(f"ZigZag: depth={CONFIG['ZIGZAG_DEPTH']} backstep={CONFIG['ZIGZAG_BACKSTEP']} min_swing={CONFIG['MIN_SWING_PCT']}%")
-    print(f"Channel: ≥{CONFIG['MIN_CONSOL_DAYS']}d | tol={CONFIG['LEVEL_TOLERANCE_PCT']}% | touches≥{CONFIG['MIN_TOUCHES']} | range {CONFIG['MIN_RANGE_PCT']}–{CONFIG['MAX_RANGE_PCT']}%")
-    print(f"Breakout: close beyond level by {CONFIG['BREAKOUT_BUFFER_PCT']}% | body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}%")
-    print(f"SL: {CONFIG['SL_BUFFER_PCT']}% beyond opposite side | TP = {CONFIG['TP_RR']}× risk")
-    print("Box: uses ACTUAL High/Low of the correction window (flat edges)")
+    print(f"Range: min_touches={CONFIG['MIN_TOUCHES']} top_flat={CONFIG['TOP_FLATNESS_PCT']}% bot_flat={CONFIG['BOT_FLATNESS_PCT']}% max_slope={CONFIG['MAX_SLOPE_PCT']}%/bar")
+    print(f"Range size: {CONFIG['MIN_RANGE_PCT']}% – {CONFIG['MAX_RANGE_PCT']}%")
+    print(f"Breakout: body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}%  |  Buffer: {CONFIG['BREAKOUT_BUFFER_PCT']}%")
+    print(f"SL: {CONFIG['SL_BUFFER_PCT']}% beyond level  |  TP = {CONFIG['TP_RR']}× risk")
