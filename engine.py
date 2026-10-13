@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Horizontal Rectangle Reversal (v19)
+ENGINE.PY — Horizontal Rectangle Reversal (v20)
 =================================================
-🎯 الجديد في v19:
-  • الخطوط عند وسيط أعلى/أدنى 15% من القمم/القيعان (cluster center)
-  • اللمسات تُحسب حول الـ cluster لا حول أقصى قمة
-  • الخط يمر عبر تجمّع البيفوتات الفعلي (يُلامس الشموع)
-  • TP = حجم الانطلاقة قبل التصحيح
-  • رسم علامات على القمم/القيعان الحقيقية
+🎯 الجديد في v20:
+  • الفلترة كما v17 (تعمل وتجد الأنماط)
+  • الرسم عند الـ cluster (الخط يمر عبر القمم/القيعان)
+  • TP = حجم الانطلاقة
 """
 import numpy as np
 import pandas as pd
@@ -52,8 +50,8 @@ CONFIG = {
     "VOLUME_MA_PERIOD": 20,
     "MIN_BARS_REQUIRED": 250,
 
-    # 🆕 نسبة القمم/القيعان المُستخدمة لحساب الـ cluster
-    "CLUSTER_TOP_PCT": 0.15,
+    # 🆕 نسبة القمم/القيعان للـ cluster (لرسم الخطوط فقط)
+    "CLUSTER_TOP_PCT": 0.20,
 }
 
 
@@ -115,7 +113,7 @@ def get_chronological_pivots(df): return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🆕 _window_metrics — cluster-based lines
+# _window_metrics — v17 logic + cluster for drawing
 # ══════════════════════════════════════════════════════════════════════════════
 def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
     n = len(closes)
@@ -140,47 +138,38 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
     cv = std_c / np.where(mean_c > 0, mean_c, 1e-9) * 100
     drift = np.abs(cs[:, -1] - cs[:, 0]) / np.where(mean_c > 0, mean_c, 1e-9) * 100
 
-    # ═══ 🆕 cluster: وسيط أعلى/أدنى 15% من القمم/القيعان ═══
-    hs_sorted = np.sort(hs, axis=1)
-    ls_sorted = np.sort(ls, axis=1)
-    n_peak = max(1, int(W * CONFIG["CLUSTER_TOP_PCT"]))
+    # ═══ v17: touches حول win_high / win_low (يعمل) ═══
+    top_thr = win_high * (1.0 - tol); bot_thr = win_low * (1.0 + tol)
+    top_touch = (hs >= top_thr[:, None]).sum(axis=1)
+    bot_touch = (ls <= bot_thr[:, None]).sum(axis=1)
 
-    top_cluster = np.median(hs_sorted[:, -n_peak:], axis=1)  # وسيط أعلى القمم
-    bot_cluster = np.median(ls_sorted[:, :n_peak], axis=1)   # وسيط أدنى القيعان
-
-    # touches حول الـ cluster (بمدى أوسع قليلاً)
-    touch_range = tol * 3.0
-    top_thr_lo = top_cluster * (1.0 - touch_range)
-    top_thr_hi = top_cluster * (1.0 + touch_range)
-    bot_thr_lo = bot_cluster * (1.0 - touch_range)
-    bot_thr_hi = bot_cluster * (1.0 + touch_range)
-
-    top_touch = ((hs >= top_thr_lo[:, None]) & (hs <= top_thr_hi[:, None])).sum(axis=1)
-    bot_touch = ((ls >= bot_thr_lo[:, None]) & (ls <= bot_thr_hi[:, None])).sum(axis=1)
-
-    # flatness: مدى القمم/القيعان حول الـ cluster
-    top_masked = np.where((hs >= top_thr_lo[:, None]) & (hs <= top_thr_hi[:, None]), hs, np.nan)
-    bot_masked = np.where((ls >= bot_thr_lo[:, None]) & (ls <= bot_thr_hi[:, None]), ls, np.nan)
+    # flatness (v17)
+    top_masked = np.where(hs >= top_thr[:, None], hs, np.nan)
+    bot_masked = np.where(ls <= bot_thr[:, None], ls, np.nan)
     with np.errstate(invalid="ignore"):
         top_max = np.nanmax(top_masked, axis=1); top_min = np.nanmin(top_masked, axis=1)
         bot_max = np.nanmax(bot_masked, axis=1); bot_min = np.nanmin(bot_masked, axis=1)
 
-    top_flat_pct = np.where(top_cluster > 0, (top_max - top_min) / top_cluster * 100, np.inf)
-    bot_flat_pct = np.where(bot_cluster > 0, (bot_max - bot_min) / bot_cluster * 100, np.inf)
+    top_flat_pct = np.where(win_high > 0, (top_max - top_min) / win_high * 100, np.inf)
+    bot_flat_pct = np.where(win_low > 0, (bot_max - bot_min) / win_low * 100, np.inf)
+    range_pct = np.where(win_low > 0, (win_high - win_low) / win_low * 100, np.inf)
 
-    # range_pct: يُحسب من الـ clusters (وليس من القمة/القاع المطلق)
-    range_pct = np.where(bot_cluster > 0, (top_cluster - bot_cluster) / bot_cluster * 100, np.inf)
+    # ═══ 🆕 cluster (للرسم فقط) ═══
+    hs_sorted = np.sort(hs, axis=1)
+    ls_sorted = np.sort(ls, axis=1)
+    n_peak = max(1, int(W * CONFIG["CLUSTER_TOP_PCT"]))
+    top_cluster = np.median(hs_sorted[:, -n_peak:], axis=1)
+    bot_cluster = np.median(ls_sorted[:, :n_peak], axis=1)
 
-    # flat bars: نسبة الشموع بجسم صغير
+    # flat bars
     bodies = np.abs(cs - os_)
-    box_h = np.where((top_cluster - bot_cluster) > 0, top_cluster - bot_cluster, 1e-9)
+    box_h = np.where((win_high - win_low) > 0, win_high - win_low, 1e-9)
     small_bodies = (bodies < (box_h[:, None] * 0.35)).sum(axis=1)
     flat_bars_pct = small_bodies / W * 100
 
-    # شكل: عرض ÷ ارتفاع %
     bars_per_pct = W / np.maximum(range_pct, 0.01)
 
-    # impulse قبل النافذة
+    # impulse
     impulse_pct = np.full(m, 0.0, dtype=np.float32)
     for k in range(m):
         base_idx = k - 1
@@ -191,8 +180,8 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
 
     return {
         "top": win_high, "bottom": win_low,
-        "top_cluster": top_cluster,
-        "bot_cluster": bot_cluster,
+        "top_cluster": top_cluster,     # 🆕 للرسم
+        "bot_cluster": bot_cluster,     # 🆕 للرسم
         "range_pct": range_pct,
         "top_touch": top_touch.astype(np.int32),
         "bot_touch": bot_touch.astype(np.int32),
@@ -227,7 +216,6 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
     min_bars_required = _week_to_bars(interval, CONFIG["MIN_CONSOL_WEEKS"])
 
-    # metrics by window
     metrics_by_W = {}
     for W in CONFIG["WINDOW_SIZES"]:
         if W < min_bars_required: continue
@@ -270,6 +258,7 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
             bars_per_pct = float(M["bars_per_pct"][k])
             impulse = float(M["impulse"][k])
 
+            # v17 filters (تعمل)
             if not (CONFIG["MIN_RANGE_PCT"] <= range_pct <= CONFIG["MAX_RANGE_PCT"]): continue
             if top_touch < CONFIG["MIN_TOP_TOUCHES"]: continue
             if bot_touch < CONFIG["MIN_BOT_TOUCHES"]: continue
@@ -293,9 +282,13 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if end_window != i - 1:
             continue
 
-        # 🆕 استخدم الـ cluster (مستوى المقاومة/الدعم الفعلي)
-        box_high = float(M["top_cluster"][k])
-        box_low  = float(M["bot_cluster"][k])
+        # المنطق يستخدم v17 values (win_high/win_low)
+        box_high = float(M["top"][k])
+        box_low  = float(M["bottom"][k])
+        # 🆕 للرسم فقط
+        draw_high = float(M["top_cluster"][k])
+        draw_low  = float(M["bot_cluster"][k])
+
         impulse = float(M["impulse"][k])
         up_thr = box_high * (1 + buf); down_thr = box_low * (1 - buf)
 
@@ -308,6 +301,8 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
         info = {
             "top": box_high, "bottom": box_low,
+            "draw_high": draw_high,     # 🆕
+            "draw_low": draw_low,       # 🆕
             "range_pct": float(M["range_pct"][k]),
             "top_touch": int(M["top_touch"][k]),
             "bot_touch": int(M["bot_touch"][k]),
@@ -331,14 +326,16 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# _build_pattern — TP = impulse size
+# _build_pattern
 # ══════════════════════════════════════════════════════════════════════════════
 def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
     entry = float(closes[idx])
     box_high = info["top"]; box_low = info["bottom"]
+    draw_high = info.get("draw_high", box_high)
+    draw_low  = info.get("draw_low",  box_low)
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
-    # SL
+    # SL عند الحد الفعلي (win_high/win_low)
     if direction == "BUY":
         sl = box_low * (1 - sl_buf)
         if sl >= entry: return None
@@ -350,14 +347,12 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
         risk = sl - entry
         if risk <= 0: return None
 
-    # 🆕 TP = حجم الانطلاقة
+    # TP = حجم الانطلاقة
     impulse_dist = abs(info["impulse_pct"]) / 100.0 * entry
     if impulse_dist < 0.5 * risk:
         impulse_dist = 2.0 * risk
-
     tp = entry + impulse_dist if direction == "BUY" else entry - impulse_dist
 
-    # فلتر R:R
     rr = abs(tp - entry) / risk
     if rr < CONFIG["MIN_RR_ACCEPTED"]:
         return None
@@ -365,31 +360,31 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
     bias = "Bullish" if direction == "BUY" else "Bearish"
     start_p = info["start"]; end_p = info["end"]
 
-    # 🆕 نقاط اللمسات — عند السعر الفعلي لكل قمة/قاع قريب من الخط
-    tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 3.0
+    # نقاط اللمسات: عند السعر الفعلي للشموع التي لمست الحدود
+    tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
     seg_h = highs[start_p:end_p + 1]; seg_l = lows[start_p:end_p + 1]
 
-    top_hits = np.where(np.abs(seg_h - box_high) <= box_high * tol_vis)[0]
-    bot_hits = np.where(np.abs(seg_l - box_low)  <= box_low  * tol_vis)[0]
+    # نستخدم draw_high/draw_low للمقارنة (قيم cluster)
+    top_hits = np.where(np.abs(seg_h - draw_high) <= draw_high * tol_vis * 2)[0]
+    bot_hits = np.where(np.abs(seg_l - draw_low)  <= draw_low  * tol_vis * 2)[0]
 
-    # النقاط عند السعر الفعلي للشموع (تُلامس الشارت)
+    # النقاط عند السعر الفعلي
     top_nodes = [(int(start_p + p), float(seg_h[p])) for p in top_hits]
     bot_nodes = [(int(start_p + p), float(seg_l[p])) for p in bot_hits]
 
-    # خطان أفقيان عند الـ cluster
-    top_line = [(int(start_p), box_high), (int(end_p), box_high)]
-    bot_line = [(int(start_p), box_low),  (int(end_p), box_low)]
+    # خطوط عند cluster (تمر عبر القمم)
+    top_line = [(int(start_p), draw_high), (int(end_p), draw_high)]
+    bot_line = [(int(start_p), draw_low),  (int(end_p), draw_low)]
 
     nodes = [(int(idx), entry)]
 
-    # سهم
     arrow_len = max(8, (end_p - start_p) // 3)
     x1_pos = min(idx + arrow_len, len(df) - 1)
     arrow = {"x0": int(idx), "y0": entry, "x1": int(x1_pos), "y1": tp, "direction": direction}
 
-    # المستطيل
+    # الصندوق يرسم عند الـ cluster
     box_data = {"x_start": int(start_p), "x_end": int(end_p),
-                "high": float(box_high), "low": float(box_low)}
+                "high": float(draw_high), "low": float(draw_low)}
 
     pattern = {
         "name": "Horizontal Rectangle Reversal",
@@ -405,14 +400,15 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
         "nodes": nodes, "top_nodes": top_nodes, "bot_nodes": bot_nodes,
         "top_line": top_line, "bot_line": bot_line, "arrow": arrow,
         "consolidation_box": box_data,
-        "resistance": round(box_high, 5), "support": round(box_low, 5),
-        "level_price": round(box_high if direction == "BUY" else box_low, 5),
+        "resistance": round(draw_high, 5),
+        "support": round(draw_low, 5),
+        "level_price": round(draw_high if direction == "BUY" else draw_low, 5),
         "channel_start": int(start_p), "channel_end": int(end_p),
         "channel_duration_bars": int(info["W"]),
         "channel_range_pct": round(info["range_pct"], 3),
         "neckline_start_idx": int(start_p), "neckline_end_idx": int(idx), "end_pos": int(idx),
         "Entry Conditions": f"W{info['W']} rect · TP=impulse {info['impulse_pct']:+.2f}% · R:R {rr:.2f}",
-        "consol_high": round(box_high, 5), "consol_low": round(box_low, 5),
+        "consol_high": round(draw_high, 5), "consol_low": round(draw_low, 5),
         "consol_bars": int(info["W"]), "consol_range_pct": round(info["range_pct"], 3),
         "consol_stability_pct": 100.0,
         "breakout_body_pct": round(body_pct, 3),
@@ -656,9 +652,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Horizontal Rectangle v19 (cluster-based lines)")
+    print("ENGINE.PY — Horizontal Rectangle v20")
     print(f"Windows: {CONFIG['WINDOW_SIZES']}")
-    print(f"Cluster top %: {CONFIG['CLUSTER_TOP_PCT']*100}%")
-    print(f"Range: {CONFIG['MIN_RANGE_PCT']}% – {CONFIG['MAX_RANGE_PCT']}%")
+    print(f"Filters: v17 (working) | Drawing: cluster-based")
     print(f"TP source: impulse size")
-    print(f"Min R:R: {CONFIG['MIN_RR_ACCEPTED']}")
