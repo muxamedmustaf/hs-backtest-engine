@@ -21,7 +21,7 @@ import pandas as pd
 
 CONFIG = {
     # ── ZigZag ───────────────────────────────────────────────────────────
-    "ZIGZAG_DEPTH": 5,
+    "ZIGZAG_DEPTH": 12,
     "ZIGZAG_BACKSTEP": 3,
     "MIN_SWING_PCT": 0.15,
 
