@@ -1,19 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Strict Horizontal Rectangle Reversal (v17)
+ENGINE.PY — Strict Horizontal Rectangle Reversal (v18)
 ========================================================
-✅ الجديد:
-  • يبحث من النوافذ الأكبر للأصغر → يجد التصحيح الكامل وليس الداخلي
-  • نوافذ أكبر: [60, 90, 130, 180, 250, 340, 460]
-  • MIN_RANGE_PCT أعلى → يرفض المستطيلات الصغيرة
+🎯 الجديد في v18:
+  • الهدف (TP) = حجم الانطلاقة قبل التصحيح (impulse size)
+  • ليس 3× المخاطرة كما كان
+  • مع فلتر MIN_RR_ACCEPTED لضمان R:R معقول
+
+الشروط:
+  • عمر ≥ 1 أسبوع
+  • عرض ÷ ارتفاع ≥ 30 (يرفض المستطيلات العمودية)
+  • يبحث من النوافذ الأكبر للأصغر → يجد التصحيح الكامل
+  • تسطّح صارم: slope · CV · drift · flat_bars
+  • كسر بإغلاق شمعة · SL على الجهة المقابلة
 """
 import numpy as np
 import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    # 🆕 نوافذ أكبر — يبدأ من 60 شمعة
+    # نوافذ أكبر — يبدأ من 60 شمعة
     "WINDOW_SIZES": [60, 90, 130, 180, 250, 340, 460],
 
     "MIN_TOP_TOUCHES": 3,
@@ -21,11 +31,9 @@ CONFIG = {
     "TOUCH_TOLERANCE_PCT": 0.20,
     "FLATNESS_MAX_PCT": 0.45,
 
-    # 🆕 رفع الحد الأدنى للارتفاع — يرفض المستطيلات الصغيرة
     "MIN_RANGE_PCT": 0.80,
     "MAX_RANGE_PCT": 5.00,
 
-    # 🆕 تسامح أكبر مع العرض/الارتفاع للنوافذ الكبيرة
     "MIN_BARS_PER_RANGE_PCT": 30,
 
     "MAX_SLOPE_PCT_PER_BAR": 0.006,
@@ -41,9 +49,14 @@ CONFIG = {
     "BREAKOUT_BUFFER_PCT": 0.05,
     "MIN_BREAKOUT_BODY_PCT": 0.08,
 
+    # ── SL ────────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
-    "TP_RR": 3.0,
 
+    # ── 🆕 TP = حجم الانطلاقة ─────────────────────────────────────────
+    "MIN_RR_ACCEPTED": 1.2,      # أدنى R:R مقبول (يرفض الصفقات الضعيفة)
+    "TP_RR": 3.0,                # احتياطي فقط (غير مستخدم أساساً)
+
+    # ── فلاتر عامة ────────────────────────────────────────────────────
     "MIN_BARS_BETWEEN": 15,
     "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
@@ -172,7 +185,7 @@ def _window_metrics(highs, lows, opens, closes, W, tol, impulse_bars):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DETECTOR — v17: أكبر مستطيل صالح لكل نقطة كسر
+# DETECTOR — يبحث من الأكبر للأصغر
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
@@ -194,7 +207,7 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
     min_bars_required = _week_to_bars(interval, CONFIG["MIN_CONSOL_WEEKS"])
 
-    # ═══ 🆕 احسب metrics لكل نافذة مرة واحدة ═══
+    # احسب metrics لكل نافذة مرة واحدة
     metrics_by_W = {}
     for W in CONFIG["WINDOW_SIZES"]:
         if W < min_bars_required: continue
@@ -203,13 +216,12 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if M is not None:
             metrics_by_W[W] = M
 
-    # ترتيب النوافذ من الأكبر للأصغر
+    # ترتيب من الأكبر للأصغر
     windows_desc = sorted(metrics_by_W.keys(), reverse=True)
 
     patterns = []
     last_signal_pos = -10**9
 
-    # ═══ 🆕 امسح الشموع — كل شمعة قد تكون نقطة كسر ═══
     for i in range(CONFIG["MIN_BARS_REQUIRED"], n):
         if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
             continue
@@ -220,11 +232,11 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
             continue
 
-        # ═══ 🆕 جرّب النوافذ من الأكبر للأصغر — خذ أول (أكبر) ناجحة ═══
+        # جرّب النوافذ من الأكبر للأصغر — خذ أول (أكبر) ناجحة
         best_match = None
         for W in windows_desc:
             M = metrics_by_W[W]
-            k = i - W  # موضع بداية النافذة في metrics
+            k = i - W
             if k < 0 or k >= len(M["top"]):
                 continue
 
@@ -240,7 +252,7 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
             bars_per_pct = float(M["bars_per_pct"][k])
             impulse = float(M["impulse"][k])
 
-            # 🎯 كل الفلاتر
+            # كل الفلاتر
             if not (CONFIG["MIN_RANGE_PCT"] <= range_pct <= CONFIG["MAX_RANGE_PCT"]): continue
             if top_touch < CONFIG["MIN_TOP_TOUCHES"]: continue
             if bot_touch < CONFIG["MIN_BOT_TOUCHES"]: continue
@@ -253,9 +265,8 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
             if bars_per_pct < CONFIG["MIN_BARS_PER_RANGE_PCT"]: continue
             if abs(impulse) < CONFIG["MIN_IMPULSE_PCT"]: continue
 
-            # ✅ نجحت — خذ هذه النافذة (الأكبر)
             best_match = (W, k, M)
-            break  # ← توقف — حصلنا على أكبر نافذة
+            break
 
         if best_match is None:
             continue
@@ -300,30 +311,44 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     return patterns
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# _build_pattern — 🆕 TP = حجم الانطلاقة
+# ══════════════════════════════════════════════════════════════════════════════
 def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
     entry = float(closes[idx])
     box_high = info["top"]; box_low = info["bottom"]
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
+    # ═══ SL على الجهة المقابلة ═══════════════════════════════════════
     if direction == "BUY":
         sl = box_low * (1 - sl_buf)
         if sl >= entry: return None
         risk = entry - sl
         if risk <= 0: return None
-        tp = entry + CONFIG["TP_RR"] * risk
     else:
         sl = box_high * (1 + sl_buf)
         if sl <= entry: return None
         risk = sl - entry
         if risk <= 0: return None
-        tp = entry - CONFIG["TP_RR"] * risk
 
+    # ═══ 🆕 TP = حجم الانطلاقة قبل التصحيح ═══════════════════════════
+    impulse_dist = abs(info["impulse_pct"]) / 100.0 * entry
+
+    # fallback: إذا كانت الانطلاقة صغيرة جداً، استخدم 2× المخاطرة
+    if impulse_dist < 0.5 * risk:
+        impulse_dist = 2.0 * risk
+
+    tp = entry + impulse_dist if direction == "BUY" else entry - impulse_dist
+
+    # ═══ فلتر R:R مقبول ══════════════════════════════════════════════
     rr = abs(tp - entry) / risk
-    if rr < CONFIG["TP_RR"] - 0.05: return None
+    if rr < CONFIG["MIN_RR_ACCEPTED"]:
+        return None
 
     bias = "Bullish" if direction == "BUY" else "Bearish"
     start_p = info["start"]; end_p = info["end"]
 
+    # نقاط اللمسات
     tol_vis = CONFIG["TOUCH_TOLERANCE_PCT"] / 100.0 * 1.5
     seg_h = highs[start_p:end_p + 1]; seg_l = lows[start_p:end_p + 1]
     top_hits = np.where(seg_h >= box_high * (1 - tol_vis))[0]
@@ -344,12 +369,15 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
 
     pattern = {
         "name": "Horizontal Rectangle Reversal",
-        "pattern": f"Rect {direction} · T{info['top_touch']}/B{info['bot_touch']} · W{info['W']}bars",
+        "pattern": f"Rect {direction} · T{info['top_touch']}/B{info['bot_touch']} · W{info['W']}bars · R:R {rr:.2f}",
         "bias": bias, "direction": direction,
         "match": float(min(100, 55 + (info["top_touch"] + info["bot_touch"]) * 6)),
         "entry": round(entry, 5), "entry_trigger": round(entry, 5),
         "sl": round(sl, 5), "tp": round(tp, 5),
         "SL": round(sl, 5), "TP": round(tp, 5), "Entry": round(entry, 5),
+        "R:R": round(rr, 2),
+        "tp_source": "impulse_size",        # 🆕 مصدر الهدف
+        "impulse_distance": round(impulse_dist, 5),
         "nodes": nodes, "top_nodes": top_nodes, "bot_nodes": bot_nodes,
         "top_line": top_line, "bot_line": bot_line, "arrow": arrow,
         "consolidation_box": box_data,
@@ -359,7 +387,7 @@ def _build_pattern(df, idx, info, direction, body_pct, highs, lows, closes):
         "channel_duration_bars": int(info["W"]),
         "channel_range_pct": round(info["range_pct"], 3),
         "neckline_start_idx": int(start_p), "neckline_end_idx": int(idx), "end_pos": int(idx),
-        "Entry Conditions": f"W{info['W']} rectangle · shape {info['bars_per_pct']:.0f} · R {info['range_pct']:.2f}%",
+        "Entry Conditions": f"W{info['W']} rectangle · TP = impulse {info['impulse_pct']:+.2f}% · R:R {rr:.2f}",
         "consol_high": round(box_high, 5), "consol_low": round(box_low, 5),
         "consol_bars": int(info["W"]), "consol_range_pct": round(info["range_pct"], 3),
         "consol_stability_pct": 100.0,
@@ -518,6 +546,9 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Entry": p["entry"], "Entry Price": p["entry"],
             "SL": p["sl"], "Stop Loss": p["sl"],
             "TP": p["tp"], "Take Profit": p["tp"],
+            "R:R": p.get("R:R"),
+            "tp_source": p.get("tp_source"),
+            "impulse_distance": p.get("impulse_distance"),
             "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
             "Exit Price": p.get("exit_price"),
             "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
@@ -601,7 +632,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Strict Horizontal Rectangle v17 (largest-first)")
+    print("ENGINE.PY — Horizontal Rectangle v18 (TP = impulse size)")
     print(f"Windows: {CONFIG['WINDOW_SIZES']}")
     print(f"Min range: {CONFIG['MIN_RANGE_PCT']}% | Max range: {CONFIG['MAX_RANGE_PCT']}%")
-    print(f"Min shape (bars/%): {CONFIG['MIN_BARS_PER_RANGE_PCT']}")
+    print(f"Min R:R accepted: {CONFIG['MIN_RR_ACCEPTED']}")
+    print(f"TP source: impulse size before rectangle")
