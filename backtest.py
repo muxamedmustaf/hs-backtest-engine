@@ -126,56 +126,88 @@ def get_default_lot_for_symbol(symbol):
     return 0.01
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ✅ compute_pips — النسخة المُصلَحة (بدون TypeError)
+# ══════════════════════════════════════════════════════════════════════════════
 def compute_pips(trades_df):
-    if trades_df is None or trades_df.empty: return trades_df
+    if trades_df is None or trades_df.empty:
+        return trades_df
     df = trades_df.copy()
+
     def to_float(v):
         try: return float(v)
         except (TypeError, ValueError): return None
+
     def pick(row, names):
         for n in names:
             if n in row and pd.notna(row[n]):
                 v = to_float(row[n])
                 if v is not None: return v
         return None
+
     pips_l, risk_l, reward_l, rr_l = [], [], [], []
     for _, row in df.iterrows():
         sym = row.get("symbol") or row.get("Symbol") or ""
         pip = pip_size_for(sym)
         entry = pick(row, ["Entry Price", "Entry", "entry"])
         exit_ = pick(row, ["Exit Price", "Exit", "exit", "Close Price"])
-        sl = pick(row, ["Stop Loss", "SL", "sl"])
-        tp = pick(row, ["Take Profit", "TP", "tp"])
+        sl    = pick(row, ["Stop Loss", "SL", "sl"])
+        tp    = pick(row, ["Take Profit", "TP", "tp"])
         bias = str(row.get("bias") or row.get("Bias") or "").upper()
         is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
-        pips = (entry - exit_) / pip if is_sell else (exit_ - entry) / pip if entry and exit_ else None
-        risk = abs((sl - entry) / pip if is_sell else (entry - sl) / pip) if entry and sl else None
-        reward = abs((entry - tp) / pip if is_sell else (tp - entry) / pip) if entry and tp else None
+
+        # ✅ pips — محمي من None
+        pips = None
+        if entry is not None and exit_ is not None:
+            pips = (entry - exit_) / pip if is_sell else (exit_ - entry) / pip
+
+        # ✅ risk — محمي
+        risk = None
+        if entry is not None and sl is not None:
+            risk = abs((sl - entry) / pip if is_sell else (entry - sl) / pip)
+
+        # ✅ reward — محمي
+        reward = None
+        if entry is not None and tp is not None:
+            reward = abs((entry - tp) / pip if is_sell else (tp - entry) / pip)
+
         rr = round(reward / risk, 2) if (risk and reward and risk > 0) else None
+
         pips_l.append(round(pips, 1) if pips is not None else None)
         risk_l.append(round(risk, 1) if risk is not None else None)
         reward_l.append(round(reward, 1) if reward is not None else None)
         rr_l.append(rr)
-    df["Pips"] = pips_l; df["Risk_Pips"] = risk_l
-    df["Reward_Pips"] = reward_l; df["RR_Ratio"] = rr_l
+
+    df["Pips"]        = pips_l
+    df["Risk_Pips"]   = risk_l
+    df["Reward_Pips"] = reward_l
+    df["RR_Ratio"]    = rr_l
     return df
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ✅ compute_dollar_pnl — النسخة المُصلَحة
+# ══════════════════════════════════════════════════════════════════════════════
 def compute_dollar_pnl(trades_df, lot=0.01):
-    if trades_df is None or trades_df.empty: return trades_df
+    if trades_df is None or trades_df.empty:
+        return trades_df
     df = trades_df.copy()
     usd_list, pct_list = [], []
+
     for _, row in df.iterrows():
         sym = str(row.get("symbol") or row.get("Symbol") or "").upper()
         entry = row.get("Entry Price") or row.get("Entry")
         exit_ = row.get("Exit Price") or row.get("Exit")
         bias = str(row.get("bias") or row.get("Bias") or "").upper()
         is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
+
         try:
             entry_f = float(entry); exit_f = float(exit_)
         except (TypeError, ValueError):
             usd_list.append(None); pct_list.append(None); continue
+
         price_move = (exit_f - entry_f) if not is_sell else (entry_f - exit_f)
+
         if any(x in sym for x in ["BTC", "ETH"]):
             pnl_usd = price_move * lot * 1
         elif any(x in sym for x in ["US30", "NAS", "SPX", "US100", "US500"]):
@@ -188,12 +220,18 @@ def compute_dollar_pnl(trades_df, lot=0.01):
             if sym.endswith("USD"):
                 pnl_usd = price_move * lot * 100000
             else:
-                if exit_f == 0: pnl_usd = None
-                else: pnl_usd = price_move * lot * 100000 / exit_f
+                if exit_f == 0:
+                    pnl_usd = None
+                else:
+                    pnl_usd = price_move * lot * 100000 / exit_f
+
         pct = (price_move / entry_f * 100) if entry_f else None
+
         usd_list.append(round(pnl_usd, 2) if pnl_usd is not None else None)
         pct_list.append(round(pct, 2) if pct is not None else None)
-    df["PnL_USD"] = usd_list; df["PnL_Pct"] = pct_list
+
+    df["PnL_USD"] = usd_list
+    df["PnL_Pct"] = pct_list
     return df
 
 
@@ -258,7 +296,10 @@ def _week_to_bars_label(interval):
 # ══════════════════════════════════════════════════════════════════════════════
 def draw_rectangle_pattern(fig, source):
     if source is None: return
-    box = source.get("consolidation_box") if isinstance(source, dict) else source.get("consolidation_box")
+    try:
+        box = source.get("consolidation_box")
+    except Exception:
+        return
     if box is None: return
     x_start = int(box["x_start"]); x_end = int(box["x_end"])
     box_high = float(box["high"]); box_low = float(box["low"])
@@ -479,28 +520,12 @@ def render_advanced_risk_calculator(unique_id="main"):
         suggested_lot = round(max(0.0001, custom_lot * (max_risk_usd / check["risk_usd"])), 4)
         st.warning(f"**اللوت المقترح:** `{suggested_lot}` — المخاطرة الجديدة: ${max_risk_usd:.2f}")
 
-    with st.expander("📋 جدول IC Markets Standard"):
-        ic_data = []
-        for sym in available_symbols[:30]:
-            s = str(sym).upper()
-            spec = None
-            for key, sp in IC_MARKETS_SPECS.items():
-                if key.upper() == s: spec = sp; break
-            if spec is None:
-                spec = {"contract": 100000, "min_lot": 0.01, "step": 0.01,
-                        "pip": pip_size_for(sym), "cat": "—"}
-            ic_data.append({"الزوج": sym, "النوع": spec["cat"],
-                            "حجم العقد": f"{spec['contract']:,}",
-                            "أقل لوت": spec["min_lot"], "حجم النقطة": spec["pip"]})
-        st.dataframe(pd.DataFrame(ic_data), use_container_width=True, hide_index=True)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📊 Financial Report — تقرير مالي
+# 📊 Financial Report
 # ══════════════════════════════════════════════════════════════════════════════
 def render_financial_report(trades_df, lot_size=0.01, symbol="—", period="—"):
     st.markdown("### 📊 التقرير المالي الكامل")
-
     if trades_df is None or trades_df.empty:
         st.info("ℹ️ لا توجد صفقات للتحليل"); return
 
@@ -531,7 +556,6 @@ def render_financial_report(trades_df, lot_size=0.01, symbol="—", period="—"
     net_pips = wins_pips + losses_pips
     net_usd = wins_usd + losses_usd
 
-    total_pips = df["Pips"].dropna().sum()
     avg_win_pips = wins_df["Pips"].mean() if wins > 0 else 0
     avg_loss_pips = losses_df["Pips"].mean() if losses > 0 else 0
     avg_win_usd = wins_usd / wins if wins > 0 else 0
@@ -541,16 +565,12 @@ def render_financial_report(trades_df, lot_size=0.01, symbol="—", period="—"
     expectancy_pips = (net_pips / closed) if closed > 0 else 0
     expectancy_usd = (net_usd / closed) if closed > 0 else 0
 
-    # أنظمة متتالية
-    results_seq = res_series.tolist()
-    max_win_streak = 0; max_loss_streak = 0
-    cur_w = 0; cur_l = 0
-    for r in results_seq:
+    max_win_streak = 0; max_loss_streak = 0; cur_w = 0; cur_l = 0
+    for r in res_series.tolist():
         if "WIN" in r: cur_w += 1; cur_l = 0; max_win_streak = max(max_win_streak, cur_w)
         elif "LOSS" in r: cur_l += 1; cur_w = 0; max_loss_streak = max(max_loss_streak, cur_l)
         else: cur_w = 0; cur_l = 0
 
-    # Max Drawdown $
     if not df["PnL_USD"].dropna().empty:
         pnl_series = df["PnL_USD"].dropna().cumsum()
         running_max = pnl_series.cummax()
@@ -592,12 +612,9 @@ def render_financial_report(trades_df, lot_size=0.01, symbol="—", period="—"
     adv3.metric("🔥 أطول سلسلة ربح", max_win_streak)
     adv4.metric("❄️ أطول سلسلة خسارة", max_loss_streak)
 
-    # نسبة الربح/الخسارة
     avg_wl_ratio = (avg_win_usd / avg_loss_usd) if avg_loss_usd > 0 else 0
-    st.info(f"📊 **متوسط الربح/الخسارة:** ${avg_win_usd:.2f} / ${avg_loss_usd:.2f} "
-            f"= **{avg_wl_ratio:.2f}x**")
+    st.info(f"📊 **متوسط الربح/الخسارة:** ${avg_win_usd:.2f} / ${avg_loss_usd:.2f} = **{avg_wl_ratio:.2f}x**")
 
-    # تقييم عام
     if win_rate >= 60 and profit_factor >= 1.5:
         st.success("🌟 **استراتيجية ممتازة** — نسبة ربح عالية + Profit Factor قوي")
     elif win_rate >= 50 and profit_factor >= 1.2:
@@ -748,7 +765,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             combined_df = compute_pips(combined_df)
             combined_df = compute_dollar_pnl(combined_df, lot=lot_size)
 
-            # 📊 تقرير مالي شامل
             with st.expander("📊 التقرير المالي الشامل لكل الأصول", expanded=False):
                 render_financial_report(combined_df, lot_size=lot_size,
                                        symbol="كل الأصول", period=period_display)
@@ -770,7 +786,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         else:
             st.markdown(f"### 📊 {active_sym} — {len(trades_df)} إشارة")
 
-            # حفظ آخر إشارة في session
             if len(trades_df) > 0:
                 last = trades_df.iloc[-1]
                 st.session_state["active_signal_symbol"] = active_sym
@@ -778,16 +793,13 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 st.session_state["active_signal_sl"] = last.get("Stop Loss") or last.get("SL")
                 st.session_state["active_signal_tp"] = last.get("Take Profit") or last.get("TP")
 
-            # 📊 تقرير مالي للأصل الحالي
             with st.expander(f"📊 تقرير مالي — {active_sym}", expanded=False):
                 render_financial_report(trades_df, lot_size=lot_size,
                                        symbol=active_sym, period=period_display)
 
-            # 🎯 التصرفات المطلوبة
             with st.expander("🎯 التصرفات المطلوبة الآن", expanded=False):
                 render_realtime_actions(trades_df, is_live=False)
 
-            # 🔬 التقرير التشخيصي
             with st.expander("🔬 التقرير التشخيصي الذكي", expanded=False):
                 if diagnose_filters is None:
                     st.error("⚠️ `diagnose_filters` غير متوفر")
@@ -812,7 +824,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                     except Exception as e:
                         st.error(f"⚠️ {type(e).__name__}: {e}")
 
-            # التنقل
             if st.session_state.get("_last_bt_sym") != active_sym:
                 st.session_state.signal_index = len(trades_df) - 1
                 st.session_state["_last_bt_sym"] = active_sym
@@ -840,7 +851,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             m3.metric("🏆 TP", f"{current_sig.get('Take Profit', '—')}")
             m4.metric("📊 النتيجة", f"{current_sig.get('Result', '—')}")
 
-            # 📈 الرسم
             if active_sym in dfs_dict and not dfs_dict[active_sym].empty:
                 _orig = dfs_dict[active_sym].copy()
                 _dates = _orig.index.tolist()
@@ -963,7 +973,6 @@ else:
             e2.metric("🛑 SL", f"{active_res.get('sl', 0)}")
             e3.metric("🏆 TP", f"{active_res.get('tp', 0)}")
 
-            # حفظ الإشارة النشطة
             st.session_state["active_signal_symbol"] = active_sym
             st.session_state["active_signal_entry"] = active_res.get("entry")
             st.session_state["active_signal_sl"] = active_res.get("sl")
@@ -1002,7 +1011,7 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 💰 Risk Calculator (دائماً معروض في الأسفل)
+# 💰 Risk Calculator (دائماً أسفل الصفحة)
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
@@ -1044,9 +1053,9 @@ with st.expander("📖 Sida loo isticmaalo App-ka", expanded=False):
     7. **SL** على الجهة المقابلة، **TP = 3× المخاطرة**
 
     ### 📌 الأقسام المتوفرة:
-    - 💰 **حاسبة المخاطرة المتقدمة** — احسب اللوت الآمن
-    - 📊 **التقرير المالي** — إحصاءات كاملة (Win Rate · Profit Factor · Expectancy · Max DD)
-    - 🎯 **التصرفات المطلوبة الآن** — إدارة الصفقات المفتوحة
+    - 💰 **حاسبة المخاطرة المتقدمة** — أسفل الصفحة
+    - 📊 **التقرير المالي الشامل** — داخل Backtest
+    - 🎯 **التصرفات المطلوبة الآن** — إدارة الصفقات
     - 🔬 **التقرير التشخيصي** — تحليل الفلاتر
     - 🔽 **التنقل بين الإشارات** — أسهم ◀ ▶
     """)
