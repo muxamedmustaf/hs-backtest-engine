@@ -1214,57 +1214,64 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             if len(days) > 0:
                 dur_str = f"{days.mean():.1f} يوم"
 
-        st.markdown(f"### 📊 نتائج **{active_sym}** — {period_display}")
+        # ═══════════════════════════════════════════════════════════════════════
+        # 🔽 التفاصيل مطوية داخل expander — تُفتح عند الضغط فقط
+        # ═══════════════════════════════════════════════════════════════════════
+        with st.expander(
+            f"🔽 اضغط لعرض نتائج **{active_sym}** — {period_display}",
+            expanded=False
+        ):
+            st.markdown(f"### 📊 نتائج **{active_sym}** — {period_display}")
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("✅ أ. ناجحة", wins, delta=f"{win_rate}%")
-        m2.metric("❌ ب. خاسرة", losses, delta=f"{loss_rate}%", delta_color="inverse")
-        m3.metric("⏳ ج. مفتوحة", opens)
-        m4.metric("⏱️ د. مدة المركز", dur_str)
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("✅ أ. ناجحة", wins, delta=f"{win_rate}%")
+            m2.metric("❌ ب. خاسرة", losses, delta=f"{loss_rate}%", delta_color="inverse")
+            m3.metric("⏳ ج. مفتوحة", opens)
+            m4.metric("⏱️ د. مدة المركز", dur_str)
 
-        m5, m6, m7 = st.columns(3)
-        m5.metric("📏 إجمالي النقاط", f"{sym_total_pips:+.1f}")
-        m6.metric("📐 متوسط النقاط", f"{sym_avg_pips:+.1f}" if pd.notna(sym_avg_pips) else "—")
-        m7.metric(f"💰 صافي الربح", f"{sym_total_usd:+.2f} $")
+            m5, m6, m7 = st.columns(3)
+            m5.metric("📏 إجمالي النقاط", f"{sym_total_pips:+.1f}")
+            m6.metric("📐 متوسط النقاط", f"{sym_avg_pips:+.1f}" if pd.notna(sym_avg_pips) else "—")
+            m7.metric(f"💰 صافي الربح", f"{sym_total_usd:+.2f} $")
 
-        sym_scores = []
-        if "nodes" in trades_df.columns:
-            for _, row in trades_df.iterrows():
-                nodes = row.get("nodes")
-                if isinstance(nodes, list) and len(nodes) >= 5:
-                    prices = [n[1] for n in nodes]
-                    ls, nl1, head, nl2, rs = prices[:5]
-                    head_range = abs(head - (nl1 + nl2) / 2) + 1e-5
-                    shoulder_diff = abs(ls - rs)
-                    neck_diff = abs(nl1 - nl2)
-                    s_sym = max(0, 100 - (shoulder_diff / head_range) * 100)
-                    n_sym = max(0, 100 - (neck_diff / head_range) * 100)
-                    sym_scores.append((s_sym + n_sym) / 2)
+            sym_scores = []
+            if "nodes" in trades_df.columns:
+                for _, row in trades_df.iterrows():
+                    nodes = row.get("nodes")
+                    if isinstance(nodes, list) and len(nodes) >= 5:
+                        prices = [n[1] for n in nodes]
+                        ls, nl1, head, nl2, rs = prices[:5]
+                        head_range = abs(head - (nl1 + nl2) / 2) + 1e-5
+                        shoulder_diff = abs(ls - rs)
+                        neck_diff = abs(nl1 - nl2)
+                        s_sym = max(0, 100 - (shoulder_diff / head_range) * 100)
+                        n_sym = max(0, 100 - (neck_diff / head_range) * 100)
+                        sym_scores.append((s_sym + n_sym) / 2)
 
-        avg_symmetry = f"{round(sum(sym_scores)/len(sym_scores), 1)}%" if sym_scores else "—"
-        avg_mfe = f"{round(trades_df['Max Reach %'].mean(), 1)}%" if "Max Reach %" in trades_df.columns else "—"
-        avg_mae_safety = f"{round(trades_df['SL Safety %'].mean(), 1)}%" if "SL Safety %" in trades_df.columns else "—"
+            avg_symmetry = f"{round(sum(sym_scores)/len(sym_scores), 1)}%" if sym_scores else "—"
+            avg_mfe = f"{round(trades_df['Max Reach %'].mean(), 1)}%" if "Max Reach %" in trades_df.columns else "—"
+            avg_mae_safety = f"{round(trades_df['SL Safety %'].mean(), 1)}%" if "SL Safety %" in trades_df.columns else "—"
 
-        conds = []
-        for col in ["Entry Conditions", "Pattern", "pattern"]:
-            if col in trades_df.columns:
-                conds = trades_df[col].dropna().unique().tolist()
-                break
-        cond_str = " | ".join(map(str, conds)) if conds else "اختراق خط العنق"
+            conds = []
+            for col in ["Entry Conditions", "Pattern", "pattern"]:
+                if col in trades_df.columns:
+                    conds = trades_df[col].dropna().unique().tolist()
+                    break
+            cond_str = " | ".join(map(str, conds)) if conds else "اختراق خط العنق"
 
-        st.info(f"**شروط الدخول:** {cond_str} | **دقة الهيكل:** {avg_symmetry}")
-        st.success(f"📈 **متوسط الحركة:** السوق يصل إلى **{avg_mfe}** قبل الارتداد، SL Safety: **{avg_mae_safety}**")
+            st.info(f"**شروط الدخول:** {cond_str} | **دقة الهيكل:** {avg_symmetry}")
+            st.success(f"📈 **متوسط الحركة:** السوق يصل إلى **{avg_mfe}** قبل الارتداد، SL Safety: **{avg_mae_safety}**")
 
-        csv_symbol = trades_df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label=f"📥 تنزيل صفقات {active_sym} (CSV)",
-            data=csv_symbol,
-            file_name=f"backtest_{active_sym.replace('=', '_')}_{period_display.replace(' ', '_').replace('/', '-')}.csv",
-            mime="text/csv", use_container_width=True
-        )
+            csv_symbol = trades_df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label=f"📥 تنزيل صفقات {active_sym} (CSV)",
+                data=csv_symbol,
+                file_name=f"backtest_{active_sym.replace('=', '_')}_{period_display.replace(' ', '_').replace('/', '-')}.csv",
+                mime="text/csv", use_container_width=True
+            )
 
         # ═══════════════════════════════════════════════════════════════════════
-        # 📈 CHART — Backtest mode (leh Consolidation Box)
+        # 📈 CHART — Backtest mode (آخر إشارة فقط)
         # ═══════════════════════════════════════════════════════════════════════
         if active_sym in dfs_dict and not dfs_dict[active_sym].empty:
             df_res = dfs_dict[active_sym].copy()
@@ -1280,18 +1287,19 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA200'],
                                      line=dict(color='blue', width=1.2), name="EMA 200"))
 
-            if "nodes" in trades_df.columns:
-                for idx, row in trades_df.iterrows():
-                    if isinstance(row.get('nodes'), list) and row['nodes']:
-                        sn = sorted(row['nodes'], key=lambda x: pd.to_datetime(x[0]))
-                        fig.add_trace(go.Scatter(
-                            x=[n[0] for n in sn], y=[n[1] for n in sn],
-                            mode="lines+markers", name=f"نمط #{idx+1}"
-                        ))
+            # ═══ ارسم آخر إشارة فقط ═══
+            if "nodes" in trades_df.columns and len(trades_df) > 0:
+                _last_row = trades_df.iloc[-1]
+                if isinstance(_last_row.get('nodes'), list) and _last_row['nodes']:
+                    sn = sorted(_last_row['nodes'], key=lambda x: pd.to_datetime(x[0]))
+                    fig.add_trace(go.Scatter(
+                        x=[n[0] for n in sn], y=[n[1] for n in sn],
+                        mode="lines+markers", name="النمط الحالي",
+                        line=dict(color="#9C27B0", width=2),
+                        marker=dict(size=8, color="#9C27B0")
+                    ))
 
-            # ═══════════════════════════════════════════════════════════════════
-            # 🟢 Consolidation Box (Backtest mode)
-            # ═══════════════════════════════════════════════════════════════════
+            # 🟢 Consolidation Box
             if "consolidation_box" in active_item and active_item.get("consolidation_box"):
                 _box = active_item["consolidation_box"]
                 try:
@@ -1327,14 +1335,22 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             )
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
 
-        display_cols = [c for c in [
-            "Entry Date", "Exit Date", "Symbol", "symbol", "Bias", "bias", "Result",
-            "Entry Price", "Entry", "Exit Price", "Stop Loss", "SL", "Take Profit", "TP",
-            "Pips", "Risk_Pips", "Reward_Pips", "RR_Ratio", "PnL_USD", "Loss Category",
-            "consol_bars", "consol_range_pct", "breakout_body_pct"
-        ] if c in trades_df.columns]
-        st.dataframe(trades_df[display_cols] if display_cols else trades_df,
-                     use_container_width=True)
+        # ═══ جدول تفاصيل آخر إشارة ═══
+        with st.expander("📋 تفاصيل آخر إشارة", expanded=False):
+            _last_row_df = trades_df.tail(1)
+            display_cols = [c for c in [
+                "Entry Date", "Exit Date", "Symbol", "symbol", "Bias", "bias", "Result",
+                "Entry Price", "Entry", "Exit Price", "Stop Loss", "SL", "Take Profit", "TP",
+                "Pips", "Risk_Pips", "Reward_Pips", "RR_Ratio", "PnL_USD", "Loss Category",
+                "resistance", "support", "consol_bars", "consol_range_pct", "breakout_body_pct"
+            ] if c in _last_row_df.columns]
+            st.dataframe(_last_row_df[display_cols] if display_cols else _last_row_df,
+                         use_container_width=True, hide_index=True)
+
+            if len(trades_df) > 1:
+                if st.checkbox(f"عرض كل الإشارات ({len(trades_df)})", key="bt_show_all"):
+                    st.dataframe(trades_df[display_cols] if display_cols else trades_df,
+                                 use_container_width=True)
 
         if st.button(f"🔗 Isticmaal xogta {active_sym} xisaabiyaha", use_container_width=True):
             st.session_state["active_signal_symbol"] = active_sym
@@ -1623,160 +1639,183 @@ else:
             render_near_signals(st.session_state.near_signals, unique_id="live_top")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 📊 Natiijada Signal-ka Firfircoon
+    # 📊 Natiijada Signal-ka Firfircoon — مع زر ▼
     # ══════════════════════════════════════════════════════════════════════════
     if st.session_state.scanned_signals:
         sigs = st.session_state.scanned_signals
-        if scan_mode == "مسح كلي لشيت الأصول":
-            opts = [f"{i['symbol']} | {i['result']['signal']}" for i in sigs]
-            active_res = sigs[opts.index(st.selectbox("👇 اختر الأصل:", opts))]['result']
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # 🔽 زر لعرض النتائج (مخفي افتراضيًا)
+        # ═══════════════════════════════════════════════════════════════════════
+        _show_live = st.toggle(
+            "🔽 اضغط لعرض نتائج التحليل",
+            value=False,
+            key="live_show_results_toggle",
+            help="النتائج مخفية افتراضيًا — اضغط الزر لعرضها"
+        )
+
+        if not _show_live:
+            st.success(f"✅ التحليل انتهى — تم العثور على **{len(sigs)}** إشارة.")
+            st.caption("اضغط الزر أعلاه لعرض النتيجة والرسم البياني.")
+            active_res = None
         else:
-            active_res = sigs[0]['result']
-
-        active_sym = active_res.get("symbol", symbols[0] if symbols else "N/A")
-        st.session_state.current_symbol = active_sym
-
-        st.session_state["active_signal_symbol"] = active_sym
-        st.session_state["active_signal_entry"]  = active_res.get("entry")
-        st.session_state["active_signal_sl"]     = active_res.get("sl")
-        st.session_state["active_signal_tp"]     = active_res.get("tp")
-        st.session_state["active_signal_bias"]   = active_res.get("bias")
-
-        e1, e2, e3 = st.columns(3)
-        e1.metric("🎯 سعر الدخول", f"{active_res.get('entry', 0)}")
-        e2.metric("🛑 وقف الخسارة", f"{active_res.get('sl', 0)}")
-        e3.metric("🏆 الهدف",       f"{active_res.get('tp', 0)}")
-
-        _live_entry = active_res.get('entry') or 0
-        _live_sl    = active_res.get('sl')    or 0
-        _live_tp    = active_res.get('tp')    or 0
-        _pip = pip_size_for(active_sym)
-        _risk_pips   = round(abs(_live_entry - _live_sl) / _pip, 1) if _live_entry and _live_sl else 0
-        _reward_pips = round(abs(_live_tp - _live_entry) / _pip, 1) if _live_entry and _live_tp else 0
-        _rr = round(_reward_pips / _risk_pips, 2) if _risk_pips > 0 else "—"
-
-        e4, e5, e6 = st.columns(3)
-        e4.metric("📏 نقاط المخاطرة", _risk_pips)
-        e5.metric("🎯 نقاط الهدف",   _reward_pips)
-        e6.metric("⚖️ R:R",          _rr)
-
-        # ═══════════════════════════════════════════════════════════════════════
-        # 📈 CHART — Live mode (leh Consolidation Box)
-        # ═══════════════════════════════════════════════════════════════════════
-        df_res = active_res.get("df")
-        if df_res is not None and not df_res.empty:
-            df_res = df_res.copy()
-            df_res['EMA50']  = df_res['Close'].ewm(span=50,  adjust=False).mean()
-            df_res['EMA200'] = df_res['Close'].ewm(span=200, adjust=False).mean()
-
-            fig = go.Figure(data=[go.Candlestick(
-                x=df_res.index, open=df_res["Open"], high=df_res["High"],
-                low=df_res["Low"], close=df_res["Close"], name="السعر"
-            )])
-            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA50'],
-                                     line=dict(color='orange', width=1.2), name="EMA 50"))
-            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA200'],
-                                     line=dict(color='blue', width=1.2), name="EMA 200"))
-
-            live_nodes = active_res.get("nodes") or active_res.get("pattern_nodes")
-            if isinstance(live_nodes, list) and live_nodes:
-                sn = sorted(live_nodes, key=lambda x: pd.to_datetime(x[0]))
-                fig.add_trace(go.Scatter(
-                    x=[n[0] for n in sn], y=[n[1] for n in sn],
-                    mode="lines+markers", name="النمط المكتشف",
-                    line=dict(color="#9C27B0", width=2), marker=dict(size=8)
-                ))
-
-            for val, col, txt in [
-                (active_res.get('entry'), "#2196F3", "دخول"),
-                (active_res.get('sl'),    "#F44336", "وقف"),
-                (active_res.get('tp'),    "#4CAF50", "هدف"),
-            ]:
-                if val:
-                    fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
-
-            # ═══════════════════════════════════════════════════════════════════
-            # 🟢 Consolidation Box (Live mode)
-            # ═══════════════════════════════════════════════════════════════════
-            if "consolidation_box" in active_res and active_res.get("consolidation_box"):
-                _box = active_res["consolidation_box"]
-                try:
-                    _x0 = df_res.index[min(_box["x_start"], len(df_res) - 1)]
-                    _x1 = df_res.index[min(_box["x_end"], len(df_res) - 1)]
-                    fig.add_shape(
-                        type="rect",
-                        x0=_x0, x1=_x1,
-                        y0=_box["low"], y1=_box["high"],
-                        line=dict(color="#4CAF50", width=2, dash="dot"),
-                        fillcolor="rgba(76, 175, 80, 0.15)",
-                        layer="below",
-                    )
-                    fig.add_annotation(
-                        x=_x0, y=_box["high"],
-                        text="Consolidation",
-                        showarrow=False,
-                        font=dict(color="#4CAF50", size=11),
-                        yshift=12,
-                    )
-                except Exception:
-                    pass
-
-            fig.update_layout(
-                template="plotly_white", height=600, autosize=True,
-                margin=dict(l=80, r=20, t=40, b=40),
-                xaxis_rangeslider_visible=False,
-                yaxis=dict(side="left", automargin=True,
-                           tickfont=dict(size=12, color="#333"),
-                           showgrid=True, gridcolor="#E5E5E5"),
-                xaxis=dict(automargin=True, tickfont=dict(size=10)),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
-
-        with st.expander("🔬 تشخيص النمط الحالي — Live", expanded=False):
-            df_for_live = active_res.get("df")
-            if df_for_live is not None and not df_for_live.empty and diagnose_filters is not None:
-                try:
-                    with st.spinner("جاري التشخيص..."):
-                        diag_live = diagnose_filters(df_for_live,
-                                                    interval=selected_interval,
-                                                    symbol=active_sym)
-                    if not diag_live.get("error"):
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("أنماط خام", diag_live["total_raw_candidates"])
-                        col2.metric("بعد الفلاتر", diag_live["final_count"])
-                        col3.metric("نسبة القبول",
-                            f"{round(diag_live['final_count'] / max(diag_live['total_raw_candidates'], 1) * 100, 1)}%")
-
-                        smart = diag_live.get("smart_diagnosis", {})
-                        if smart.get("verdict"):
-                            st.markdown(f"### 🎯 {smart['verdict']}")
-
-                        if smart.get("action_plan"):
-                            st.markdown("#### 🎯 خطة العمل")
-                            for item in smart["action_plan"]:
-                                if item.startswith("🔴"):   st.error(item)
-                                elif item.startswith("🟡"): st.warning(item)
-                                elif item.startswith("🟢"): st.success(item)
-                                else:                       st.info(item)
-
-                        st.markdown("#### 📊 مراحل الفلترة")
-                        stages_data = []
-                        for stage_name, stage_data in diag_live["stages"].items():
-                            stages_data.append({
-                                "الفلتر": stage_name,
-                                "قبل": stage_data.get("before", 0),
-                                "بعد": stage_data.get("after", 0),
-                                "مرفوض": stage_data.get("rejected", 0),
-                                "نسبة القبول": stage_data.get("pass_rate", "0%"),
-                            })
-                        st.dataframe(pd.DataFrame(stages_data), use_container_width=True)
-                except Exception as e:
-                    st.error(f"⚠️ خطأ: {type(e).__name__}: {e}")
-            elif diagnose_filters is None:
-                st.warning("⚠️ `diagnose_filters` oo maqan")
+            if len(sigs) > 1:
+                _labels = [f"{i['symbol']} | {i['result'].get('signal','?')}" for i in sigs]
+                _picked = st.selectbox(
+                    "🎯 اختر الإشارة لعرضها:",
+                    _labels, index=len(_labels) - 1,
+                    key="live_active_sig_pick"
+                )
+                active_res = sigs[_labels.index(_picked)]['result']
             else:
-                st.info("ℹ️ Xog ku filan ma jirto")
+                active_res = sigs[0]['result']
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # عرض التفاصيل (فقط عند تشغيل الزر)
+        # ═══════════════════════════════════════════════════════════════════════
+        if active_res is not None:
+            active_sym = active_res.get("symbol", symbols[0] if symbols else "N/A")
+            st.session_state.current_symbol = active_sym
+
+            st.session_state["active_signal_symbol"] = active_sym
+            st.session_state["active_signal_entry"]  = active_res.get("entry")
+            st.session_state["active_signal_sl"]     = active_res.get("sl")
+            st.session_state["active_signal_tp"]     = active_res.get("tp")
+            st.session_state["active_signal_bias"]   = active_res.get("bias")
+
+            e1, e2, e3 = st.columns(3)
+            e1.metric("🎯 سعر الدخول", f"{active_res.get('entry', 0)}")
+            e2.metric("🛑 وقف الخسارة", f"{active_res.get('sl', 0)}")
+            e3.metric("🏆 الهدف",       f"{active_res.get('tp', 0)}")
+
+            _live_entry = active_res.get('entry') or 0
+            _live_sl    = active_res.get('sl')    or 0
+            _live_tp    = active_res.get('tp')    or 0
+            _pip = pip_size_for(active_sym)
+            _risk_pips   = round(abs(_live_entry - _live_sl) / _pip, 1) if _live_entry and _live_sl else 0
+            _reward_pips = round(abs(_live_tp - _live_entry) / _pip, 1) if _live_entry and _live_tp else 0
+            _rr = round(_reward_pips / _risk_pips, 2) if _risk_pips > 0 else "—"
+
+            e4, e5, e6 = st.columns(3)
+            e4.metric("📏 نقاط المخاطرة", _risk_pips)
+            e5.metric("🎯 نقاط الهدف",   _reward_pips)
+            e6.metric("⚖️ R:R",          _rr)
+
+            # ═══════════════════════════════════════════════════════════════════
+            # 📈 CHART — Live mode
+            # ═══════════════════════════════════════════════════════════════════
+            df_res = active_res.get("df")
+            if df_res is not None and not df_res.empty:
+                df_res = df_res.copy()
+                df_res['EMA50']  = df_res['Close'].ewm(span=50,  adjust=False).mean()
+                df_res['EMA200'] = df_res['Close'].ewm(span=200, adjust=False).mean()
+
+                fig = go.Figure(data=[go.Candlestick(
+                    x=df_res.index, open=df_res["Open"], high=df_res["High"],
+                    low=df_res["Low"], close=df_res["Close"], name="السعر"
+                )])
+                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA50'],
+                                         line=dict(color='orange', width=1.2), name="EMA 50"))
+                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA200'],
+                                         line=dict(color='blue', width=1.2), name="EMA 200"))
+
+                live_nodes = active_res.get("nodes") or active_res.get("pattern_nodes")
+                if isinstance(live_nodes, list) and live_nodes:
+                    sn = sorted(live_nodes, key=lambda x: pd.to_datetime(x[0]))
+                    fig.add_trace(go.Scatter(
+                        x=[n[0] for n in sn], y=[n[1] for n in sn],
+                        mode="lines+markers", name="النمط المكتشف",
+                        line=dict(color="#9C27B0", width=2), marker=dict(size=8)
+                    ))
+
+                for val, col, txt in [
+                    (active_res.get('entry'), "#2196F3", "دخول"),
+                    (active_res.get('sl'),    "#F44336", "وقف"),
+                    (active_res.get('tp'),    "#4CAF50", "هدف"),
+                ]:
+                    if val:
+                        fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
+
+                # 🟢 Consolidation Box
+                if "consolidation_box" in active_res and active_res.get("consolidation_box"):
+                    _box = active_res["consolidation_box"]
+                    try:
+                        _x0 = df_res.index[min(_box["x_start"], len(df_res) - 1)]
+                        _x1 = df_res.index[min(_box["x_end"], len(df_res) - 1)]
+                        fig.add_shape(
+                            type="rect",
+                            x0=_x0, x1=_x1,
+                            y0=_box["low"], y1=_box["high"],
+                            line=dict(color="#4CAF50", width=2, dash="dot"),
+                            fillcolor="rgba(76, 175, 80, 0.15)",
+                            layer="below",
+                        )
+                        fig.add_annotation(
+                            x=_x0, y=_box["high"],
+                            text="Consolidation",
+                            showarrow=False,
+                            font=dict(color="#4CAF50", size=11),
+                            yshift=12,
+                        )
+                    except Exception:
+                        pass
+
+                fig.update_layout(
+                    template="plotly_white", height=600, autosize=True,
+                    margin=dict(l=80, r=20, t=40, b=40),
+                    xaxis_rangeslider_visible=False,
+                    yaxis=dict(side="left", automargin=True,
+                               tickfont=dict(size=12, color="#333"),
+                               showgrid=True, gridcolor="#E5E5E5"),
+                    xaxis=dict(automargin=True, tickfont=dict(size=10)),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
+
+            with st.expander("🔬 تشخيص النمط الحالي — Live", expanded=False):
+                df_for_live = active_res.get("df")
+                if df_for_live is not None and not df_for_live.empty and diagnose_filters is not None:
+                    try:
+                        with st.spinner("جاري التشخيص..."):
+                            diag_live = diagnose_filters(df_for_live,
+                                                        interval=selected_interval,
+                                                        symbol=active_sym)
+                        if not diag_live.get("error"):
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("أنماط خام", diag_live["total_raw_candidates"])
+                            col2.metric("بعد الفلاتر", diag_live["final_count"])
+                            col3.metric("نسبة القبول",
+                                f"{round(diag_live['final_count'] / max(diag_live['total_raw_candidates'], 1) * 100, 1)}%")
+
+                            smart = diag_live.get("smart_diagnosis", {})
+                            if smart.get("verdict"):
+                                st.markdown(f"### 🎯 {smart['verdict']}")
+
+                            if smart.get("action_plan"):
+                                st.markdown("#### 🎯 خطة العمل")
+                                for item in smart["action_plan"]:
+                                    if item.startswith("🔴"):   st.error(item)
+                                    elif item.startswith("🟡"): st.warning(item)
+                                    elif item.startswith("🟢"): st.success(item)
+                                    else:                       st.info(item)
+
+                            st.markdown("#### 📊 مراحل الفلترة")
+                            stages_data = []
+                            for stage_name, stage_data in diag_live["stages"].items():
+                                stages_data.append({
+                                    "الفلتر": stage_name,
+                                    "قبل": stage_data.get("before", 0),
+                                    "بعد": stage_data.get("after", 0),
+                                    "مرفوض": stage_data.get("rejected", 0),
+                                    "نسبة القبول": stage_data.get("pass_rate", "0%"),
+                                })
+                            st.dataframe(pd.DataFrame(stages_data), use_container_width=True)
+                    except Exception as e:
+                        st.error(f"⚠️ خطأ: {type(e).__name__}: {e}")
+                elif diagnose_filters is None:
+                    st.warning("⚠️ `diagnose_filters` oo maqan")
+                else:
+                    st.info("ℹ️ Xog ku filan ma jirto")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1871,7 +1910,7 @@ with st.expander("📖 Sida loo isticmaalo App-ka", expanded=False):
     2. Dooro: **"سهم فردي"** / **"🎯 مجموعة مخصصة"** / **"مسح كلي"**
     3. Dooro **Interval** iyo **Period**
     4. Riix **"🚀 بدء المسح والتحليل الفوري"**
-    5. Eeg chart-ka — 🟢 **Consolidation Box** wuu soo muuqanayaa
+    5. Fur **🔽 اضغط لعرض نتائج التحليل** — ka dib chart + metrics
 
     ### 🎯 المجموعة المخصصة:
     - Multiselect — qor magaca, dooro currencies
@@ -1890,7 +1929,7 @@ with st.expander("📖 Sida loo isticmaalo App-ka", expanded=False):
     2. Dooro 3 nooc oo scan ah
     3. Dooro Period + Interval + Lot
     4. Riix **"📊 بدء محاكاة الاختبار الرجعي"**
-    5. Eeg chart-ka leh **Consolidation Box**
+    5. Fur **🔽 اضغط لعرض نتائج ...** si aad u aragto metrics-ka
 
     ---
 
@@ -1922,8 +1961,8 @@ with st.expander("📖 Sida loo isticmaalo App-ka", expanded=False):
 
     ## 🆕 Cusbooneysiin
 
-    - ✅ **Consolidation Box** (chart-ka)
-    - ✅ **🎯 مجموعة مخصصة** (Live + Backtest)
-    - ✅ **Multiselect** oo leh raadin
-    - ✅ **أزرار سريعة** (Major / Cross / Clear)
+    - ✅ **زر عرض النتائج** (Live — folded by default)
+    - ✅ **آخر نمط فقط** يُرسم على الشارت
+    - ✅ **Expander للنتائج** (Backtest)
+    - ✅ **جدول آخر إشارة فقط** مع خيار عرض الكل
     """)
