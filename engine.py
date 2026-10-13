@@ -1,36 +1,37 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — S/R Horizontal Breakout Strategy (v3)
-==================================================
-- Detect S/R levels from swing highs/lows over the last N days (default 14).
-- A level is "strong" if price respected it >= MIN_TOUCHES times.
-- Signal is fired ONLY after a candle CLOSES beyond the level (with buffer).
-- SL just beyond the broken level, TP >= 1:2 (2× risk), optionally extended
-  to the next opposing S/R zone.
+ENGINE.PY — Horizontal Channel Breakout (v4)
+=============================================
+منطق الإشارة (مطابق للصور):
+  1) حصر السعر 5 أيام+ في قناة أفقية (قمم متساوية + قيعان متساوية).
+  2) انتظار إغلاق شمعة فوق المقاومة الأخيرة (BUY) أو تحت الدعم (SELL).
+  3) الوقف تحت القاع / فوق القمة، الهدف = 3× الوقف.
+  4) خط متعرج يربط نقاط التصحيح داخل الصندوق + سهم بطول الهدف.
 """
 import pandas as pd
 import numpy as np
 
 
 CONFIG = {
-    "ZIGZAG_DEPTH": 8,
-    "ZIGZAG_BACKSTEP": 4,
-    # ── S/R level detection ──────────────────────────────────────────────
-    "LOOKBACK_DAYS": 14,             # сколько days of pivots define the levels
-    "LEVEL_TOLERANCE_PCT": 0.20,     # pivots within this % cluster together
-    "MIN_TOUCHES": 2,                # how many times price must respect a level
-    "MAX_LOOKBACK_BARS": 500,        # hard cap for perf
-    # ── Breakout confirmation ────────────────────────────────────────────
-    "BREAKOUT_BUFFER_PCT": 0.03,     # close must be >= level*(1+buffer)
-    "MIN_BREAKOUT_BODY_PCT": 0.05,   # candle body as % of price
+    "ZIGZAG_DEPTH": 5,
+    "ZIGZAG_BACKSTEP": 3,
+    # ── نافذة التجميع الأفقي ─────────────────────────────────────────────
+    "MIN_CONSOL_DAYS": 5,            # أقل مدة للحصر (أيام)
+    "MAX_CONSOL_DAYS": 40,           # سقف منطقي
+    "LEVEL_TOLERANCE_PCT": 0.35,     # % التقارب بين القمم (أو القيعان)
+    "MIN_TOUCHES": 2,                # كل جهة تحتاج لمستين على الأقل
+    "MAX_RANGE_PCT": 4.0,            # أقصى ارتفاع للقناة كنسبة من السعر
+    # ── الكسر ────────────────────────────────────────────────────────────
+    "BREAKOUT_BUFFER_PCT": 0.02,     # الإغلاق يجب أن يتجاوز المستوى بـ %
+    "MIN_BREAKOUT_BODY_PCT": 0.05,   # جسم شمعة الكسر
     # ── SL / TP ──────────────────────────────────────────────────────────
-    "SL_BUFFER_PCT": 0.10,           # SL sits this % beyond the broken level
-    "MIN_RR": 2.0,                   # target the next S/R if >= 1:2, else 1:2
-    # ── Filters ──────────────────────────────────────────────────────────
-    "MIN_BARS_BETWEEN": 5,           # min bars between two signals
-    "MAX_TIMEOUT_BARS": 200,
+    "SL_BUFFER_PCT": 0.05,           # هامش صغير تحت/فوق المستوى
+    "TP_RR": 3.0,                    # الهدف = 3× الوقف
+    # ── فلاتر ────────────────────────────────────────────────────────────
+    "MIN_BARS_BETWEEN": 5,
+    "MAX_TIMEOUT_BARS": 300,
     "VOLUME_MA_PERIOD": 20,
-    "MIN_BARS_REQUIRED": 60,
+    "MIN_BARS_REQUIRED": 80,
 }
 
 TIMEOUT_STATISTICAL_FLOOR = 200
@@ -49,7 +50,7 @@ REASON_MAP = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
+# Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_max_gap(interval):
     return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
@@ -61,21 +62,20 @@ def _get_max_pattern_duration(interval):
             "4h": 80, "1d": 60}.get(interval, 200)
 
 
-def _lookback_bars(interval):
-    """Bars that approximate CONFIG['LOOKBACK_DAYS'] trading days for the TF."""
+def _days_to_bars(days, interval):
+    """قدّر عدد الشموع لعدد الأيام حسب الإطار الزمني."""
     bars_per_day = {
-        "1m": 1440, "2m": 720, "3m": 480, "4m": 360, "5m": 288, "10m": 144,
-        "15m": 96, "30m": 48, "45m": 32, "1h": 24, "2h": 12, "3h": 8,
-        "4h": 6, "6h": 4, "8h": 3, "12h": 2, "1d": 1, "2d": 0.5, "3d": 0.33,
-        "1wk": 0.2, "1mo": 0.05,
+        "1m": 1440, "2m": 720, "3m": 480, "4m": 360, "5m": 288,
+        "10m": 144, "15m": 96, "30m": 48, "45m": 32,
+        "1h": 24, "2h": 12, "3h": 8, "4h": 6, "6h": 4, "8h": 3, "12h": 2,
+        "1d": 1, "2d": 0.5, "3d": 0.33, "1wk": 0.2, "1mo": 0.05,
     }
     bpd = bars_per_day.get(interval, 24)
-    bars = int(bpd * CONFIG["LOOKBACK_DAYS"])
-    return min(max(bars, 20), CONFIG["MAX_LOOKBACK_BARS"])
+    return max(3, int(round(bpd * days)))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🛠️ INDICATORS
+# Indicators
 # ══════════════════════════════════════════════════════════════════════════════
 def calculate_indicators(df):
     df = df.copy()
@@ -96,7 +96,7 @@ def calculate_indicators(df):
     return df
 
 
-def calculate_zigzag(df, depth=8, backstep=4):
+def calculate_zigzag(df, depth=5, backstep=3):
     df = df.copy()
     df["Pivot_H"] = np.nan
     df["Pivot_L"] = np.nan
@@ -123,50 +123,31 @@ def get_chronological_pivots(df):
     for pos, (idx, row) in enumerate(df.iterrows()):
         if not pd.isna(row["Pivot_H"]):
             raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_H"]),
-                        "type": "H", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
+                        "type": "H"})
         elif not pd.isna(row["Pivot_L"]):
             raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_L"]),
-                        "type": "L", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
+                        "type": "L"})
     if not raw:
         return []
-    clean = []
-    for p in raw:
-        if not clean:
-            clean.append(p); continue
-        last = clean[-1]
-        ms = p["dynamic_swing"]
-        if last["type"] != p["type"]:
-            mv = abs(p["val"] - last["val"]) / max(abs(last["val"]), 1e-9)
-            if mv >= ms:
-                clean.append(p)
-            else:
-                if last["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
-                elif last["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
-        else:
-            if p["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
-            elif p["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
+    # احتفظ بالتناوب فقط H-L-H-L... مع اختيار الأقصى/الأدنى عند التكرار
     final = []
-    for p in clean:
+    for p in raw:
         if not final:
+            final.append(p); continue
+        if final[-1]["type"] != p["type"]:
             final.append(p)
         else:
-            if final[-1]["type"] != p["type"]:
-                final.append(p)
-            else:
-                if p["type"] == "H" and p["val"] > final[-1]["val"]: final[-1] = p
-                elif p["type"] == "L" and p["val"] < final[-1]["val"]: final[-1] = p
+            if p["type"] == "H" and p["val"] > final[-1]["val"]:
+                final[-1] = p
+            elif p["type"] == "L" and p["val"] < final[-1]["val"]:
+                final[-1] = p
     return final
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📐 S/R LEVEL CLUSTERING
+# Clustering — تجميع القمم/القيعان في خطوط أفقية
 # ══════════════════════════════════════════════════════════════════════════════
 def cluster_levels(pivots, tolerance):
-    """
-    Group pivots whose prices lie within `tolerance` (fraction).
-    Returns list of dicts:
-        {price, touches, first_pos, last_pos, values}
-    """
     if not pivots:
         return []
     sorted_p = sorted(pivots, key=lambda p: p["val"])
@@ -180,6 +161,7 @@ def cluster_levels(pivots, tolerance):
                 lvl["touches"] += 1
                 lvl["first_pos"] = min(lvl["first_pos"], p["pos"])
                 lvl["last_pos"]  = max(lvl["last_pos"],  p["pos"])
+                lvl["members"].append(p)
                 merged = True
                 break
         if not merged:
@@ -189,12 +171,13 @@ def cluster_levels(pivots, tolerance):
                 "touches":   1,
                 "first_pos": p["pos"],
                 "last_pos":  p["pos"],
+                "members":   [p],
             })
     return levels
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 MAIN DETECTOR — S/R CLOSE-BREAKOUT
+# 🎯 DETECTOR
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
@@ -212,142 +195,183 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     df = calculate_indicators(df)
     df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df)
-    if len(pivots) < 2:
+    if len(pivots) < 4:
         return []
 
-    lookback  = _lookback_bars(interval)
-    backstep  = CONFIG["ZIGZAG_BACKSTEP"]
-    tolerance = CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0
-    buf       = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
+    min_bars = _days_to_bars(CONFIG["MIN_CONSOL_DAYS"], interval)
+    max_bars = _days_to_bars(CONFIG["MAX_CONSOL_DAYS"], interval)
+    tol      = CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0
+    buf      = CONFIG["BREAKOUT_BUFFER_PCT"] / 100.0
+    backstep = CONFIG["ZIGZAG_BACKSTEP"]
 
     n = len(df)
     patterns = []
     last_signal_pos = -10**9
-    broken_prices = []   # avoid re-signaling the same zone
 
     for i in range(CONFIG["MIN_BARS_REQUIRED"], n):
-        # ── active pivots (confirmed & within lookback window) ──────────
+        # البيفوتات المتاحة (مؤكدة + داخل نافذة زمنية)
         active = [p for p in pivots
-                  if (p["pos"] + backstep) <= i and (i - p["pos"]) <= lookback]
-        if len(active) < 2:
+                  if (p["pos"] + backstep) <= i and (i - p["pos"]) <= max_bars]
+        if len(active) < 4:
             continue
 
-        levels = cluster_levels(active, tolerance)
-        if not levels:
+        highs = [p for p in active if p["type"] == "H"]
+        lows  = [p for p in active if p["type"] == "L"]
+        if len(highs) < CONFIG["MIN_TOUCHES"] or len(lows) < CONFIG["MIN_TOUCHES"]:
             continue
 
-        candle     = df.iloc[i]
-        prev       = df.iloc[i - 1]
+        # جمّع القمم في خط مقاومة، والقيعان في خط دعم
+        high_levels = cluster_levels(highs, tol)
+        low_levels  = cluster_levels(lows,  tol)
+        high_levels = [l for l in high_levels if l["touches"] >= CONFIG["MIN_TOUCHES"]]
+        low_levels  = [l for l in low_levels  if l["touches"] >= CONFIG["MIN_TOUCHES"]]
+        if not high_levels or not low_levels:
+            continue
+
+        # اختر أفضل قناة: أطول مدة + أكثر لمسات
+        best = None
+        for h in high_levels:
+            for l in low_levels:
+                if h["price"] <= l["price"]:
+                    continue
+                first    = min(h["first_pos"], l["first_pos"])
+                last     = max(h["last_pos"],  l["last_pos"])
+                duration = last - first
+                if duration < min_bars:
+                    continue
+                range_pct = (h["price"] - l["price"]) / l["price"] * 100
+                if range_pct > CONFIG["MAX_RANGE_PCT"]:
+                    continue
+                score = h["touches"] + l["touches"] + duration / 20.0
+                if best is None or score > best["score"]:
+                    best = {
+                        "resistance": h, "support": l,
+                        "start_pos": first, "end_pos": last,
+                        "score": score, "range_pct": range_pct,
+                        "duration_bars": duration,
+                    }
+
+        if best is None:
+            continue
+
+        # فحص شمعة الكسر عند i
+        candle = df.iloc[i]
+        prev   = df.iloc[i - 1]
         close      = float(candle["Close"])
         open_      = float(candle["Open"])
         prev_close = float(prev["Close"])
 
-        # candle body filter
         body_pct = abs(close - open_) / max(close, 1e-9) * 100
         if body_pct < CONFIG["MIN_BREAKOUT_BODY_PCT"]:
             continue
 
-        # prefer strongest level
-        levels.sort(key=lambda l: -l["touches"])
+        res = float(best["resistance"]["price"])
+        sup = float(best["support"]["price"])
+        up_thr   = res * (1 + buf)
+        down_thr = sup * (1 - buf)
 
-        for lvl in levels:
-            if lvl["touches"] < CONFIG["MIN_TOUCHES"]:
-                continue
-            price = lvl["price"]
+        direction = None
+        if prev_close <= up_thr and close > up_thr and close > open_:
+            direction = "BUY"
+        elif prev_close >= down_thr and close < down_thr and close < open_:
+            direction = "SELL"
 
-            # skip if we already broke this zone
-            if any(abs(price - bp) / max(price, 1e-9) < tolerance for bp in broken_prices):
-                continue
+        if direction is None:
+            continue
 
-            up_thr   = price * (1 + buf)
-            down_thr = price * (1 - buf)
+        if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
+            continue
 
-            # ── Bullish close-breakout ─────────────────────────────────
-            if prev_close <= up_thr and close > up_thr and close > open_:
-                if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
-                    continue
-                pattern = _build_pattern(df, i, lvl, levels, "BUY", interval)
-                if pattern:
-                    patterns.append(pattern)
-                    last_signal_pos = i
-                    broken_prices.append(price)
-                    break
-
-            # ── Bearish close-breakout ─────────────────────────────────
-            elif prev_close >= down_thr and close < down_thr and close < open_:
-                if i - last_signal_pos < CONFIG["MIN_BARS_BETWEEN"]:
-                    continue
-                pattern = _build_pattern(df, i, lvl, levels, "SELL", interval)
-                if pattern:
-                    patterns.append(pattern)
-                    last_signal_pos = i
-                    broken_prices.append(price)
-                    break
+        pattern = _build_channel_pattern(df, i, best, direction, body_pct)
+        if pattern:
+            patterns.append(pattern)
+            last_signal_pos = i
 
     return patterns
 
 
-def _build_pattern(df, idx, lvl, all_levels, direction, interval):
+def _build_channel_pattern(df, idx, channel, direction, body_pct):
     candle = df.iloc[idx]
     entry  = float(candle["Close"])
-    level_price = float(lvl["price"])
+
+    res = float(channel["resistance"]["price"])
+    sup = float(channel["support"]["price"])
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
-    # ── SL: just beyond the broken level ─────────────────────────────────
     if direction == "BUY":
-        sl = level_price * (1 - sl_buf)
+        # الوقف تحت القاع الأفقي (الدعم)
+        sl = sup * (1 - sl_buf)
         if sl >= entry:
             return None
         risk = entry - sl
-        min_rr_tp = entry + CONFIG["MIN_RR"] * risk
+        if risk <= 0:
+            return None
+        tp = entry + CONFIG["TP_RR"] * risk
     else:
-        sl = level_price * (1 + sl_buf)
+        # الوقف فوق القمة الأفقية (المقاومة)
+        sl = res * (1 + sl_buf)
         if sl <= entry:
             return None
         risk = sl - entry
-        min_rr_tp = entry - CONFIG["MIN_RR"] * risk
-
-    if risk <= 0:
-        return None
-
-    # ── TP: prefer next opposing S/R zone if it satisfies min R:R ────────
-    tp = min_rr_tp
-    if direction == "BUY":
-        candidates = [l["price"] for l in all_levels
-                      if l["price"] >= min_rr_tp and l["price"] > entry]
-        if candidates:
-            tp = min(candidates)
-    else:
-        candidates = [l["price"] for l in all_levels
-                      if l["price"] <= min_rr_tp and l["price"] < entry]
-        if candidates:
-            tp = max(candidates)
+        if risk <= 0:
+            return None
+        tp = entry - CONFIG["TP_RR"] * risk
 
     rr = abs(tp - entry) / risk
-    if rr < CONFIG["MIN_RR"] - 0.05:
+    if rr < CONFIG["TP_RR"] - 0.05:
         return None
 
     bias = "Bullish" if direction == "BUY" else "Bearish"
-    body_pct = abs(float(candle["Close"]) - float(candle["Open"])) / max(entry, 1e-9) * 100
 
-    # ── chart nodes (level line + breakout) ──────────────────────────────
-    nodes = [
-        (df.index[lvl["first_pos"]], level_price),
-        (df.index[lvl["last_pos"]],  level_price),
-        (df.index[max(0, idx - 1)],  level_price),
-        (df.index[idx],              entry),
-    ]
+    # ── نقاط التعرج (ZigZag) داخل الصندوق ─────────────────────────────
+    start_p = channel["start_pos"]
+    end_p   = channel["end_pos"]
+    inner_pivots = []
+    for _, row in df.iloc[start_p:end_p + 1].iterrows():
+        pass
+    # نستخدم البيفوتات الخام مباشرة
+    inner = []
+    for pos in range(start_p, min(end_p + 1, len(df))):
+        row = df.iloc[pos]
+        if not pd.isna(row["Pivot_H"]):
+            inner.append((df.index[pos], float(row["Pivot_H"])))
+        elif not pd.isna(row["Pivot_L"]):
+            inner.append((df.index[pos], float(row["Pivot_L"])))
 
-    # thin horizontal "box" so the app's Consolidation rect renders the level
-    box_high = level_price * (1 + CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0)
-    box_low  = level_price * (1 - CONFIG["LEVEL_TOLERANCE_PCT"] / 100.0)
+    nodes = inner + [(df.index[idx], entry)]
+
+    # ضمان وجود 3 نقاط على الأقل لعرض الزجزاج
+    if len(nodes) < 3:
+        nodes = [
+            (df.index[start_p], res),
+            (df.index[(start_p + end_p) // 2], sup),
+            (df.index[end_p], res),
+            (df.index[idx], entry),
+        ]
+
+    # ── بيانات السهم (Arrow) من الدخول إلى الهدف ─────────────────────
+    arrow = {
+        "x0": df.index[idx],
+        "y0": entry,
+        "x1": df.index[min(idx + 20, len(df) - 1)],
+        "y1": tp,
+        "direction": direction,
+    }
+
+    # ── صندوق القناة (Consolidation Box) ─────────────────────────────
+    box = {
+        "x_start": start_p,
+        "x_end":   end_p,
+        "high":    res,
+        "low":     sup,
+    }
 
     pattern = {
-        "name": "S/R Breakout",
-        "pattern": f"S/R {direction} Breakout ({lvl['touches']} touches)",
+        "name": "Horizontal Channel Breakout",
+        "pattern": f"Channel → {direction} Breakout ({channel['resistance']['touches']}/{channel['support']['touches']} touches)",
         "bias": bias,
         "direction": direction,
-        "match": float(min(100, 50 + lvl["touches"] * 10)),
+        "match": float(min(100, 60 + (channel["resistance"]["touches"] + channel["support"]["touches"]) * 5)),
         "entry": round(entry, 5),
         "entry_trigger": round(entry, 5),
         "sl": round(sl, 5),
@@ -356,22 +380,29 @@ def _build_pattern(df, idx, lvl, all_levels, direction, interval):
         "TP": round(tp, 5),
         "Entry": round(entry, 5),
         "nodes": nodes,
-        "consolidation_box": {
-            "x_start": lvl["first_pos"],
-            "x_end":   idx,
-            "high":    round(box_high, 5),
-            "low":     round(box_low, 5),
-        },
-        "level_price":  round(level_price, 5),
-        "level_touches": lvl["touches"],
-        "neckline_start_idx": df.index[lvl["first_pos"]],
+        "arrow": arrow,
+        "consolidation_box": box,
+        "resistance": round(res, 5),
+        "support":    round(sup, 5),
+        "level_price": round(res if direction == "BUY" else sup, 5),
+        "level_touches": (channel["resistance"]["touches"] if direction == "BUY"
+                          else channel["support"]["touches"]),
+        "channel_start": df.index[start_p],
+        "channel_end":   df.index[end_p],
+        "channel_duration_bars": channel["duration_bars"],
+        "channel_duration_days": round(channel["duration_bars"] / max(_days_to_bars(1, "1h") / 24, 1), 1),
+        "channel_range_pct": round(channel["range_pct"], 3),
+        "neckline_start_idx": df.index[start_p],
         "neckline_end_idx":   df.index[idx],
         "end_pos": idx,
-        "Entry Conditions": f"S/R level ({lvl['touches']} touches) broken by close",
-        "consol_high": round(box_high, 5),
-        "consol_low":  round(box_low, 5),
-        "consol_bars": int(lvl["last_pos"] - lvl["first_pos"] + 1),
-        "consol_range_pct": round((box_high - box_low) / max(level_price, 1e-9) * 100, 3),
+        "Entry Conditions": (
+            f"5d+ horizontal channel ({channel['resistance']['touches']} R / "
+            f"{channel['support']['touches']} S touches) → close breakout"
+        ),
+        "consol_high": round(res, 5),
+        "consol_low":  round(sup, 5),
+        "consol_bars": int(channel["duration_bars"]),
+        "consol_range_pct": round(channel["range_pct"], 3),
         "consol_stability_pct": 100.0,
         "breakout_body_pct": round(body_pct, 3),
     }
@@ -381,7 +412,7 @@ def _build_pattern(df, idx, lvl, all_levels, direction, interval):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🧪 SIMULATE
+# Simulation
 # ══════════════════════════════════════════════════════════════════════════════
 def simulate_trade_outcome(pattern, df):
     bias    = pattern["bias"]
@@ -433,12 +464,8 @@ def simulate_trade_outcome(pattern, df):
         if total_sl > 0:
             max_adv = max(max_adv, adv / total_sl * 100)
 
-        if bias == "Bearish":
-            hit_sl = high >= sl
-            hit_tp = low  <= tp
-        else:
-            hit_sl = low  <= sl
-            hit_tp = high >= tp
+        hit_sl = (high >= sl) if bias == "Bearish" else (low <= sl)
+        hit_tp = (low <= tp)  if bias == "Bearish" else (high >= tp)
 
         if hit_sl:
             stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
@@ -482,7 +509,7 @@ def simulate_trade_outcome(pattern, df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 run_full_analysis
+# run_full_analysis
 # ══════════════════════════════════════════════════════════════════════════════
 def run_full_analysis(df, interval="1h", symbol=None):
     default_empty = {
@@ -505,7 +532,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
         default_empty["error"] = f"Insufficient data: {len(df)}"
         return default_empty
 
-    df_active = df.tail(600).copy()
+    df_active = df.tail(800).copy()
     all_patterns = detect_all_patterns(df_active, interval=interval, symbol=symbol)
 
     if not all_patterns:
@@ -521,7 +548,10 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
         "sl": latest["sl"], "tp": latest["tp"],
         "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
+        "arrow": latest.get("arrow"),
         "consolidation_box": latest.get("consolidation_box"),
+        "resistance": latest.get("resistance"),
+        "support": latest.get("support"),
         "all_patterns": all_patterns, "match": latest.get("match", 100.0),
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"),
@@ -532,7 +562,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📤 backtest_strategy
+# backtest_strategy
 # ══════════════════════════════════════════════════════════════════════════════
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
@@ -568,6 +598,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "SL Safety %": p.get("SL Safety %", 0.0),
             "Entry Conditions": p.get("Entry Conditions", ""),
             "nodes": p["nodes"],
+            "arrow": p.get("arrow"),
             "candles_to_exit": p.get("candles_to_exit", 0),
             "progress_ratio": p.get("progress_ratio", 0.0),
             "neckline_end_idx": p["neckline_end_idx"],
@@ -579,10 +610,14 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "Trailing Stage": p.get("Trailing Stage", 0),
             "Initial SL": p.get("Initial SL"),
             "Final SL": p.get("Final SL"),
-            "level_price": p.get("level_price"),
-            "level_touches": p.get("level_touches"),
+            "resistance": p.get("resistance"),
+            "support":    p.get("support"),
+            "channel_start": p.get("channel_start"),
+            "channel_end":   p.get("channel_end"),
+            "channel_duration_bars": p.get("channel_duration_bars"),
+            "channel_range_pct": p.get("channel_range_pct"),
             "consol_high": p.get("consol_high"),
-            "consol_low": p.get("consol_low"),
+            "consol_low":  p.get("consol_low"),
             "consol_bars": p.get("consol_bars"),
             "consol_range_pct": p.get("consol_range_pct"),
             "consol_stability_pct": p.get("consol_stability_pct"),
@@ -592,7 +627,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔁 BACKWARD-COMPAT ALIAS (used by app's detect_near_signals)
+# Backward-compat alias (يستخدمه التطبيق في detect_near_signals)
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_head_shoulders(pivots=None, df=None, is_backtest=False, **kwargs):
     if df is None:
@@ -601,7 +636,7 @@ def detect_all_head_shoulders(pivots=None, df=None, is_backtest=False, **kwargs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🧪 diagnose_filters
+# diagnose_filters
 # ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
     result = {
@@ -661,8 +696,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
     }
 
     result["stages"] = {
-        "1. S/R Levels":     {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Close Breakout": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "1. Horizontal Channel (5d+)": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Close Breakout":           {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
     trade_analysis = []
@@ -697,7 +732,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — S/R Horizontal Breakout v3")
-    print(f"Lookback: {CONFIG['LOOKBACK_DAYS']} days   |   tolerance: {CONFIG['LEVEL_TOLERANCE_PCT']}%   |   min touches: {CONFIG['MIN_TOUCHES']}")
-    print(f"Breakout: close beyond level by {CONFIG['BREAKOUT_BUFFER_PCT']}%   |   body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}%")
-    print(f"SL: {CONFIG['SL_BUFFER_PCT']}% beyond level   |   Min R:R = 1:{CONFIG['MIN_RR']}")
+    print("ENGINE.PY — Horizontal Channel Breakout v4")
+    print(f"Channel: ≥{CONFIG['MIN_CONSOL_DAYS']} days | tolerance: {CONFIG['LEVEL_TOLERANCE_PCT']}% | min touches/side: {CONFIG['MIN_TOUCHES']}")
+    print(f"Breakout: close beyond level by {CONFIG['BREAKOUT_BUFFER_PCT']}% | body ≥ {CONFIG['MIN_BREAKOUT_BODY_PCT']}%")
+    print(f"SL: {CONFIG['SL_BUFFER_PCT']}% beyond opposite side | TP = {CONFIG['TP_RR']}× risk (1:{CONFIG['TP_RR']:.0f})")
