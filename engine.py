@@ -1,36 +1,45 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — 3 Sharia Only (v25)
-=================================
-منطق مبسّط تماماً كما في الصورة:
+ENGINE.PY — Trend → Flat Correction → Breakout (v26)
+=====================================================
+🎯 الجديد في v26:
+  • اقتصاص المستطيل: فقط الشموع التي تقع داخل الحدين
+  • لا شمعة تخرج فوق الحد العلوي أو تحت السفلي
+  • الشمعة الأولى والأخيرة داخل النطاق تماماً
+  • الكسر يحدث بعد آخر شمعة داخل النطاق
 
-  الشرط 1: اتجاه واضح (حركة ≥ X% في نافذة زمنية)
-  الشرط 2: تصحيح أفقي ≥ أسبوع (المدى ≤ Y%)
-  الشرط 3: كسر بإغلاق شمعة خارج الحد
+الشروط:
+  1) اتجاه قوي قبل التصحيح
+  2) تصحيح أفقي (كل الشموع داخل المستطيل)
+  3) كسر بإغلاق شمعة خارج الحد
 
-  SL = الجهة المقابلة
-  TP = 2× المخاطرة
+الإدارة:
+  • SL = الجهة المقابلة
+  • TP = 2× المخاطرة
 """
 import numpy as np
 import pandas as pd
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
     # ── الشرط 1: الاتجاه ────────────────────────────────────────────────
-    "TREND_BARS": [20, 30, 45, 60],       # نوافذ الاتجاه
-    "TREND_MIN_MOVE_PCT": 0.50,           # أدنى حركة %
+    "TREND_BARS": [20, 30, 45, 60],
+    "TREND_MIN_MOVE_PCT": 0.50,
 
     # ── الشرط 2: التصحيح ────────────────────────────────────────────────
-    "CONS_BARS": [40, 60, 90, 130, 180],  # نوافذ التجميع
-    "CONS_MIN_BARS": 40,                  # ≥ ~أسبوع على H4
-    "CONS_MAX_RANGE_PCT": 2.00,           # عرض المستطيل ≤ 2%
+    "CONS_BARS": [40, 60, 90, 130, 180, 240],
+    "CONS_MIN_BARS": 40,
+    "CONS_MAX_RANGE_PCT": 2.00,
 
     # ── الشرط 3: الكسر ──────────────────────────────────────────────────
-    "BRK_BUFFER_PCT": 0.03,               # هامش صغير
+    "BRK_BUFFER_PCT": 0.03,
 
     # ── الإدارة ─────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
-    "TP_RR": 2.0,                         # الهدف = ضعف الوقف
+    "TP_RR": 2.0,
 
     # ── عامة ────────────────────────────────────────────────────────────
     "MIN_BARS_BETWEEN": 15,
@@ -50,7 +59,7 @@ def _get_max_pattern_duration(interval): return 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 الكشف البسيط
+# 🎯 DETECTOR
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
@@ -58,14 +67,15 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns: return []
+        if c not in df.columns:
+            return []
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=True)
-    if len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
+        return []
 
     highs = df["High"].values.astype(float)
-    lows  = df["Low"].values.astype(float)
-    opens = df["Open"].values.astype(float)
+    lows = df["Low"].values.astype(float)
     closes = df["Close"].values.astype(float)
     n = len(df)
 
@@ -84,21 +94,82 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
         # ═══ كل نوافذ التصحيح (الأطول أولاً) ═══
         for W_c in CONFIG["CONS_BARS"]:
-            if W_c < CONFIG["CONS_MIN_BARS"]: continue
-            start_c = i - W_c
-            if start_c < 0: continue
+            if W_c < CONFIG["CONS_MIN_BARS"]:
+                continue
+            raw_start = i - W_c
+            if raw_start < 0:
+                continue
 
-            # ── الشرط 2: التصحيح ────────────────────────────────────
-            seg_h = highs[start_c:i]
-            seg_l = lows[start_c:i]
-            box_top = float(seg_h.max())
-            box_bot = float(seg_l.min())
+            # ── 1. حدود أولية من النافذة الكاملة ──────────────────
+            seg_h = highs[raw_start:i]
+            seg_l = lows[raw_start:i]
+            box_top_init = float(seg_h.max())
+            box_bot_init = float(seg_l.min())
+            if box_bot_init <= 0:
+                continue
 
-            if box_bot <= 0: continue
+            # فحص أولي للنطاق (يُعاد على المقطع المقتَص لاحقاً)
+            range_pct_init = (box_top_init - box_bot_init) / box_bot_init * 100
+            if range_pct_init > CONFIG["CONS_MAX_RANGE_PCT"] * 2.5:
+                continue  # خارج السقف تماماً — تجاهل سريع
+
+            # ── 2. 🎯 اقتصاص: اعثر على الشموع داخل النطاق ────────
+            top_margin = box_top_init * 1.001
+            bot_margin = box_bot_init * 0.999
+
+            win_h = highs[raw_start:i]
+            win_l = lows[raw_start:i]
+            inside_mask = (win_h <= top_margin) & (win_l >= bot_margin)
+
+            # أول شمعة داخل
+            first_inside_rel = None
+            for k in range(len(inside_mask)):
+                if inside_mask[k]:
+                    first_inside_rel = k
+                    break
+            if first_inside_rel is None:
+                continue
+
+            # آخر شمعة داخل
+            last_inside_rel = None
+            for k in range(len(inside_mask) - 1, -1, -1):
+                if inside_mask[k]:
+                    last_inside_rel = k
+                    break
+            if last_inside_rel is None:
+                continue
+            if last_inside_rel <= first_inside_rel:
+                continue
+
+            # المواضع المقتَصة
+            start_c = raw_start + first_inside_rel
+            end_c = raw_start + last_inside_rel
+            W_c_trimmed = end_c - start_c + 1
+
+            if W_c_trimmed < CONFIG["CONS_MIN_BARS"]:
+                continue
+
+            # ── 3. أعد حساب الحدود على المقطع المقتَص ────────────
+            seg_h2 = highs[start_c:end_c + 1]
+            seg_l2 = lows[start_c:end_c + 1]
+            box_top = float(seg_h2.max())
+            box_bot = float(seg_l2.min())
+            if box_bot <= 0:
+                continue
+
             range_pct = (box_top - box_bot) / box_bot * 100
-            if range_pct > CONFIG["CONS_MAX_RANGE_PCT"]: continue
+            if range_pct > CONFIG["CONS_MAX_RANGE_PCT"]:
+                continue
 
-            # ── الشرط 3: الكسر ─────────────────────────────────────
+            # ── 4. 🎯 تأكد أن شمعة الكسر i تأتي بعد end_c مباشرة ──
+            #    (أول شمعة بعد آخر شمعة داخل النطاق)
+            if end_c != i - 1:
+                # يمكن أن يكون الكسر متأخراً قليلاً — لكن نتحقق أن الشموع بينهما خارجة أيضاً
+                # نقبل فقط إذا كانت i == end_c + 1 (الكسر مباشرة بعد الاقتصاص)
+                if i != end_c + 1:
+                    continue
+
+            # ── 5. الكسر ────────────────────────────────────────────
             up_thr = box_top * (1 + buf)
             dn_thr = box_bot * (1 - buf)
 
@@ -107,26 +178,39 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
                 direction = "BUY"
             elif prev_c >= dn_thr and close_bk < dn_thr:
                 direction = "SELL"
+            if direction is None:
+                continue
 
-            if direction is None: continue
+            # ── 6. 🎯 تحقق مضاعف: أول وآخر شمعة داخل النطاق ───────
+            if highs[start_c] > box_top * 1.0005:
+                continue
+            if lows[start_c] < box_bot * 0.9995:
+                continue
+            if highs[end_c] > box_top * 1.0005:
+                continue
+            if lows[end_c] < box_bot * 0.9995:
+                continue
 
-            # ── الشرط 1: الاتجاه قبل التصحيح ────────────────────────
+            # ── 7. الشرط 1: الاتجاه قبل التصحيح ─────────────────────
             for W_t in CONFIG["TREND_BARS"]:
                 start_t = start_c - W_t
-                if start_t < 0: continue
+                if start_t < 0:
+                    continue
 
                 trend_move_pct = (closes[start_c - 1] - closes[start_t]) / closes[start_t] * 100
-
-                if abs(trend_move_pct) < CONFIG["TREND_MIN_MOVE_PCT"]: continue
+                if abs(trend_move_pct) < CONFIG["TREND_MIN_MOVE_PCT"]:
+                    continue
 
                 trend_dir = "UP" if trend_move_pct > 0 else "DOWN"
 
-                best = (W_c, W_t, start_c, start_t, box_top, box_bot,
+                best = (W_c_trimmed, W_t, start_c, start_t, box_top, box_bot,
                         direction, trend_dir, trend_move_pct)
                 break
-            if best: break
+            if best:
+                break
 
-        if best is None: continue
+        if best is None:
+            continue
 
         pattern = _build_pattern(df, i, best, closes)
         if pattern:
@@ -137,6 +221,9 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     return patterns
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 Build pattern
+# ══════════════════════════════════════════════════════════════════════════════
 def _build_pattern(df, i, best, closes):
     (W_c, W_t, start_c, start_t, box_top, box_bot,
      direction, trend_dir, trend_move_pct) = best
@@ -148,23 +235,26 @@ def _build_pattern(df, i, best, closes):
     # ── SL: الجهة المقابلة ─────────────────────────────────────────────
     if direction == "BUY":
         sl = box_bot * (1 - sl_buf)
-        if sl >= entry: return None
+        if sl >= entry:
+            return None
         risk = entry - sl
     else:
         sl = box_top * (1 + sl_buf)
-        if sl <= entry: return None
+        if sl <= entry:
+            return None
         risk = sl - entry
 
-    if risk <= 0: return None
+    if risk <= 0:
+        return None
 
     # ── TP: ضعف الوقف ──────────────────────────────────────────────────
     tp = entry + CONFIG["TP_RR"] * risk if direction == "BUY" else entry - CONFIG["TP_RR"] * risk
 
     bias = "Bullish" if direction == "BUY" else "Bearish"
 
-    # ── نقاط اللمسات (للعرض) ───────────────────────────────────────────
+    # ── نقاط اللمسات — فقط الشموع داخل النطاق ──────────────────────────
     highs = df["High"].values
-    lows  = df["Low"].values
+    lows = df["Low"].values
 
     tol_vis = 0.30 / 100.0
     seg_h = highs[start_c:end_c + 1]
@@ -180,12 +270,21 @@ def _build_pattern(df, i, best, closes):
     bot_line = [(int(start_c), box_bot), (int(end_c), box_bot)]
     nodes = [(int(i), entry)]
 
+    # ── سهم الهدف ──────────────────────────────────────────────────────
     arrow_len = max(8, (end_c - start_c) // 3)
     x1_pos = min(i + arrow_len, len(df) - 1)
-    arrow = {"x0": int(i), "y0": entry, "x1": int(x1_pos), "y1": tp, "direction": direction}
+    arrow = {
+        "x0": int(i), "y0": entry,
+        "x1": int(x1_pos), "y1": tp,
+        "direction": direction,
+    }
 
-    box_data = {"x_start": int(start_c), "x_end": int(end_c),
-                "high": float(box_top), "low": float(box_bot)}
+    box_data = {
+        "x_start": int(start_c),
+        "x_end": int(end_c),
+        "high": float(box_top),
+        "low": float(box_bot),
+    }
 
     range_pct = (box_top - box_bot) / box_bot * 100
 
@@ -228,29 +327,34 @@ def _build_pattern(df, i, best, closes):
         "consol_range_pct": round(range_pct, 3),
         "consol_stability_pct": 100.0,
         "breakout_body_pct": 0.0,
-        # الحقول المتوافقة مع الواجهة
-        "impulse_pct":      round(trend_move_pct, 3),
-        "slope_pct":        0.0,
-        "cv_pct":           0.0,
-        "drift_pct":        0.0,
-        "flat_bars_pct":    100.0,
-        "bars_per_pct":     0.0,
+        # حقول متوافقة مع الواجهة
+        "impulse_pct": round(trend_move_pct, 3),
+        "slope_pct": 0.0,
+        "cv_pct": 0.0,
+        "drift_pct": 0.0,
+        "flat_bars_pct": 100.0,
+        "bars_per_pct": 0.0,
         "top_flatness_pct": 0.0,
         "bot_flatness_pct": 0.0,
-        "top_touches":      len(top_hits),
-        "bot_touches":      len(bot_hits),
-        "trend_move_pct":   round(trend_move_pct, 3),
-        "trend_bars":       int(W_t),
-        "trend_r2":         0.0,
+        "top_touches": len(top_hits),
+        "bot_touches": len(bot_hits),
+        "trend_move_pct": round(trend_move_pct, 3),
+        "trend_bars": int(W_t),
+        "trend_r2": 0.0,
     }
 
     pattern.update(simulate_trade_outcome(pattern, df))
     return pattern
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Simulation
+# ══════════════════════════════════════════════════════════════════════════════
 def simulate_trade_outcome(pattern, df):
-    bias = pattern["bias"]; entry = float(pattern["entry"])
-    sl = float(pattern["sl"]); tp = float(pattern["tp"])
+    bias = pattern["bias"]
+    entry = float(pattern["entry"])
+    sl = float(pattern["sl"])
+    tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
 
     stats = {
@@ -265,13 +369,17 @@ def simulate_trade_outcome(pattern, df):
         "Timeout Used": CONFIG["MAX_TIMEOUT_BARS"],
     }
 
-    if end_idx < 0 or end_idx >= len(df): return stats
+    if end_idx < 0 or end_idx >= len(df):
+        return stats
     post = df.iloc[end_idx:]
-    if len(post) <= 1: return stats
+    if len(post) <= 1:
+        return stats
 
     stats["Entry Date"] = str(df.index[end_idx])
-    total_tp = abs(tp - entry); total_sl = abs(sl - entry)
-    max_fav = 0.0; max_adv = 0.0
+    total_tp = abs(tp - entry)
+    total_sl = abs(sl - entry)
+    max_fav = 0.0
+    max_adv = 0.0
 
     highs_arr = post["High"].values.astype(float)
     lows_arr = post["Low"].values.astype(float)
@@ -280,46 +388,79 @@ def simulate_trade_outcome(pattern, df):
     is_bear = (bias == "Bearish")
 
     for i in range(1, len(post)):
-        high = highs_arr[i]; low = lows_arr[i]
+        high = highs_arr[i]
+        low = lows_arr[i]
         if is_bear:
-            fav = max(0.0, entry - low); adv = max(0.0, high - entry)
+            fav = max(0.0, entry - low)
+            adv = max(0.0, high - entry)
         else:
-            fav = max(0.0, high - entry); adv = max(0.0, entry - low)
-        if total_tp > 0: max_fav = max(max_fav, fav / total_tp * 100)
-        if total_sl > 0: max_adv = max(max_adv, adv / total_sl * 100)
+            fav = max(0.0, high - entry)
+            adv = max(0.0, entry - low)
+        if total_tp > 0:
+            max_fav = max(max_fav, fav / total_tp * 100)
+        if total_sl > 0:
+            max_adv = max(max_adv, adv / total_sl * 100)
+
         hit_sl = (high >= sl) if is_bear else (low <= sl)
         hit_tp = (low <= tp) if is_bear else (high >= tp)
+
         if hit_sl:
-            stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
+            stats["Result"] = "LOSS"
+            stats["Head Result"] = "LOSS"
             r = max_fav
-            if r < 5: stats["Loss Category"] = "immediate_rejection"
-            elif r < 30: stats["Loss Category"] = "early_reversal"
-            elif r < 70: stats["Loss Category"] = "mid_reversal"
-            else: stats["Loss Category"] = "late_reversal"
-            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = sl
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i]); break
+            if r < 5:
+                stats["Loss Category"] = "immediate_rejection"
+            elif r < 30:
+                stats["Loss Category"] = "early_reversal"
+            elif r < 70:
+                stats["Loss Category"] = "mid_reversal"
+            else:
+                stats["Loss Category"] = "late_reversal"
+            stats["exit_idx"] = dates_arr[i]
+            stats["exit_price"] = sl
+            stats["candles_to_exit"] = i
+            stats["Exit Date"] = str(dates_arr[i])
+            break
+
         if hit_tp:
-            stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
+            stats["Result"] = "WIN"
+            stats["Head Result"] = "WIN"
             stats["Loss Category"] = "success"
-            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = tp
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i]); break
+            stats["exit_idx"] = dates_arr[i]
+            stats["exit_price"] = tp
+            stats["candles_to_exit"] = i
+            stats["Exit Date"] = str(dates_arr[i])
+            break
+
         if i >= CONFIG["MAX_TIMEOUT_BARS"]:
-            stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
+            stats["Result"] = "TIMEOUT"
+            stats["Head Result"] = "TIMEOUT"
             stats["Loss Category"] = "timeout"
-            stats["exit_idx"] = dates_arr[i]; stats["exit_price"] = float(closes_arr[i])
-            stats["candles_to_exit"] = i; stats["Exit Date"] = str(dates_arr[i]); break
+            stats["exit_idx"] = dates_arr[i]
+            stats["exit_price"] = float(closes_arr[i])
+            stats["candles_to_exit"] = i
+            stats["Exit Date"] = str(dates_arr[i])
+            break
     else:
         stats["candles_to_exit"] = max(0, len(post) - 1)
-        stats["Exit Date"] = str(dates_arr[-1]); stats["Loss Category"] = "open"
+        stats["Exit Date"] = str(dates_arr[-1])
+        stats["Loss Category"] = "open"
 
     stats["Max Reach %"] = round(max_fav, 1)
     stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
     stats["Final SL"] = sl
-    if stats["Result"] == "WIN": stats["progress_ratio"] = 100.0
-    elif stats["Result"] in ("LOSS", "BREAKEVEN"): stats["progress_ratio"] = 0.0
+
+    if stats["Result"] == "WIN":
+        stats["progress_ratio"] = 100.0
+    elif stats["Result"] in ("LOSS", "BREAKEVEN"):
+        stats["progress_ratio"] = 0.0
+
     return stats
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# run_full_analysis
+# ══════════════════════════════════════════════════════════════════════════════
 def run_full_analysis(df, interval="1h", symbol=None):
     empty = {
         "df": df, "symbol": symbol or "N/A",
@@ -327,16 +468,19 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "bias": "Neutral", "entry": None, "sl": None, "tp": None,
         "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
     }
-    if df is None or df.empty: return empty
+    if df is None or df.empty:
+        return empty
 
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
         if c not in df.columns:
-            empty["error"] = f"Missing: {c}"; return empty
+            empty["error"] = f"Missing: {c}"
+            return empty
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
     if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        empty["error"] = f"Insufficient: {len(df)}"; return empty
+        empty["error"] = f"Insufficient: {len(df)}"
+        return empty
 
     dfa = df.tail(1200).copy().reset_index(drop=True)
     pats = detect_all_patterns(dfa, interval=interval, symbol=symbol)
@@ -350,9 +494,13 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
     return {
         "df": dfa, "symbol": symbol or "N/A",
-        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
-        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
-        "sl": latest["sl"], "tp": latest["tp"],
+        "signal": signal,
+        "pattern": latest["pattern"],
+        "bias": latest["bias"],
+        "entry": latest["entry"],
+        "entry_trigger": latest["entry_trigger"],
+        "sl": latest["sl"],
+        "tp": latest["tp"],
         "nodes": latest.get("nodes", []),
         "pattern_nodes": latest.get("nodes", []),
         "top_nodes": latest.get("top_nodes", []),
@@ -363,7 +511,8 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "consolidation_box": latest.get("consolidation_box"),
         "resistance": latest.get("resistance"),
         "support": latest.get("support"),
-        "all_patterns": pats, "match": 100.0,
+        "all_patterns": pats,
+        "match": 100.0,
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"),
         "Exit Date": latest.get("Exit Date"),
@@ -372,15 +521,20 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# backtest_strategy
+# ══════════════════════════════════════════════════════════════════════════════
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns: return []
+        if c not in df.columns:
+            return []
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
+        return []
 
     pats = detect_all_patterns(df, interval=interval, symbol=symbol)
     trades = []
@@ -396,9 +550,11 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "SL": p["sl"], "Stop Loss": p["sl"],
             "TP": p["tp"], "Take Profit": p["tp"],
             "R:R": p.get("R:R"),
-            "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
+            "Entry Date": p.get("Entry Date"),
+            "Exit Date": p.get("Exit Date"),
             "Exit Price": p.get("exit_price"),
-            "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
+            "time": p.get("Entry Date"),
+            "close_time": p.get("Exit Date"),
             "Max Reach %": p.get("Max Reach %", 0.0),
             "SL Safety %": p.get("SL Safety %", 0.0),
             "Entry Conditions": p.get("Entry Conditions", ""),
@@ -414,37 +570,41 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "neckline_end_idx": p["neckline_end_idx"],
             "Loss Category": p.get("Loss Category"),
             "resistance": p.get("resistance"),
-            "support":   p.get("support"),
+            "support": p.get("support"),
             "channel_start": p.get("channel_start"),
-            "channel_end":   p.get("channel_end"),
+            "channel_end": p.get("channel_end"),
             "channel_duration_bars": p.get("channel_duration_bars"),
             "channel_range_pct": p.get("channel_range_pct"),
             "consol_high": p.get("consol_high"),
-            "consol_low":  p.get("consol_low"),
+            "consol_low": p.get("consol_low"),
             "consol_bars": p.get("consol_bars"),
             "consol_range_pct": p.get("consol_range_pct"),
             "breakout_body_pct": p.get("breakout_body_pct"),
-            "top_touches":       p.get("top_touches"),
-            "bot_touches":       p.get("bot_touches"),
-            "impulse_pct":       p.get("impulse_pct"),
-            "slope_pct":         p.get("slope_pct"),
-            "cv_pct":            p.get("cv_pct"),
-            "drift_pct":         p.get("drift_pct"),
-            "flat_bars_pct":     p.get("flat_bars_pct"),
-            "bars_per_pct":      p.get("bars_per_pct"),
-            "top_flatness_pct":  p.get("top_flatness_pct"),
-            "bot_flatness_pct":  p.get("bot_flatness_pct"),
-            "trend_direction":   p.get("trend_direction"),
-            "trend_move_pct":    p.get("trend_move_pct"),
-            "trend_bars":        p.get("trend_bars"),
-            "trend_r2":          p.get("trend_r2"),
+            "top_touches": p.get("top_touches"),
+            "bot_touches": p.get("bot_touches"),
+            "impulse_pct": p.get("impulse_pct"),
+            "slope_pct": p.get("slope_pct"),
+            "cv_pct": p.get("cv_pct"),
+            "drift_pct": p.get("drift_pct"),
+            "flat_bars_pct": p.get("flat_bars_pct"),
+            "bars_per_pct": p.get("bars_per_pct"),
+            "top_flatness_pct": p.get("top_flatness_pct"),
+            "bot_flatness_pct": p.get("bot_flatness_pct"),
+            "trend_direction": p.get("trend_direction"),
+            "trend_move_pct": p.get("trend_move_pct"),
+            "trend_bars": p.get("trend_bars"),
+            "trend_r2": p.get("trend_r2"),
         })
     return trades
 
 
-def detect_all_head_shoulders(*a, **kw): return []
+def detect_all_head_shoulders(*a, **kw):
+    return []
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# diagnose_filters
+# ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
     res = {
         "error": None, "total_raw_candidates": 0, "final_count": 0,
@@ -452,11 +612,13 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "trade_analysis": [], "rejection_samples": {},
     }
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        res["error"] = "بيانات غير كافية"; return res
+        res["error"] = "بيانات غير كافية"
+        return res
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
         if c not in df.columns:
-            res["error"] = f"مفقود: {c}"; return res
+            res["error"] = f"مفقود: {c}"
+            return res
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
 
@@ -470,11 +632,16 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
     closed = len(wins) + len(losses)
     wr = round(len(wins) / closed * 100, 1) if closed else 0
-    if closed == 0: verdict = "لا توجد صفقات كافية"
-    elif wr >= 70: verdict = f"ممتاز — {wr}%"
-    elif wr >= 50: verdict = f"جيد — {wr}%"
-    elif wr >= 35: verdict = f"متوسط — {wr}%"
-    else: verdict = f"ضعيف — {wr}%"
+    if closed == 0:
+        verdict = "لا توجد صفقات كافية"
+    elif wr >= 70:
+        verdict = f"ممتاز — {wr}%"
+    elif wr >= 50:
+        verdict = f"جيد — {wr}%"
+    elif wr >= 35:
+        verdict = f"متوسط — {wr}%"
+    else:
+        verdict = f"ضعيف — {wr}%"
 
     avg_reach = 0.0
     if wins:
@@ -491,9 +658,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "action_plan": [f"🟢 WIN: {len(wins)} | ❌ LOSS: {len(losses)} | ⏰ TIMEOUT: {len(timeouts)}"],
     }
     res["stages"] = {
-        "1. Trend detected":       {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Flat correction":      {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "3. Breakout with close":  {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "1. Trend detected": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Flat correction (trimmed)": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "3. Breakout with close": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
     trade_analysis = []
@@ -502,7 +669,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
         entry = t.get("Entry", 0) or 0
         sl = t.get("SL", 0) or 0
         tp = t.get("TP", 0) or 0
-        risk = abs(entry - sl); reward = abs(tp - entry)
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
         rr = round(reward / risk, 2) if risk > 0 else "—"
         trade_analysis.append({
             "trade_num": i + 1,
@@ -524,8 +692,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — 3 Sharia Only v25")
+    print("ENGINE.PY — Trend → Flat Correction (trimmed) → Breakout v26")
     print(f"1. Trend: |move| ≥ {CONFIG['TREND_MIN_MOVE_PCT']}% in {CONFIG['TREND_BARS']} bars")
-    print(f"2. Flat: range ≤ {CONFIG['CONS_MAX_RANGE_PCT']}% for ≥ {CONFIG['CONS_MIN_BARS']} bars")
+    print(f"2. Flat: range ≤ {CONFIG['CONS_MAX_RANGE_PCT']}% for ≥ {CONFIG['CONS_MIN_BARS']} bars (trimmed to fit)")
     print(f"3. Breakout: close beyond border ± {CONFIG['BRK_BUFFER_PCT']}%")
     print(f"SL = opposite | TP = {CONFIG['TP_RR']}× SL")
