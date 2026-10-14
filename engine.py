@@ -1,55 +1,51 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Trend → Flat Correction → Breakout (v26)
-=====================================================
-🎯 الجديد في v26:
-  • اقتصاص المستطيل: فقط الشموع التي تقع داخل الحدين
-  • لا شمعة تخرج فوق الحد العلوي أو تحت السفلي
-  • الشمعة الأولى والأخيرة داخل النطاق تماماً
-  • الكسر يحدث بعد آخر شمعة داخل النطاق
-
-الشروط:
-  1) اتجاه قوي قبل التصحيح
-  2) تصحيح أفقي (كل الشموع داخل المستطيل)
-  3) كسر بإغلاق شمعة خارج الحد
-
-الإدارة:
-  • SL = الجهة المقابلة
-  • TP = 2× المخاطرة
+ENGINE.PY — Main Pivots → Channel → Breakout (v30)
+====================================================
+✅ الجديد:
+  • ZigZag لاستخراج القمم والقيعان الرئيسية فقط
+  • يتجاهل التحركات الداخلية الصغيرة (< threshold)
+  • يبني القناة على البيفوتات الكبيرة
+  • يعمل في الاتجاهين + استمرار فقط
 """
 import numpy as np
 import pandas as pd
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CONFIG
-# ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    # ── الشرط 1: الاتجاه ────────────────────────────────────────────────
-    "TREND_BARS": [20, 30, 45, 60],
-    "TREND_MIN_MOVE_PCT": 0.50,
+    # ── ZigZag: الفلتر الرئيسي ─────────────────────────────────────────
+    "ZIGZAG_THRESHOLD_PCT": 0.30,      # ← أي حركة أصغر تُتجاهل
+    "ZIGZAG_MIN_GAP_BARS": 3,          # ← أدنى شمعة بين بيفوتين
 
-    # ── الشرط 2: التصحيح ────────────────────────────────────────────────
-    "CONS_BARS": [40, 60, 90, 130, 180, 240],
-    "CONS_MIN_BARS": 40,
-    "CONS_MAX_RANGE_PCT": 2.00,
+    # ── الدفعة ──────────────────────────────────────────────────────────
+    "IMPULSE_BARS": [10, 15, 20, 30, 45],
+    "MIN_IMPULSE_PCT": 0.50,
 
-    # ── الشرط 3: الكسر ──────────────────────────────────────────────────
+    # ── القناة ──────────────────────────────────────────────────────────
+    "MIN_CORRECTION_BARS": 8,
+    "MAX_CORRECTION_BARS": 60,
+    "MIN_PEAKS_IN_CORRECTION": 2,      # ← قمم رئيسية
+    "MIN_VALLEYS_IN_CORRECTION": 2,    # ← قيعان رئيسية
+    "MAX_CHANNEL_WIDTH_PCT": 1.50,
+    "MAX_CHANNEL_SLOPE_PCT_PER_BAR": 0.25,
+
+    # ── الكسر ───────────────────────────────────────────────────────────
     "BRK_BUFFER_PCT": 0.03,
+    "MIN_BRK_BODY_PCT": 0.05,
 
     # ── الإدارة ─────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
     "TP_RR": 2.0,
 
     # ── عامة ────────────────────────────────────────────────────────────
-    "MIN_BARS_BETWEEN": 15,
+    "MIN_BARS_BETWEEN": 8,
     "MIN_BARS_REQUIRED": 60,
     "MAX_TIMEOUT_BARS": 300,
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Helpers متوافقة مع الواجهة
+# Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 def calculate_indicators(df): return df.copy()
 def calculate_zigzag(df, *a, **kw): return df.copy()
@@ -59,7 +55,80 @@ def _get_max_pattern_duration(interval): return 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 DETECTOR
+# 🎯 ZigZag — يحدد القمم والقيعان الرئيسية فقط
+# ══════════════════════════════════════════════════════════════════════════════
+def _build_zigzag(highs, lows, threshold_pct, min_gap_bars):
+    """
+    يعيد قائمة من البيفوتات الرئيسية:
+        [{"pos": int, "price": float, "type": "H"/"L"}]
+    أي حركة أصغر من threshold تُتجاهل.
+    """
+    n = len(highs)
+    if n < 5:
+        return []
+
+    threshold = threshold_pct / 100.0
+    pivots = []
+
+    # ابدأ بافتراض أن أول شمعة قمة
+    last_type = "H"
+    last_pos = 0
+    last_price = highs[0]
+
+    for i in range(1, n):
+        if last_type == "H":
+            # نبحث عن قمة أعلى
+            if highs[i] > last_price:
+                last_price = highs[i]
+                last_pos = i
+            else:
+                # قد يكون انعكاس هبوطي
+                drop = (last_price - lows[i]) / max(last_price, 1e-9)
+                if drop >= threshold and (i - last_pos) >= min_gap_bars:
+                    pivots.append({"pos": last_pos, "price": float(last_price), "type": "H"})
+                    last_type = "L"
+                    last_pos = i
+                    last_price = lows[i]
+        else:  # last_type == "L"
+            if lows[i] < last_price:
+                last_price = lows[i]
+                last_pos = i
+            else:
+                rise = (highs[i] - last_price) / max(last_price, 1e-9)
+                if rise >= threshold and (i - last_pos) >= min_gap_bars:
+                    pivots.append({"pos": last_pos, "price": float(last_price), "type": "L"})
+                    last_type = "H"
+                    last_pos = i
+                    last_price = highs[i]
+
+    # أضف آخر بيفوت
+    if last_type == "H":
+        pivots.append({"pos": last_pos, "price": float(last_price), "type": "H"})
+    else:
+        pivots.append({"pos": last_pos, "price": float(last_price), "type": "L"})
+
+    return pivots
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 fit خط الانحدار على مجموعة نقاط
+# ══════════════════════════════════════════════════════════════════════════════
+def _fit_line(xs, ys):
+    if len(xs) < 2:
+        return None
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    xs_m = xs.mean()
+    denom = ((xs - xs_m) ** 2).sum()
+    if denom < 1e-9:
+        return None
+    slope = ((xs - xs_m) * (ys - ys.mean())).sum() / denom
+    intercept = ys.mean() - slope * xs_m
+    return float(slope), float(intercept)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 DETECTOR — على البيفوتات الرئيسية فقط
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
@@ -76,224 +145,232 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
     highs = df["High"].values.astype(float)
     lows = df["Low"].values.astype(float)
+    opens = df["Open"].values.astype(float)
     closes = df["Close"].values.astype(float)
     n = len(df)
+
+    # ═══ ZigZag: البيفوتات الرئيسية ═══
+    pivots = _build_zigzag(highs, lows,
+                           CONFIG["ZIGZAG_THRESHOLD_PCT"],
+                           CONFIG["ZIGZAG_MIN_GAP_BARS"])
+    if len(pivots) < 5:
+        return []
 
     buf = CONFIG["BRK_BUFFER_PCT"] / 100.0
     patterns = []
     last_signal = -10**9
 
-    for i in range(CONFIG["MIN_BARS_REQUIRED"], n):
-        if i - last_signal < CONFIG["MIN_BARS_BETWEEN"]:
+    # ═══ نمر على كل بيفوت كبداية تصحيح محتملة ═══
+    for p_idx in range(1, len(pivots)):
+        pivot = pivots[p_idx]
+
+        # ── الدفعة: من البيفوت السابق إلى الحالي ────────────────
+        prev_pivot = pivots[p_idx - 1]
+        impulse_bars = pivot["pos"] - prev_pivot["pos"]
+        if impulse_bars < 3:
+            continue
+        if not any(impulse_bars <= W for W in CONFIG["IMPULSE_BARS"]):
             continue
 
-        close_bk = closes[i]
-        prev_c = closes[i - 1]
+        impulse_move = (pivot["price"] - prev_pivot["price"]) / prev_pivot["price"] * 100
+        if abs(impulse_move) < CONFIG["MIN_IMPULSE_PCT"]:
+            continue
+        impulse_dir = "UP" if impulse_move > 0 else "DOWN"
 
-        best = None
+        # ═══ التصحيح: جمع البيفوتات اللاحقة ═══
+        corr_pivots = []
+        for k in range(p_idx + 1, len(pivots)):
+            pos = pivots[k]["pos"]
+            bars_from_start = pos - pivot["pos"]
+            if bars_from_start > CONFIG["MAX_CORRECTION_BARS"]:
+                break
+            corr_pivots.append(pivots[k])
 
-        # ═══ كل نوافذ التصحيح (الأطول أولاً) ═══
-        for W_c in CONFIG["CONS_BARS"]:
-            if W_c < CONFIG["CONS_MIN_BARS"]:
+        if len(corr_pivots) < 4:
+            continue
+
+        peaks = [p for p in corr_pivots if p["type"] == "H"]
+        valleys = [p for p in corr_pivots if p["type"] == "L"]
+
+        if len(peaks) < CONFIG["MIN_PEAKS_IN_CORRECTION"]:
+            continue
+        if len(valleys) < CONFIG["MIN_VALLEYS_IN_CORRECTION"]:
+            continue
+
+        # طول التصحيح (من أول بيفوت تصحيح إلى آخر واحد)
+        corr_start = corr_pivots[0]["pos"]
+        corr_end = corr_pivots[-1]["pos"]
+        corr_bars = corr_end - corr_start
+        if corr_bars < CONFIG["MIN_CORRECTION_BARS"]:
+            continue
+
+        # ═══ خطا القناة على البيفوتات الرئيسية ═══
+        peak_xs = [p["pos"] - corr_start for p in peaks]
+        peak_ys = [p["price"] for p in peaks]
+        valley_xs = [p["pos"] - corr_start for p in valleys]
+        valley_ys = [p["price"] for p in valleys]
+
+        upper_fit = _fit_line(peak_xs, peak_ys)
+        lower_fit = _fit_line(valley_xs, valley_ys)
+        if upper_fit is None or lower_fit is None:
+            continue
+
+        us, ui = upper_fit
+        ls, li = lower_fit
+
+        # فحص العرض والميل
+        xs_all = np.arange(corr_bars + 1, dtype=float)
+        upper_line = ui + us * xs_all
+        lower_line = li + ls * xs_all
+        widths = upper_line - lower_line
+        if (widths <= 0).any():
+            continue
+
+        mid = (np.mean(upper_line) + np.mean(lower_line)) / 2
+        if mid <= 0:
+            continue
+
+        width_pct = float(widths.max() / mid * 100)
+        if width_pct > CONFIG["MAX_CHANNEL_WIDTH_PCT"]:
+            continue
+
+        us_pct = abs(us) / mid * 100
+        ls_pct = abs(ls) / mid * 100
+        if us_pct > CONFIG["MAX_CHANNEL_SLOPE_PCT_PER_BAR"]:
+            continue
+        if ls_pct > CONFIG["MAX_CHANNEL_SLOPE_PCT_PER_BAR"]:
+            continue
+
+        # ═══ البحث عن الكسر بعد corr_end ═══
+        # الكسر = أول شمعة i > corr_end حيث Close يكسر الحد
+        for i in range(corr_end + 1, n):
+            if i - last_signal < CONFIG["MIN_BARS_BETWEEN"]:
                 continue
-            raw_start = i - W_c
-            if raw_start < 0:
+
+            close_bk = closes[i]
+            open_bk = opens[i]
+            prev_c = closes[i - 1]
+
+            body_pct = abs(close_bk - open_bk) / max(close_bk, 1e-9) * 100
+            if body_pct < CONFIG["MIN_BRK_BODY_PCT"]:
                 continue
 
-            # ── 1. حدود أولية من النافذة الكاملة ──────────────────
-            seg_h = highs[raw_start:i]
-            seg_l = lows[raw_start:i]
-            box_top_init = float(seg_h.max())
-            box_bot_init = float(seg_l.min())
-            if box_bot_init <= 0:
-                continue
+            # قيمة الحدين عند شمعة i
+            x_i = i - corr_start
+            upper_at_i = ui + us * x_i
+            lower_at_i = li + ls * x_i
 
-            # فحص أولي للنطاق (يُعاد على المقطع المقتَص لاحقاً)
-            range_pct_init = (box_top_init - box_bot_init) / box_bot_init * 100
-            if range_pct_init > CONFIG["CONS_MAX_RANGE_PCT"] * 2.5:
-                continue  # خارج السقف تماماً — تجاهل سريع
-
-            # ── 2. 🎯 اقتصاص: اعثر على الشموع داخل النطاق ────────
-            top_margin = box_top_init * 1.001
-            bot_margin = box_bot_init * 0.999
-
-            win_h = highs[raw_start:i]
-            win_l = lows[raw_start:i]
-            inside_mask = (win_h <= top_margin) & (win_l >= bot_margin)
-
-            # أول شمعة داخل
-            first_inside_rel = None
-            for k in range(len(inside_mask)):
-                if inside_mask[k]:
-                    first_inside_rel = k
-                    break
-            if first_inside_rel is None:
-                continue
-
-            # آخر شمعة داخل
-            last_inside_rel = None
-            for k in range(len(inside_mask) - 1, -1, -1):
-                if inside_mask[k]:
-                    last_inside_rel = k
-                    break
-            if last_inside_rel is None:
-                continue
-            if last_inside_rel <= first_inside_rel:
-                continue
-
-            # المواضع المقتَصة
-            start_c = raw_start + first_inside_rel
-            end_c = raw_start + last_inside_rel
-            W_c_trimmed = end_c - start_c + 1
-
-            if W_c_trimmed < CONFIG["CONS_MIN_BARS"]:
-                continue
-
-            # ── 3. أعد حساب الحدود على المقطع المقتَص ────────────
-            seg_h2 = highs[start_c:end_c + 1]
-            seg_l2 = lows[start_c:end_c + 1]
-            box_top = float(seg_h2.max())
-            box_bot = float(seg_l2.min())
-            if box_bot <= 0:
-                continue
-
-            range_pct = (box_top - box_bot) / box_bot * 100
-            if range_pct > CONFIG["CONS_MAX_RANGE_PCT"]:
-                continue
-
-            # ── 4. 🎯 تأكد أن شمعة الكسر i تأتي بعد end_c مباشرة ──
-            #    (أول شمعة بعد آخر شمعة داخل النطاق)
-            if end_c != i - 1:
-                # يمكن أن يكون الكسر متأخراً قليلاً — لكن نتحقق أن الشموع بينهما خارجة أيضاً
-                # نقبل فقط إذا كانت i == end_c + 1 (الكسر مباشرة بعد الاقتصاص)
-                if i != end_c + 1:
-                    continue
-
-            # ── 5. الكسر ────────────────────────────────────────────
-            up_thr = box_top * (1 + buf)
-            dn_thr = box_bot * (1 - buf)
+            up_thr = upper_at_i * (1 + buf)
+            dn_thr = lower_at_i * (1 - buf)
 
             direction = None
-            if prev_c <= up_thr and close_bk > up_thr:
+            if prev_c <= up_thr and close_bk > up_thr and close_bk > open_bk:
                 direction = "BUY"
-            elif prev_c >= dn_thr and close_bk < dn_thr:
+            elif prev_c >= dn_thr and close_bk < dn_thr and close_bk < open_bk:
                 direction = "SELL"
+
             if direction is None:
                 continue
 
-            # ── 6. 🎯 تحقق مضاعف: أول وآخر شمعة داخل النطاق ───────
-            if highs[start_c] > box_top * 1.0005:
+            # فلتر الاستمرار
+            if impulse_dir == "UP" and direction != "BUY":
                 continue
-            if lows[start_c] < box_bot * 0.9995:
-                continue
-            if highs[end_c] > box_top * 1.0005:
-                continue
-            if lows[end_c] < box_bot * 0.9995:
+            if impulse_dir == "DOWN" and direction != "SELL":
                 continue
 
-            # ── 7. الشرط 1: الاتجاه قبل التصحيح ─────────────────────
-            for W_t in CONFIG["TREND_BARS"]:
-                start_t = start_c - W_t
-                if start_t < 0:
-                    continue
-
-                trend_move_pct = (closes[start_c - 1] - closes[start_t]) / closes[start_t] * 100
-                if abs(trend_move_pct) < CONFIG["TREND_MIN_MOVE_PCT"]:
-                    continue
-
-                trend_dir = "UP" if trend_move_pct > 0 else "DOWN"
-
-                best = (W_c_trimmed, W_t, start_c, start_t, box_top, box_bot,
-                        direction, trend_dir, trend_move_pct)
-                break
-            if best:
-                break
-
-        if best is None:
-            continue
-
-        pattern = _build_pattern(df, i, best, closes)
-        if pattern:
-            patterns.append(pattern)
-            last_signal = i
+            # ═══ بناء النمط ═══
+            info = {
+                "corr_start": corr_start,
+                "corr_end": corr_end,
+                "peaks": peaks,
+                "valleys": valleys,
+                "upper_slope": us, "upper_int": ui,
+                "lower_slope": ls, "lower_int": li,
+                "corr_bars": corr_bars,
+                "upper_at_brk": float(upper_at_i),
+                "lower_at_brk": float(lower_at_i),
+                "direction": direction,
+                "impulse_dir": impulse_dir,
+                "impulse_move": impulse_move,
+                "impulse_bars": impulse_bars,
+                "peak_count": len(peaks),
+                "valley_count": len(valleys),
+                "width_pct": width_pct,
+                "brk_idx": i,
+            }
+            pattern = _build_pattern(df, info, closes)
+            if pattern:
+                patterns.append(pattern)
+                last_signal = i
+            break  # لا تكرر البحث عن كسر لنفس التصحيح
 
     patterns.sort(key=lambda p: p["end_pos"])
     return patterns
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 Build pattern
+# 🎯 بناء النمط
 # ══════════════════════════════════════════════════════════════════════════════
-def _build_pattern(df, i, best, closes):
-    (W_c, W_t, start_c, start_t, box_top, box_bot,
-     direction, trend_dir, trend_move_pct) = best
-
+def _build_pattern(df, info, closes):
+    i = info["brk_idx"]
     entry = float(closes[i])
-    end_c = i - 1
+    direction = info["direction"]
+    upper_at_brk = info["upper_at_brk"]
+    lower_at_brk = info["lower_at_brk"]
+    corr_start = info["corr_start"]
+    corr_end = info["corr_end"]
+    peaks = info["peaks"]
+    valleys = info["valleys"]
+    us = info["upper_slope"]; ui = info["upper_int"]
+    ls = info["lower_slope"]; li = info["lower_int"]
+    corr_bars = info["corr_bars"]
+
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
-    # ── SL: الجهة المقابلة ─────────────────────────────────────────────
     if direction == "BUY":
-        sl = box_bot * (1 - sl_buf)
+        sl = lower_at_brk * (1 - sl_buf)
         if sl >= entry:
             return None
         risk = entry - sl
     else:
-        sl = box_top * (1 + sl_buf)
+        sl = upper_at_brk * (1 + sl_buf)
         if sl <= entry:
             return None
         risk = sl - entry
-
     if risk <= 0:
         return None
 
-    # ── TP: ضعف الوقف ──────────────────────────────────────────────────
     tp = entry + CONFIG["TP_RR"] * risk if direction == "BUY" else entry - CONFIG["TP_RR"] * risk
-
     bias = "Bullish" if direction == "BUY" else "Bearish"
 
-    # ── نقاط اللمسات — فقط الشموع داخل النطاق ──────────────────────────
-    highs = df["High"].values
-    lows = df["Low"].values
+    # ═══ خطان ممتدة عبر النافذة + امتداد للكسر ═══
+    x_end = i - corr_start  # يمتد حتى شمعة الكسر
+    upper_pts = [(int(corr_start + k), float(ui + us * k)) for k in range(x_end + 1)]
+    lower_pts = [(int(corr_start + k), float(li + ls * k)) for k in range(x_end + 1)]
 
-    tol_vis = 0.30 / 100.0
-    seg_h = highs[start_c:end_c + 1]
-    seg_l = lows[start_c:end_c + 1]
+    # ═══ نقاط اللمسات = البيفوتات الرئيسية فقط ═══
+    top_nodes = [(int(p["pos"]), float(p["price"])) for p in peaks]
+    bot_nodes = [(int(p["pos"]), float(p["price"])) for p in valleys]
 
-    top_hits = np.where(seg_h >= box_top * (1 - tol_vis))[0]
-    bot_hits = np.where(seg_l <= box_bot * (1 + tol_vis))[0]
-
-    top_nodes = [(int(start_c + p), float(seg_h[p])) for p in top_hits]
-    bot_nodes = [(int(start_c + p), float(seg_l[p])) for p in bot_hits]
-
-    top_line = [(int(start_c), box_top), (int(end_c), box_top)]
-    bot_line = [(int(start_c), box_bot), (int(end_c), box_bot)]
     nodes = [(int(i), entry)]
 
-    # ── سهم الهدف ──────────────────────────────────────────────────────
-    arrow_len = max(8, (end_c - start_c) // 3)
+    arrow_len = max(6, corr_bars // 2)
     x1_pos = min(i + arrow_len, len(df) - 1)
-    arrow = {
-        "x0": int(i), "y0": entry,
-        "x1": int(x1_pos), "y1": tp,
-        "direction": direction,
-    }
+    arrow = {"x0": int(i), "y0": entry, "x1": int(x1_pos), "y1": tp, "direction": direction}
 
     box_data = {
-        "x_start": int(start_c),
-        "x_end": int(end_c),
-        "high": float(box_top),
-        "low": float(box_bot),
+        "x_start": int(corr_start),
+        "x_end": int(corr_end),
+        "high": float(max(ui + us * k for k in range(corr_bars + 1))),
+        "low": float(min(li + ls * k for k in range(corr_bars + 1))),
     }
 
-    range_pct = (box_top - box_bot) / box_bot * 100
-
     pattern = {
-        "name": "Trend → Flat → Breakout",
-        "pattern": f"{trend_dir} Trend → Flat {W_c}b → {direction} Break",
+        "name": "Main Pivots → Channel → Breakout",
+        "pattern": f"{info['impulse_dir']} Impulse → Channel {corr_bars}b ({info['peak_count']}P/{info['valley_count']}V) → {direction}",
         "bias": bias,
         "direction": direction,
-        "trend_direction": trend_dir,
+        "trend_direction": info["impulse_dir"],
         "entry": round(entry, 5),
         "entry_trigger": round(entry, 5),
         "sl": round(sl, 5),
@@ -306,40 +383,39 @@ def _build_pattern(df, i, best, closes):
         "nodes": nodes,
         "top_nodes": top_nodes,
         "bot_nodes": bot_nodes,
-        "top_line": top_line,
-        "bot_line": bot_line,
+        "top_line": upper_pts,
+        "bot_line": lower_pts,
         "arrow": arrow,
         "consolidation_box": box_data,
-        "resistance": round(box_top, 5),
-        "support": round(box_bot, 5),
-        "level_price": round(box_top if direction == "BUY" else box_bot, 5),
-        "channel_start": int(start_c),
-        "channel_end": int(end_c),
-        "channel_duration_bars": int(W_c),
-        "channel_range_pct": round(range_pct, 3),
-        "neckline_start_idx": int(start_c),
+        "resistance": round(upper_at_brk, 5),
+        "support": round(lower_at_brk, 5),
+        "level_price": round(upper_at_brk if direction == "BUY" else lower_at_brk, 5),
+        "channel_start": int(corr_start),
+        "channel_end": int(corr_end),
+        "channel_duration_bars": int(corr_bars),
+        "channel_range_pct": round(info["width_pct"], 3),
+        "neckline_start_idx": int(corr_start),
         "neckline_end_idx": int(i),
         "end_pos": int(i),
-        "Entry Conditions": f"Trend {trend_dir} {trend_move_pct:+.2f}% → Flat {W_c}b → {direction} break",
-        "consol_high": round(box_top, 5),
-        "consol_low": round(box_bot, 5),
-        "consol_bars": int(W_c),
-        "consol_range_pct": round(range_pct, 3),
+        "Entry Conditions": f"{info['impulse_dir']} impulse {info['impulse_move']:+.2f}% → channel {corr_bars}b ({info['peak_count']}P/{info['valley_count']}V) → {direction}",
+        "consol_high": round(box_data["high"], 5),
+        "consol_low": round(box_data["low"], 5),
+        "consol_bars": int(corr_bars),
+        "consol_range_pct": round(info["width_pct"], 3),
         "consol_stability_pct": 100.0,
         "breakout_body_pct": 0.0,
-        # حقول متوافقة مع الواجهة
-        "impulse_pct": round(trend_move_pct, 3),
-        "slope_pct": 0.0,
+        "impulse_pct": round(info["impulse_move"], 3),
+        "slope_pct": round(max(abs(us), abs(ls)) / max(abs(upper_at_brk), 1e-9) * 100, 4),
         "cv_pct": 0.0,
         "drift_pct": 0.0,
         "flat_bars_pct": 100.0,
-        "bars_per_pct": 0.0,
+        "bars_per_pct": round(corr_bars / max(info["width_pct"], 0.01), 2),
         "top_flatness_pct": 0.0,
         "bot_flatness_pct": 0.0,
-        "top_touches": len(top_hits),
-        "bot_touches": len(bot_hits),
-        "trend_move_pct": round(trend_move_pct, 3),
-        "trend_bars": int(W_t),
+        "top_touches": info["peak_count"],
+        "bot_touches": info["valley_count"],
+        "trend_move_pct": round(info["impulse_move"], 3),
+        "trend_bars": int(info["impulse_bars"]),
         "trend_r2": 0.0,
     }
 
@@ -459,7 +535,7 @@ def simulate_trade_outcome(pattern, df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# run_full_analysis
+# run_full_analysis / backtest_strategy / diagnose_filters
 # ══════════════════════════════════════════════════════════════════════════════
 def run_full_analysis(df, interval="1h", symbol=None):
     empty = {
@@ -470,7 +546,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
     if df is None or df.empty:
         return empty
-
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
         if c not in df.columns:
@@ -521,9 +596,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# backtest_strategy
-# ══════════════════════════════════════════════════════════════════════════════
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
@@ -602,9 +674,6 @@ def detect_all_head_shoulders(*a, **kw):
     return []
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# diagnose_filters
-# ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
     res = {
         "error": None, "total_raw_candidates": 0, "final_count": 0,
@@ -658,9 +727,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "action_plan": [f"🟢 WIN: {len(wins)} | ❌ LOSS: {len(losses)} | ⏰ TIMEOUT: {len(timeouts)}"],
     }
     res["stages"] = {
-        "1. Trend detected": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Flat correction (trimmed)": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "3. Breakout with close": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "1. ZigZag main pivots": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Channel on pivots": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "3. Breakout": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
     trade_analysis = []
@@ -683,7 +752,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
             "reason": "—", "action": "—", "prevention": "—",
         })
     res["trade_analysis"] = trade_analysis
-
     res["recommendations"] = []
     if len(timeouts) > len(wins):
         res["recommendations"].append({"severity": "حرج", "message": "الصفقات المنتهية بالوقت كثيرة."})
@@ -692,8 +760,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Trend → Flat Correction (trimmed) → Breakout v26")
-    print(f"1. Trend: |move| ≥ {CONFIG['TREND_MIN_MOVE_PCT']}% in {CONFIG['TREND_BARS']} bars")
-    print(f"2. Flat: range ≤ {CONFIG['CONS_MAX_RANGE_PCT']}% for ≥ {CONFIG['CONS_MIN_BARS']} bars (trimmed to fit)")
-    print(f"3. Breakout: close beyond border ± {CONFIG['BRK_BUFFER_PCT']}%")
-    print(f"SL = opposite | TP = {CONFIG['TP_RR']}× SL")
+    print("ENGINE.PY — Main Pivots → Channel → Breakout v30")
+    print(f"ZigZag threshold: {CONFIG['ZIGZAG_THRESHOLD_PCT']}% (drops smaller swings)")
+    print(f"Impulse: ≥ {CONFIG['MIN_IMPULSE_PCT']}%")
+    print(f"Channel: {CONFIG['MIN_CORRECTION_BARS']}-{CONFIG['MAX_CORRECTION_BARS']} bars")
+    print(f"Min peaks/valleys in correction: {CONFIG['MIN_PEAKS_IN_CORRECTION']}/{CONFIG['MIN_VALLEYS_IN_CORRECTION']}")
+    print(f"Continuation only | TP = {CONFIG['TP_RR']}× SL")
