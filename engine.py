@@ -1,34 +1,37 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Flag / Pennant Pattern (v33)
+ENGINE.PY — Flag / Pennant Pattern (v35)
 ==========================================
-النمط: علم مثلث يتقارب بعد دفعة قوية.
-
-المنطق:
-  1) دفعة قوية (impulse ≥ 0.5%)
-  2) تصحيح بقمتين وقاعين متقاربين (خطان يقتربان)
-  3) كسر بنفس اتجاه الدفعة
+النمط المطابق للرسم:
+  1) دفعة قوية (Pole)
+  2) علم متقارب (Flag) — خطان يتقاربان
+  3) كسر بنفس اتجاه الدفعة (Breakout)
 
 الإدارة:
-  • SL = الحد المقابل
-  • TP = 2× المخاطرة
+  SL = الجهة المقابلة
+  TP = 2× المخاطرة
 """
 import numpy as np
 import pandas as pd
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
     # ── الدفعة ──────────────────────────────────────────────────────────
-    "IMPULSE_BARS": [8, 12, 18, 25, 35],
+    "IMPULSE_BARS": [6, 10, 15, 20, 30, 45],
     "MIN_IMPULSE_PCT": 0.50,
 
-    # ── التصحيح (العلم) ─────────────────────────────────────────────────
-    "CONSOL_BARS": [8, 12, 16, 22, 30, 40],
-    "MIN_CONSOL_BARS": 8,
-    "MAX_CONSOL_BARS": 40,
-    "MIN_WIDTH_START_PCT": 0.10,
-    "MAX_WIDTH_START_PCT": 1.50,
-    "MIN_CONVERGENCE": 0.20,   # ← التقارب: العرض النهائي ≤ 80% من الأول
+    # ── العلم ───────────────────────────────────────────────────────────
+    "FLAG_BARS": [8, 12, 16, 22, 30, 40],
+    "MIN_FLAG_BARS": 8,
+    "MAX_FLAG_BARS": 40,
+
+    # ── التقارب ─────────────────────────────────────────────────────────
+    "MIN_WIDTH_START_PCT": 0.08,
+    "MAX_WIDTH_START_PCT": 1.80,
+    "MIN_CONVERGENCE": 0.15,       # العرض النهائي ≤ 85% من الأول
 
     # ── الكسر ───────────────────────────────────────────────────────────
     "BRK_BUFFER_PCT": 0.05,
@@ -56,13 +59,13 @@ def _get_max_pattern_duration(interval): return 200
 
 
 def _fit_line(xs, ys):
-    if len(xs) < 2:
-        return None
+    """خط انحدار بسيط."""
+    if len(xs) < 2: return None
     xs = np.asarray(xs, dtype=float)
     ys = np.asarray(ys, dtype=float)
     denom = ((xs - xs.mean()) ** 2).sum()
     if denom < 1e-9:
-        return None
+        return 0.0, float(ys.mean())
     slope = ((xs - xs.mean()) * (ys - ys.mean())).sum() / denom
     intercept = ys.mean() - slope * xs.mean()
     return float(slope), float(intercept)
@@ -77,12 +80,10 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns:
-            return []
+        if c not in df.columns: return []
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=True)
-    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        return []
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
 
     highs = df["High"].values.astype(float)
     lows = df["Low"].values.astype(float)
@@ -106,55 +107,48 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if body_pct < CONFIG["MIN_BRK_BODY_PCT"]:
             continue
 
-        # ═══ جرّب كل نافذة تصحيح ═══
         best = None
 
-        for W_c in CONFIG["CONSOL_BARS"]:
-            if W_c < CONFIG["MIN_CONSOL_BARS"]:
-                continue
-            corr_start = i - W_c
-            if corr_start < 0:
-                continue
+        # ═══ كل نوافذ العلم ═══
+        for W_f in CONFIG["FLAG_BARS"]:
+            if W_f < CONFIG["MIN_FLAG_BARS"]: continue
+            if W_f > CONFIG["MAX_FLAG_BARS"]: continue
+            flag_start = i - W_f
+            if flag_start < 0: continue
 
-            seg_h = highs[corr_start:i]
-            seg_l = lows[corr_start:i]
+            seg_h = highs[flag_start:i]
+            seg_l = lows[flag_start:i]
 
-            xs = np.arange(W_c, dtype=float)
+            xs = np.arange(W_f, dtype=float)
             upper_fit = _fit_line(xs, seg_h)
             lower_fit = _fit_line(xs, seg_l)
-            if upper_fit is None or lower_fit is None:
-                continue
+            if upper_fit is None or lower_fit is None: continue
 
             us, ui = upper_fit
             ls, li = lower_fit
 
-            # ═══ فحص التقارب ═══
+            # ═══ العرض بداية ونهاية ═══
             w_start = (ui + us * 0) - (li + ls * 0)
-            w_end = (ui + us * (W_c - 1)) - (li + ls * (W_c - 1))
+            w_end = (ui + us * (W_f - 1)) - (li + ls * (W_f - 1))
 
-            if w_start <= 0 or w_end <= 0:
-                continue
-
-            # العرض يجب أن يتقلص
-            if w_end / w_start > (1 - CONFIG["MIN_CONVERGENCE"]):
-                continue
+            if w_start <= 0 or w_end <= 0: continue
 
             mid = (seg_h.mean() + seg_l.mean()) / 2
-            if mid <= 0:
-                continue
+            if mid <= 0: continue
 
             w_start_pct = w_start / mid * 100
-            if w_start_pct < CONFIG["MIN_WIDTH_START_PCT"]:
-                continue
-            if w_start_pct > CONFIG["MAX_WIDTH_START_PCT"]:
-                continue
+            if w_start_pct < CONFIG["MIN_WIDTH_START_PCT"]: continue
+            if w_start_pct > CONFIG["MAX_WIDTH_START_PCT"]: continue
 
-            # الخط العلوي يجب أن ينزل أسرع من السفلي (تقارب)
-            if us >= ls:
-                continue
+            # ═══ التقارب: العرض يتقلص ═══
+            convergence = w_end / w_start
+            if convergence > (1 - CONFIG["MIN_CONVERGENCE"]): continue
+
+            # ═══ الخط العلوي يجب أن ينزل أسرع من السفلي (تقارب) ═══
+            if us >= ls: continue
 
             # ═══ قيمة الخطين عند شمعة الكسر ═══
-            x_brk = float(W_c)
+            x_brk = float(W_f)
             upper_at = ui + us * x_brk
             lower_at = li + ls * x_brk
 
@@ -166,41 +160,33 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
                 direction = "BUY"
             elif prev_c >= dn_thr and close_bk < dn_thr and close_bk < open_bk:
                 direction = "SELL"
+            if direction is None: continue
 
-            if direction is None:
-                continue
-
-            # ═══ الدفعة قبل التصحيح ═══
+            # ═══ الدفعة قبل العلم ═══
             best_imp = None
             for W_t in CONFIG["IMPULSE_BARS"]:
-                t_start = corr_start - W_t
-                if t_start < 0:
-                    continue
-                move = (closes[corr_start - 1] - closes[t_start]) / closes[t_start] * 100
-                if abs(move) < CONFIG["MIN_IMPULSE_PCT"]:
-                    continue
+                t_start = flag_start - W_t
+                if t_start < 0: continue
+                move = (closes[flag_start - 1] - closes[t_start]) / closes[t_start] * 100
+                if abs(move) < CONFIG["MIN_IMPULSE_PCT"]: continue
                 best_imp = (W_t, t_start, move)
                 break
 
-            if best_imp is None:
-                continue
+            if best_imp is None: continue
 
             W_t, t_start, move = best_imp
-            impulse_dir = "UP" if move > 0 else "DOWN"
+            imp_dir = "UP" if move > 0 else "DOWN"
 
-            # ═══ استمرار فقط ═══
-            if impulse_dir == "UP" and direction != "BUY":
-                continue
-            if impulse_dir == "DOWN" and direction != "SELL":
-                continue
+            # ═══ فلتر الاستمرار ═══
+            if imp_dir == "UP" and direction != "BUY": continue
+            if imp_dir == "DOWN" and direction != "SELL": continue
 
-            best = (W_c, W_t, corr_start, t_start, us, ui, ls, li,
-                    upper_at, lower_at, direction, impulse_dir, move,
-                    w_start_pct, w_end / w_start)
+            best = (W_f, W_t, flag_start, t_start, us, ui, ls, li,
+                    upper_at, lower_at, direction, imp_dir, move,
+                    w_start_pct, convergence)
             break
 
-        if best is None:
-            continue
+        if best is None: continue
 
         pattern = _build_pattern(df, i, best, closes)
         if pattern:
@@ -215,34 +201,31 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 # 🎯 بناء النمط
 # ══════════════════════════════════════════════════════════════════════════════
 def _build_pattern(df, i, best, closes):
-    (W_c, W_t, corr_start, t_start, us, ui, ls, li,
-     upper_at, lower_at, direction, impulse_dir, impulse_move,
+    (W_f, W_t, flag_start, t_start, us, ui, ls, li,
+     upper_at, lower_at, direction, imp_dir, impulse_move,
      w_start_pct, convergence) = best
 
     entry = float(closes[i])
-    corr_end = i - 1
+    flag_end = i - 1
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
-    # ═══ SL على الجهة المقابلة ═══
+    # ═══ SL ═══
     if direction == "BUY":
         sl = lower_at * (1 - sl_buf)
-        if sl >= entry:
-            return None
+        if sl >= entry: return None
         risk = entry - sl
     else:
         sl = upper_at * (1 + sl_buf)
-        if sl <= entry:
-            return None
+        if sl <= entry: return None
         risk = sl - entry
-    if risk <= 0:
-        return None
+    if risk <= 0: return None
 
     tp = entry + CONFIG["TP_RR"] * risk if direction == "BUY" else entry - CONFIG["TP_RR"] * risk
     bias = "Bullish" if direction == "BUY" else "Bearish"
 
     # ═══ الخطوط المتقاربة ═══
-    upper_pts = [(int(corr_start + k), float(ui + us * k)) for k in range(W_c + 1)]
-    lower_pts = [(int(corr_start + k), float(li + ls * k)) for k in range(W_c + 1)]
+    upper_pts = [(int(flag_start + k), float(ui + us * k)) for k in range(W_f + 1)]
+    lower_pts = [(int(flag_start + k), float(li + ls * k)) for k in range(W_f + 1)]
 
     # ═══ علامات على القمم والقيعان الحقيقية ═══
     highs = df["High"].values
@@ -251,8 +234,8 @@ def _build_pattern(df, i, best, closes):
     tol_vis = 0.15 / 100.0
     top_nodes = []
     bot_nodes = []
-    for k in range(W_c):
-        idx = corr_start + k
+    for k in range(W_f):
+        idx = flag_start + k
         up_val = ui + us * k
         lo_val = li + ls * k
         if up_val > 0 and abs(highs[idx] - up_val) / up_val <= tol_vis:
@@ -262,26 +245,26 @@ def _build_pattern(df, i, best, closes):
 
     nodes = [(int(i), entry)]
 
-    # ═══ السهم ═══
-    arrow_len = max(6, W_c // 2)
+    # ═══ سهم الهدف ═══
+    arrow_len = max(6, W_f // 2)
     x1_pos = min(i + arrow_len, len(df) - 1)
     arrow = {"x0": int(i), "y0": entry, "x1": int(x1_pos), "y1": tp, "direction": direction}
 
     box_data = {
-        "x_start": int(corr_start),
-        "x_end": int(corr_end),
-        "high": float(max(ui + us * k for k in range(W_c))),
-        "low": float(min(li + ls * k for k in range(W_c))),
+        "x_start": int(flag_start),
+        "x_end": int(flag_end),
+        "high": float(max(ui + us * k for k in range(W_f))),
+        "low": float(min(li + ls * k for k in range(W_f))),
     }
 
     range_pct = (box_data["high"] - box_data["low"]) / box_data["low"] * 100
 
     pattern = {
         "name": "Flag / Pennant Pattern",
-        "pattern": f"{impulse_dir} Flag → {direction} Break ({W_c}b)",
+        "pattern": f"{imp_dir} Flag → {direction} Break ({W_f}b)",
         "bias": bias,
         "direction": direction,
-        "trend_direction": impulse_dir,
+        "trend_direction": imp_dir,
         "entry": round(entry, 5),
         "entry_trigger": round(entry, 5),
         "sl": round(sl, 5),
@@ -301,17 +284,17 @@ def _build_pattern(df, i, best, closes):
         "resistance": round(upper_at, 5),
         "support": round(lower_at, 5),
         "level_price": round(upper_at if direction == "BUY" else lower_at, 5),
-        "channel_start": int(corr_start),
-        "channel_end": int(corr_end),
-        "channel_duration_bars": int(W_c),
+        "channel_start": int(flag_start),
+        "channel_end": int(flag_end),
+        "channel_duration_bars": int(W_f),
         "channel_range_pct": round(range_pct, 3),
-        "neckline_start_idx": int(corr_start),
+        "neckline_start_idx": int(flag_start),
         "neckline_end_idx": int(i),
         "end_pos": int(i),
-        "Entry Conditions": f"{impulse_dir} impulse {impulse_move:+.2f}% → flag {W_c}b (conv {convergence:.2f}) → {direction}",
+        "Entry Conditions": f"{imp_dir} impulse {impulse_move:+.2f}% → flag {W_f}b (conv {convergence:.2f}) → {direction}",
         "consol_high": round(box_data["high"], 5),
         "consol_low": round(box_data["low"], 5),
-        "consol_bars": int(W_c),
+        "consol_bars": int(W_f),
         "consol_range_pct": round(range_pct, 3),
         "consol_stability_pct": 100.0,
         "breakout_body_pct": 0.0,
@@ -320,7 +303,7 @@ def _build_pattern(df, i, best, closes):
         "cv_pct": 0.0,
         "drift_pct": 0.0,
         "flat_bars_pct": 100.0,
-        "bars_per_pct": round(W_c / max(w_start_pct, 0.01), 2),
+        "bars_per_pct": round(W_f / max(w_start_pct, 0.01), 2),
         "top_flatness_pct": 0.0,
         "bot_flatness_pct": 0.0,
         "top_touches": len(top_nodes),
@@ -356,11 +339,9 @@ def simulate_trade_outcome(pattern, df):
         "Timeout Used": CONFIG["MAX_TIMEOUT_BARS"],
     }
 
-    if end_idx < 0 or end_idx >= len(df):
-        return stats
+    if end_idx < 0 or end_idx >= len(df): return stats
     post = df.iloc[end_idx:]
-    if len(post) <= 1:
-        return stats
+    if len(post) <= 1: return stats
 
     stats["Entry Date"] = str(df.index[end_idx])
     total_tp = abs(tp - entry)
@@ -383,10 +364,8 @@ def simulate_trade_outcome(pattern, df):
         else:
             fav = max(0.0, high - entry)
             adv = max(0.0, entry - low)
-        if total_tp > 0:
-            max_fav = max(max_fav, fav / total_tp * 100)
-        if total_sl > 0:
-            max_adv = max(max_adv, adv / total_sl * 100)
+        if total_tp > 0: max_fav = max(max_fav, fav / total_tp * 100)
+        if total_sl > 0: max_adv = max(max_adv, adv / total_sl * 100)
 
         hit_sl = (high >= sl) if is_bear else (low <= sl)
         hit_tp = (low <= tp) if is_bear else (high >= tp)
@@ -395,14 +374,10 @@ def simulate_trade_outcome(pattern, df):
             stats["Result"] = "LOSS"
             stats["Head Result"] = "LOSS"
             r = max_fav
-            if r < 5:
-                stats["Loss Category"] = "immediate_rejection"
-            elif r < 30:
-                stats["Loss Category"] = "early_reversal"
-            elif r < 70:
-                stats["Loss Category"] = "mid_reversal"
-            else:
-                stats["Loss Category"] = "late_reversal"
+            if r < 5: stats["Loss Category"] = "immediate_rejection"
+            elif r < 30: stats["Loss Category"] = "early_reversal"
+            elif r < 70: stats["Loss Category"] = "mid_reversal"
+            else: stats["Loss Category"] = "late_reversal"
             stats["exit_idx"] = dates_arr[i]
             stats["exit_price"] = sl
             stats["candles_to_exit"] = i
@@ -455,18 +430,15 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "bias": "Neutral", "entry": None, "sl": None, "tp": None,
         "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
     }
-    if df is None or df.empty:
-        return empty
+    if df is None or df.empty: return empty
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
         if c not in df.columns:
-            empty["error"] = f"Missing: {c}"
-            return empty
+            empty["error"] = f"Missing: {c}"; return empty
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
     if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        empty["error"] = f"Insufficient: {len(df)}"
-        return empty
+        empty["error"] = f"Insufficient: {len(df)}"; return empty
 
     dfa = df.tail(1200).copy().reset_index(drop=True)
     pats = detect_all_patterns(dfa, interval=interval, symbol=symbol)
@@ -480,13 +452,10 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
     return {
         "df": dfa, "symbol": symbol or "N/A",
-        "signal": signal,
-        "pattern": latest["pattern"],
-        "bias": latest["bias"],
-        "entry": latest["entry"],
+        "signal": signal, "pattern": latest["pattern"],
+        "bias": latest["bias"], "entry": latest["entry"],
         "entry_trigger": latest["entry_trigger"],
-        "sl": latest["sl"],
-        "tp": latest["tp"],
+        "sl": latest["sl"], "tp": latest["tp"],
         "nodes": latest.get("nodes", []),
         "pattern_nodes": latest.get("nodes", []),
         "top_nodes": latest.get("top_nodes", []),
@@ -497,8 +466,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "consolidation_box": latest.get("consolidation_box"),
         "resistance": latest.get("resistance"),
         "support": latest.get("support"),
-        "all_patterns": pats,
-        "match": 100.0,
+        "all_patterns": pats, "match": 100.0,
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"),
         "Exit Date": latest.get("Exit Date"),
@@ -508,16 +476,13 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
 
 def backtest_strategy(df, interval="1h", symbol=None):
-    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        return []
+    if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
-        if c not in df.columns:
-            return []
+        if c not in df.columns: return []
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        return []
+    if len(df) < CONFIG["MIN_BARS_REQUIRED"]: return []
 
     pats = detect_all_patterns(df, interval=interval, symbol=symbol)
     trades = []
@@ -581,8 +546,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
     return trades
 
 
-def detect_all_head_shoulders(*a, **kw):
-    return []
+def detect_all_head_shoulders(*a, **kw): return []
 
 
 def diagnose_filters(df, interval="1h", symbol=None):
@@ -592,13 +556,11 @@ def diagnose_filters(df, interval="1h", symbol=None):
         "trade_analysis": [], "rejection_samples": {},
     }
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
-        res["error"] = "بيانات غير كافية"
-        return res
+        res["error"] = "بيانات غير كافية"; return res
     df = df.copy()
     for c in ["Open", "High", "Low", "Close"]:
         if c not in df.columns:
-            res["error"] = f"مفقود: {c}"
-            return res
+            res["error"] = f"مفقود: {c}"; return res
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
 
@@ -612,20 +574,14 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
     closed = len(wins) + len(losses)
     wr = round(len(wins) / closed * 100, 1) if closed else 0
-    if closed == 0:
-        verdict = "لا توجد صفقات كافية"
-    elif wr >= 70:
-        verdict = f"ممتاز — {wr}%"
-    elif wr >= 50:
-        verdict = f"جيد — {wr}%"
-    elif wr >= 35:
-        verdict = f"متوسط — {wr}%"
-    else:
-        verdict = f"ضعيف — {wr}%"
+    if closed == 0: verdict = "لا توجد صفقات كافية"
+    elif wr >= 70: verdict = f"ممتاز — {wr}%"
+    elif wr >= 50: verdict = f"جيد — {wr}%"
+    elif wr >= 35: verdict = f"متوسط — {wr}%"
+    else: verdict = f"ضعيف — {wr}%"
 
     avg_reach = 0.0
-    if wins:
-        avg_reach = round(sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1)
+    if wins: avg_reach = round(sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1)
 
     res["smart_diagnosis"] = {
         "verdict": verdict,
@@ -639,7 +595,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
     }
     res["stages"] = {
         "1. Impulse": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
-        "2. Converging flag": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
+        "2. Flag": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
         "3. Breakout": {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
     }
 
@@ -671,8 +627,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Flag / Pennant Pattern v33")
+    print("ENGINE.PY — Flag / Pennant Pattern v35")
     print(f"Impulse: ≥ {CONFIG['MIN_IMPULSE_PCT']}% in {CONFIG['IMPULSE_BARS']} bars")
-    print(f"Flag: {CONFIG['MIN_CONSOL_BARS']}-{CONFIG['MAX_CONSOL_BARS']} bars | convergence ≥ {CONFIG['MIN_CONVERGENCE']*100}%")
+    print(f"Flag: {CONFIG['MIN_FLAG_BARS']}-{CONFIG['MAX_FLAG_BARS']} bars | convergence ≥ {CONFIG['MIN_CONVERGENCE']*100}%")
     print(f"Breakout: close beyond line + {CONFIG['BRK_BUFFER_PCT']}%")
     print(f"TP = {CONFIG['TP_RR']}× SL")
