@@ -1,76 +1,48 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Trend → Flat Correction → Breakout (v23)
-=====================================================
-منطق مبسّط كلياً كما في الصورة:
+ENGINE.PY — 3 Sharia Only (v25)
+=================================
+منطق مبسّط تماماً كما في الصورة:
 
-  الشرط 1: اتجاه قوي (خط انحدار R² عالٍ)
-  الشرط 2: تصحيح منتظم أفقي (مستطيل ≥ أسبوع)
-  الشرط 3: كسر بإغلاق أول شمعة خارج الحد
+  الشرط 1: اتجاه واضح (حركة ≥ X% في نافذة زمنية)
+  الشرط 2: تصحيح أفقي ≥ أسبوع (المدى ≤ Y%)
+  الشرط 3: كسر بإغلاق شمعة خارج الحد
 
   SL = الجهة المقابلة
-  TP = 2× المخاطرة (كما في الصورة)
+  TP = 2× المخاطرة
 """
 import numpy as np
 import pandas as pd
-from numpy.lib.stride_tricks import sliding_window_view
 
 
 CONFIG = {
     # ── الشرط 1: الاتجاه ────────────────────────────────────────────────
-    "TREND_WINDOWS": [20, 30, 45, 65, 90],
-    "TREND_MIN_R2": 0.55,
-    "TREND_MIN_MOVE_PCT": 0.80,
+    "TREND_BARS": [20, 30, 45, 60],       # نوافذ الاتجاه
+    "TREND_MIN_MOVE_PCT": 0.50,           # أدنى حركة %
 
     # ── الشرط 2: التصحيح ────────────────────────────────────────────────
-    "CONS_WINDOWS": [30, 45, 60, 90, 130, 180, 240],
-    "CONS_MIN_WEEKS": 1.0,
-    "CONS_MAX_RANGE_PCT": 2.50,
-    "CONS_MAX_SLOPE_PCT_PER_BAR": 0.015,
-    "CONS_MAX_DRIFT": 1.00,
-    "CONS_MIN_TOUCHES": 2,
-    "CONS_TOUCH_TOL_PCT": 0.25,
-    "CONS_MIN_ASPECT": 5.0,
+    "CONS_BARS": [40, 60, 90, 130, 180],  # نوافذ التجميع
+    "CONS_MIN_BARS": 40,                  # ≥ ~أسبوع على H4
+    "CONS_MAX_RANGE_PCT": 2.00,           # عرض المستطيل ≤ 2%
 
     # ── الشرط 3: الكسر ──────────────────────────────────────────────────
-    "BRK_BUFFER_PCT": 0.03,
+    "BRK_BUFFER_PCT": 0.03,               # هامش صغير
 
-    # ── SL / TP (كما في الصورة) ─────────────────────────────────────────
+    # ── الإدارة ─────────────────────────────────────────────────────────
     "SL_BUFFER_PCT": 0.05,
-    "TP_RR": 2.0,                 # ← الهدف = ضعف الوقف
+    "TP_RR": 2.0,                         # الهدف = ضعف الوقف
 
     # ── عامة ────────────────────────────────────────────────────────────
-    "MIN_BARS_BETWEEN": 20,
-    "MIN_BARS_REQUIRED": 200,
+    "MIN_BARS_BETWEEN": 15,
+    "MIN_BARS_REQUIRED": 60,
     "MAX_TIMEOUT_BARS": 300,
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Interval helpers
-# ══════════════════════════════════════════════════════════════════════════════
-_BARS_PER_WEEK = {
-    "1m": 7200, "5m": 1440, "15m": 480, "30m": 240,
-    "1h": 120, "4h": 30, "1d": 5, "1wk": 1,
-}
-
-def _week_to_bars(interval, weeks=1.0):
-    b = _BARS_PER_WEEK.get(interval, 120)
-    return max(10, int(b * weeks))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Helpers متوافقة مع الواجهة
 # ══════════════════════════════════════════════════════════════════════════════
-def calculate_indicators(df):
-    df = df.copy()
-    hl = df["High"] - df["Low"]
-    hc = np.abs(df["High"] - df["Close"].shift())
-    lc = np.abs(df["Low"] - df["Close"].shift())
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
-    return df
-
+def calculate_indicators(df): return df.copy()
 def calculate_zigzag(df, *a, **kw): return df.copy()
 def get_chronological_pivots(df): return []
 def _get_max_gap(interval): return 50
@@ -78,80 +50,7 @@ def _get_max_pattern_duration(interval): return 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 Trend metrics
-# ══════════════════════════════════════════════════════════════════════════════
-def _trend_metrics(closes, W):
-    n = len(closes)
-    if n < W: return None
-    cs = sliding_window_view(closes, W)
-    xs = np.arange(W, dtype=float)
-    xs_c = xs - xs.mean()
-    denom = float((xs_c ** 2).sum())
-
-    mean_c = cs.mean(axis=1)
-    cs_c = cs - mean_c[:, None]
-    slopes = (cs_c * xs_c).sum(axis=1) / denom
-
-    predicted = mean_c[:, None] + slopes[:, None] * xs_c[None, :]
-    ss_res = ((cs - predicted) ** 2).sum(axis=1)
-    ss_tot = (cs_c ** 2).sum(axis=1)
-    r2 = np.where(ss_tot > 1e-12, 1.0 - ss_res / ss_tot, 0.0)
-
-    move_pct = (cs[:, -1] - cs[:, 0]) / np.where(cs[:, 0] > 0, cs[:, 0], 1e-9) * 100
-
-    return {
-        "slope": slopes.astype(np.float32),
-        "r2": r2.astype(np.float32),
-        "move_pct": move_pct.astype(np.float32),
-        "mean": mean_c.astype(np.float32),
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎯 Consolidation metrics
-# ══════════════════════════════════════════════════════════════════════════════
-def _cons_metrics(highs, lows, opens, closes, W):
-    n = len(closes)
-    if n < W: return None
-
-    hs = sliding_window_view(highs, W)
-    ls = sliding_window_view(lows, W)
-    cs = sliding_window_view(closes, W)
-
-    top = hs.max(axis=1).astype(np.float32)
-    bot = ls.min(axis=1).astype(np.float32)
-    mean_c = cs.mean(axis=1)
-
-    xs = np.arange(W, dtype=float)
-    xs_c = xs - xs.mean()
-    denom = float((xs_c ** 2).sum())
-    cs_c = cs - mean_c[:, None]
-    slopes = (cs_c * xs_c).sum(axis=1) / denom
-    slope_pct = np.abs(slopes) / np.where(mean_c > 0, mean_c, 1e-9) * 100
-
-    drift = np.abs(cs[:, -1] - cs[:, 0]) / np.where(mean_c > 0, mean_c, 1e-9) * 100
-
-    range_pct = (top - bot) / np.where(bot > 0, bot, 1e-9) * 100
-
-    tol = 0.25 / 100.0
-    top_touch = (hs >= top * (1 - tol)[:, None]).sum(axis=1)
-    bot_touch = (ls <= bot * (1 + tol)[:, None]).sum(axis=1)
-
-    aspect = W / np.maximum(range_pct, 0.01)
-
-    return {
-        "top": top, "bot": bot,
-        "range_pct": range_pct.astype(np.float32),
-        "slope_pct": slope_pct.astype(np.float32),
-        "drift": drift.astype(np.float32),
-        "top_touch": top_touch.astype(np.int32),
-        "bot_touch": bot_touch.astype(np.int32),
-        "aspect": aspect.astype(np.float32),
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎯 DETECTOR
+# 🎯 الكشف البسيط
 # ══════════════════════════════════════════════════════════════════════════════
 def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
@@ -170,19 +69,7 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
     closes = df["Close"].values.astype(float)
     n = len(df)
 
-    cons_m = {}
-    for W in CONFIG["CONS_WINDOWS"]:
-        if W >= n: continue
-        cons_m[W] = _cons_metrics(highs, lows, opens, closes, W)
-
-    trend_m = {}
-    for W in CONFIG["TREND_WINDOWS"]:
-        if W >= n: continue
-        trend_m[W] = _trend_metrics(closes, W)
-
-    min_cons = _week_to_bars(interval, CONFIG["CONS_MIN_WEEKS"])
     buf = CONFIG["BRK_BUFFER_PCT"] / 100.0
-
     patterns = []
     last_signal = -10**9
 
@@ -190,62 +77,52 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
         if i - last_signal < CONFIG["MIN_BARS_BETWEEN"]:
             continue
 
-        close_bk = closes[i]; prev_c = closes[i-1]
+        close_bk = closes[i]
+        prev_c = closes[i - 1]
 
         best = None
-        # ═══ كل أحجام التجميع (الأكبر أولاً) ═══
-        for W_c in sorted(cons_m.keys(), reverse=True):
-            if W_c < min_cons: continue
+
+        # ═══ كل نوافذ التصحيح (الأطول أولاً) ═══
+        for W_c in CONFIG["CONS_BARS"]:
+            if W_c < CONFIG["CONS_MIN_BARS"]: continue
             start_c = i - W_c
             if start_c < 0: continue
-            k_c = start_c
-            M_c = cons_m[W_c]
-            if k_c >= M_c["top"].shape[0]: continue
 
-            # شرط المستطيل
-            if M_c["range_pct"][k_c] > CONFIG["CONS_MAX_RANGE_PCT"]: continue
-            if M_c["slope_pct"][k_c] > CONFIG["CONS_MAX_SLOPE_PCT_PER_BAR"]: continue
-            if M_c["drift"][k_c] > CONFIG["CONS_MAX_DRIFT"]: continue
-            if M_c["aspect"][k_c] < CONFIG["CONS_MIN_ASPECT"]: continue
-            if M_c["top_touch"][k_c] < CONFIG["CONS_MIN_TOUCHES"]: continue
-            if M_c["bot_touch"][k_c] < CONFIG["CONS_MIN_TOUCHES"]: continue
+            # ── الشرط 2: التصحيح ────────────────────────────────────
+            seg_h = highs[start_c:i]
+            seg_l = lows[start_c:i]
+            box_top = float(seg_h.max())
+            box_bot = float(seg_l.min())
 
-            box_top = float(M_c["top"][k_c])
-            box_bot = float(M_c["bot"][k_c])
+            if box_bot <= 0: continue
+            range_pct = (box_top - box_bot) / box_bot * 100
+            if range_pct > CONFIG["CONS_MAX_RANGE_PCT"]: continue
 
-            # ═══ الكسر ═══
+            # ── الشرط 3: الكسر ─────────────────────────────────────
             up_thr = box_top * (1 + buf)
             dn_thr = box_bot * (1 - buf)
+
             direction = None
             if prev_c <= up_thr and close_bk > up_thr:
                 direction = "BUY"
             elif prev_c >= dn_thr and close_bk < dn_thr:
                 direction = "SELL"
+
             if direction is None: continue
 
-            # ═══ شرط الاتجاه قبل التصحيح ═══
-            for W_t in sorted(trend_m.keys(), reverse=True):
+            # ── الشرط 1: الاتجاه قبل التصحيح ────────────────────────
+            for W_t in CONFIG["TREND_BARS"]:
                 start_t = start_c - W_t
                 if start_t < 0: continue
-                k_t = start_t
-                M_t = trend_m[W_t]
-                if k_t >= M_t["slope"].shape[0]: continue
 
-                r2 = float(M_t["r2"][k_t])
-                move = float(M_t["move_pct"][k_t])
+                trend_move_pct = (closes[start_c - 1] - closes[start_t]) / closes[start_t] * 100
 
-                if r2 < CONFIG["TREND_MIN_R2"]: continue
-                if abs(move) < CONFIG["TREND_MIN_MOVE_PCT"]: continue
+                if abs(trend_move_pct) < CONFIG["TREND_MIN_MOVE_PCT"]: continue
 
-                # الاتجاه يجب أن يكون معاكساً للكسر (تصحيح بعد اتجاه ثم انعكاس)
-                # أو: يمكن السماح بكلا الحالتين (استمرار + انعكاس)
-                # هنا: نطلب معاكسة صريحة كما في الصورة (اتجاه هبوطي → كسر صعودي)
-                trend_dir = "UP" if move > 0 else "DOWN"
-                # قبول الحالتين: الانعكاس أو الاستمرار
-                # (لا نفرض اتجاه الكسر — نترك السوق يقرر)
+                trend_dir = "UP" if trend_move_pct > 0 else "DOWN"
 
                 best = (W_c, W_t, start_c, start_t, box_top, box_bot,
-                        direction, trend_dir, move, M_c, M_t, k_c, k_t)
+                        direction, trend_dir, trend_move_pct)
                 break
             if best: break
 
@@ -262,14 +139,13 @@ def detect_all_patterns(df, interval="1h", symbol=None, **kwargs):
 
 def _build_pattern(df, i, best, closes):
     (W_c, W_t, start_c, start_t, box_top, box_bot,
-     direction, trend_dir, trend_move, M_c, M_t, k_c, k_t) = best
+     direction, trend_dir, trend_move_pct) = best
 
     entry = float(closes[i])
     end_c = i - 1
-
     sl_buf = CONFIG["SL_BUFFER_PCT"] / 100.0
 
-    # ═══ SL = الجهة المقابلة (كما في الصورة) ═══
+    # ── SL: الجهة المقابلة ─────────────────────────────────────────────
     if direction == "BUY":
         sl = box_bot * (1 - sl_buf)
         if sl >= entry: return None
@@ -278,17 +154,19 @@ def _build_pattern(df, i, best, closes):
         sl = box_top * (1 + sl_buf)
         if sl <= entry: return None
         risk = sl - entry
+
     if risk <= 0: return None
 
-    # ═══ TP = 2 × المخاطرة (كما في الصورة) ═══
+    # ── TP: ضعف الوقف ──────────────────────────────────────────────────
     tp = entry + CONFIG["TP_RR"] * risk if direction == "BUY" else entry - CONFIG["TP_RR"] * risk
 
     bias = "Bullish" if direction == "BUY" else "Bearish"
 
+    # ── نقاط اللمسات (للعرض) ───────────────────────────────────────────
     highs = df["High"].values
     lows  = df["Low"].values
 
-    tol_vis = CONFIG["CONS_TOUCH_TOL_PCT"] / 100.0 * 1.5
+    tol_vis = 0.30 / 100.0
     seg_h = highs[start_c:end_c + 1]
     seg_l = lows[start_c:end_c + 1]
 
@@ -309,19 +187,11 @@ def _build_pattern(df, i, best, closes):
     box_data = {"x_start": int(start_c), "x_end": int(end_c),
                 "high": float(box_top), "low": float(box_bot)}
 
-    # نسبة التصحيح
-    trend_dist = abs(trend_move) / 100.0 * entry
-    cons_range = box_top - box_bot
-    retracement_pct = (cons_range / trend_dist * 100) if trend_dist > 0 else 0
-
-    r2_val = float(M_t["r2"][k_t])
-    slope_c = float(M_c["slope_pct"][k_c])
-    drift_c = float(M_c["drift"][k_c])
-    aspect_c = float(M_c["aspect"][k_c])
+    range_pct = (box_top - box_bot) / box_bot * 100
 
     pattern = {
         "name": "Trend → Flat → Breakout",
-        "pattern": f"{trend_dir} Trend → Flat {W_c}bars → {direction} Break",
+        "pattern": f"{trend_dir} Trend → Flat {W_c}b → {direction} Break",
         "bias": bias,
         "direction": direction,
         "trend_direction": trend_dir,
@@ -347,41 +217,37 @@ def _build_pattern(df, i, best, closes):
         "channel_start": int(start_c),
         "channel_end": int(end_c),
         "channel_duration_bars": int(W_c),
-        "channel_range_pct": round(float(M_c["range_pct"][k_c]), 3),
+        "channel_range_pct": round(range_pct, 3),
         "neckline_start_idx": int(start_c),
         "neckline_end_idx": int(i),
         "end_pos": int(i),
-        "Entry Conditions": f"Trend {trend_dir} {trend_move:+.2f}% → Flat {W_c}bars → {direction} break",
+        "Entry Conditions": f"Trend {trend_dir} {trend_move_pct:+.2f}% → Flat {W_c}b → {direction} break",
         "consol_high": round(box_top, 5),
         "consol_low": round(box_bot, 5),
         "consol_bars": int(W_c),
-        "consol_range_pct": round(float(M_c["range_pct"][k_c]), 3),
+        "consol_range_pct": round(range_pct, 3),
         "consol_stability_pct": 100.0,
         "breakout_body_pct": 0.0,
-
-        # ═══ الحقول التي تتوقعها الواجهة ═══
-        "impulse_pct":      round(trend_move, 3),
-        "slope_pct":        round(slope_c, 4),
-        "cv_pct":           round(drift_c, 4),   # نستخدم drift كـ cv
-        "drift_pct":        round(drift_c, 4),
+        # الحقول المتوافقة مع الواجهة
+        "impulse_pct":      round(trend_move_pct, 3),
+        "slope_pct":        0.0,
+        "cv_pct":           0.0,
+        "drift_pct":        0.0,
         "flat_bars_pct":    100.0,
-        "bars_per_pct":     round(aspect_c, 2),
+        "bars_per_pct":     0.0,
         "top_flatness_pct": 0.0,
         "bot_flatness_pct": 0.0,
-        "top_touches":      int(M_c["top_touch"][k_c]),
-        "bot_touches":      int(M_c["bot_touch"][k_c]),
-        "trend_move_pct":   round(trend_move, 3),
+        "top_touches":      len(top_hits),
+        "bot_touches":      len(bot_hits),
+        "trend_move_pct":   round(trend_move_pct, 3),
         "trend_bars":       int(W_t),
-        "trend_r2":         round(r2_val, 3),
+        "trend_r2":         0.0,
     }
 
     pattern.update(simulate_trade_outcome(pattern, df))
     return pattern
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Simulation
-# ══════════════════════════════════════════════════════════════════════════════
 def simulate_trade_outcome(pattern, df):
     bias = pattern["bias"]; entry = float(pattern["entry"])
     sl = float(pattern["sl"]); tp = float(pattern["tp"])
@@ -454,9 +320,6 @@ def simulate_trade_outcome(pattern, df):
     return stats
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# run_full_analysis
-# ══════════════════════════════════════════════════════════════════════════════
 def run_full_analysis(df, interval="1h", symbol=None):
     empty = {
         "df": df, "symbol": symbol or "N/A",
@@ -487,11 +350,8 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
     return {
         "df": dfa, "symbol": symbol or "N/A",
-        "signal": signal,
-        "pattern": latest["pattern"],
-        "bias": latest["bias"],
-        "entry": latest["entry"],
-        "entry_trigger": latest["entry_trigger"],
+        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
+        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
         "sl": latest["sl"], "tp": latest["tp"],
         "nodes": latest.get("nodes", []),
         "pattern_nodes": latest.get("nodes", []),
@@ -503,8 +363,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "consolidation_box": latest.get("consolidation_box"),
         "resistance": latest.get("resistance"),
         "support": latest.get("support"),
-        "all_patterns": pats,
-        "match": 100.0,
+        "all_patterns": pats, "match": 100.0,
         "Result": latest.get("Result", "OPEN"),
         "Entry Date": latest.get("Entry Date"),
         "Exit Date": latest.get("Exit Date"),
@@ -513,9 +372,6 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# backtest_strategy
-# ══════════════════════════════════════════════════════════════════════════════
 def backtest_strategy(df, interval="1h", symbol=None):
     if df is None or df.empty or len(df) < CONFIG["MIN_BARS_REQUIRED"]:
         return []
@@ -589,9 +445,6 @@ def backtest_strategy(df, interval="1h", symbol=None):
 def detect_all_head_shoulders(*a, **kw): return []
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# diagnose_filters
-# ══════════════════════════════════════════════════════════════════════════════
 def diagnose_filters(df, interval="1h", symbol=None):
     res = {
         "error": None, "total_raw_candidates": 0, "final_count": 0,
@@ -617,7 +470,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
     closed = len(wins) + len(losses)
     wr = round(len(wins) / closed * 100, 1) if closed else 0
-
     if closed == 0: verdict = "لا توجد صفقات كافية"
     elif wr >= 70: verdict = f"ممتاز — {wr}%"
     elif wr >= 50: verdict = f"جيد — {wr}%"
@@ -638,7 +490,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
         },
         "action_plan": [f"🟢 WIN: {len(wins)} | ❌ LOSS: {len(losses)} | ⏰ TIMEOUT: {len(timeouts)}"],
     }
-
     res["stages"] = {
         "1. Trend detected":       {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
         "2. Flat correction":      {"before": len(trades), "after": len(trades), "rejected": 0, "pass_rate": "—"},
@@ -673,8 +524,8 @@ def diagnose_filters(df, interval="1h", symbol=None):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — Trend → Flat Correction → Breakout v23")
-    print(f"Trend: R² ≥ {CONFIG['TREND_MIN_R2']} | move ≥ {CONFIG['TREND_MIN_MOVE_PCT']}%")
-    print(f"Cons: range ≤ {CONFIG['CONS_MAX_RANGE_PCT']}% | ≥ {CONFIG['CONS_MIN_WEEKS']} week | aspect ≥ {CONFIG['CONS_MIN_ASPECT']}")
-    print(f"Breakout: close beyond border ± {CONFIG['BRK_BUFFER_PCT']}%")
-    print(f"TP = {CONFIG['TP_RR']}× SL")
+    print("ENGINE.PY — 3 Sharia Only v25")
+    print(f"1. Trend: |move| ≥ {CONFIG['TREND_MIN_MOVE_PCT']}% in {CONFIG['TREND_BARS']} bars")
+    print(f"2. Flat: range ≤ {CONFIG['CONS_MAX_RANGE_PCT']}% for ≥ {CONFIG['CONS_MIN_BARS']} bars")
+    print(f"3. Breakout: close beyond border ± {CONFIG['BRK_BUFFER_PCT']}%")
+    print(f"SL = opposite | TP = {CONFIG['TP_RR']}× SL")
