@@ -4,7 +4,7 @@ ENGINE.PY — H&S Detector (Reversal + Continuation)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
 - فلتر الاتجاه السابق لكلا النوعين
-- وقف آمن 15% + TP = 2× الرأس + Trailing بوحدات الرأس
+- وقف آمن 15% + TP = 1× الرأس + Trailing بوحدات الرأس
 - قياس الامتداد الكامل
 """
 import pandas as pd
@@ -22,7 +22,7 @@ CONFIG = {
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
-    "TP_REACH_FACTOR": 2.0,
+    "TP_REACH_FACTOR": 1.0,  # تم التعديل: الهدف = 1× طول الرأس فقط
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
     "TRAILING_LEVELS_HEAD": [
@@ -752,7 +752,7 @@ def diagnose_filters(df, interval="1h", symbol=None):
     result["extension_analysis"] = {
         "sample_wins": len(win_ext),
         "median_extension_wins_%": round(float(np.median(win_ext)), 1) if win_ext else 0,
-        "pct_wins_reach_2.0x": _pct(win_ext, lambda x: x >= 200),
+        "pct_wins_reach_1.0x": _pct(win_ext, lambda x: x >= 100),
     }
 
     win_reach = [t.get("Max Reach %", 0) for t in wins]
