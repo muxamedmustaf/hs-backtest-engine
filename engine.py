@@ -6,6 +6,7 @@ ENGINE.PY — H&S Detector (Reversal + Continuation)
 - فلتر الاتجاه السابق لكلا النوعين
 - وقف آمن 15% + TP = 1× الرأس + Trailing بوحدات الرأس
 - قياس الامتداد الكامل
+- [تحديث]: فلتر الكتف الأيمن (يجب أن يكون أعلى/أدنى نقطة بعد الرأس مباشرة)
 """
 import pandas as pd
 import numpy as np
@@ -22,7 +23,7 @@ CONFIG = {
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
     "VOLUME_MA_PERIOD": 20,
-    "TP_REACH_FACTOR": 1.0,  # تم التعديل: الهدف = 1× طول الرأس فقط
+    "TP_REACH_FACTOR": 1.0,  # الهدف = 1× طول الرأس فقط
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
     "TRAILING_LEVELS_HEAD": [
@@ -432,6 +433,19 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
 
+        # =====================================================================
+        # [تعديل جديد]: التأكد من أن الكتف الأيمن (h3) هو أعلى نقطة بعد الرأس (h2)
+        # =====================================================================
+        h2_idx = p[3]["idx"]  # موقع الرأس
+        if h2_idx in df.index and end_idx in df.index:
+            # نافذة البحث من الرأس إلى نقطة الاختراق
+            post_head_window = df.loc[h2_idx:end_idx]
+            if not post_head_window.empty:
+                if post_head_window["High"].max() > h3 + 1e-9:
+                    # توجد شمعة أعلى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
+                    continue
+        # =====================================================================
+
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = h2 - neckline
         entry = neckline
@@ -524,6 +538,19 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
         if (end_pos - l3_pos) > max_gap: continue
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
+
+        # =====================================================================
+        # [تعديل جديد]: التأكد من أن الكتف الأيمن (l3) هو أدنى نقطة بعد الرأس (l2)
+        # =====================================================================
+        l2_idx = p[3]["idx"]  # موقع الرأس (القاع)
+        if l2_idx in df.index and end_idx in df.index:
+            # نافذة البحث من الرأس إلى نقطة الاختراق
+            post_head_window = df.loc[l2_idx:end_idx]
+            if not post_head_window.empty:
+                if post_head_window["Low"].min() < l3 - 1e-9:
+                    # توجد شمعة أدنى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
+                    continue
+        # =====================================================================
 
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = neckline - l2
