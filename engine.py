@@ -11,9 +11,9 @@ import pandas as pd
 import numpy as np
 
 CONFIG = {
-    "ZIGZAG_DEPTH": 8,
-    "ZIGZAG_BACKSTEP": 4,
-    "MIN_WAVE_CANDLES": 3,
+    "ZIGZAG_DEPTH": 12,
+    "ZIGZAG_BACKSTEP": 5,
+    "MIN_WAVE_CANDLES": 5,
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "HEAD_PROPORTION_MIN_RATIO": 0.15,
     "NECKLINE_DIFF_MAX_RATIO": 0.10,
