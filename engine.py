@@ -1,37 +1,57 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — H&S Detector (Neckline + Live Candles Limit Only)
+ENGINE.PY — H&S Detector (Neckline + Live Candles Limit + Smart Filters)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
-- [تحديث]: تم إلغاء جميع الشروط الفنية باستثناء شروط خط العنق وفلتر حد الشموع الحية
-- [تحديث]: إضافة نظام Trailing Stop تدريجي ذكي (يبدأ من 30% ويسمح بالامتداد حتى 2× الرأس)
-- [تحديث]: تم تحسين السرعة باستبدال iterrows() بمصفوفات Numpy
-- [تحديث]: الهدف = 2× الرأس (لتقاط الامتدادات الكبيرة)
-- وقف آمن 15%
+- [تحديث]: إضافة 3 فلاتر ذكية لمعالجة الاختراقات الوهمية:
+    1. فلتر تأكيد الاختراق (جسم الشمعة > 1.2× ATR)
+    2. فلتر الحجم (حجم الاختراق > متوسط الحجم)
+    3. فلتر الاتجاه العام (EMA 200)
+- [تحديث]: التريلينغ الذكي (يبدأ عند 100% ويسمح بالامتداد حتى 2× الرأس)
+- [تحديث]: تحسين السرعة باستخدام مصفوفات Numpy
+- الهدف = 2× الرأس | وقف آمن 15%
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🎯 إعدادات كشف النموذج الأساسية
+    # ═══════════════════════════════════════════════════════════════════════
     "ZIGZAG_DEPTH": 10,
     "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 4,
-    "NECKLINE_DIFF_MAX_RATIO": 0.25,      # الشرط الأول: شروط خط العنق
-    "LIVE_MAX_BREAKOUT_CANDLES": 15,      # الشرط الثاني: فلتر حد الشموع الحية
+    "NECKLINE_DIFF_MAX_RATIO": 0.25,
+    "LIVE_MAX_BREAKOUT_CANDLES": 15,
     "BREAKOUT_MIN_PCT": 0.0001,
-    "VOLUME_MA_PERIOD": 20,               # تمت إعادة إضافته لحل مشكلة KeyError
-    "TP_REACH_FACTOR": 2.0,               # تم التعديل: الهدف = 2× الرأس للسماح بالامتداد
+    "VOLUME_MA_PERIOD": 20,
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🆕 الفلاتر الذكية لمعالجة الاختراقات الوهمية (Fakeouts)
+    # ═══════════════════════════════════════════════════════════════════════
+    "REQUIRE_BREAKOUT_STRENGTH": True,   # ✅ تفعيل فلتر قوة الاختراق (جسم الشمعة)
+    "BREAKOUT_ATR_MULTIPLIER": 1.2,      # جسم الشمعة يجب أن يكون 1.2× ATR على الأقل
+    
+    "REQUIRE_VOLUME_BREAKOUT": True,     # ✅ تفعيل فلتر الحجم
+    "VOLUME_BREAKOUT_FACTOR": 1.2,       # حجم الاختراق يجب أن يكون 1.2× متوسط الحجم
+    
+    "REQUIRE_TREND_FILTER": False,       # ⚠️ فلتر الاتجاه (اختياري - قد يقلل الفرص)
+    "TREND_EMA_PERIOD": 200,             # فترة EMA للاتجاه العام
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 💰 إدارة الصفقة
+    # ═══════════════════════════════════════════════════════════════════════
+    "TP_REACH_FACTOR": 2.0,              # الهدف = 2× الرأس
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
     
     # ═══════════════════════════════════════════════════════════════════════
-    # 🎯 مستويات Trailing Stop الذكية (تبدأ مبكراً وتؤمّن الأرباح تدريجياً)
+    # 🎯 مستويات Trailing Stop الذكية (تبدأ عند 100% وتسمح بالامتداد)
     # ═══════════════════════════════════════════════════════════════════════
-    # (العتبة كنسبة من الرأس، الربح المؤمّن كنسبة من الرأس)
     "TRAILING_LEVELS_HEAD": [
-        (1.00, 0.00),   # عند 100% (الهدف الأصلي) → نقل SL إلى التعادل (حماية رأس المال)
+        (1.00, 0.00),   # عند 100% → نقل SL إلى نقطة التعادل
         (1.50, 0.50),   # عند 150% → تأمين 50% من الرأس
-        (2.00, 1.00),   # عند 200% (الهدف النهائي) → تأمين 100% من الرأس
+        (2.00, 1.00),   # عند 200% → تأمين 100% من الرأس
     ],
     
     "MEASURE_FULL_EXTENSION": True,
@@ -110,6 +130,8 @@ def calculate_indicators(df):
     df["ATR"] = tr.rolling(14).mean()
     df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
     df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
+    
+    # حجم التداول
     if "Volume" in df.columns:
         v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
         df["Volume"] = v
@@ -118,6 +140,11 @@ def calculate_indicators(df):
     else:
         df["Volume"] = 0.0
         df["Volume_MA"] = 0.0
+    
+    # 🆕 EMA للاتجاه العام (Trend Filter)
+    ema_period = CONFIG.get("TREND_EMA_PERIOD", 200)
+    df["EMA_Trend"] = df["Close"].ewm(span=ema_period, adjust=False).mean()
+    
     return df
 
 
@@ -381,6 +408,57 @@ class PatternValidatorPipeline:
 
     def breakout_confirm_filter(self, is_bearish, neckline, price):
         return True
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🆕 الفلاتر الذكية الجديدة
+    # ═══════════════════════════════════════════════════════════════════════
+    def breakout_strength_filter(self, breakout_idx):
+        """يشترط أن يكون جسم شمعة الاختراق أكبر من 1.2× ATR"""
+        if not CONFIG.get("REQUIRE_BREAKOUT_STRENGTH", False):
+            return True
+        try:
+            row = self.df.loc[breakout_idx]
+            body = abs(float(row["Close"]) - float(row["Open"]))
+            atr = float(row.get("ATR", 0))
+            if atr <= 0:
+                return True
+            multiplier = CONFIG.get("BREAKOUT_ATR_MULTIPLIER", 1.2)
+            return body >= (atr * multiplier)
+        except Exception:
+            return True
+    
+    def volume_breakout_filter(self, breakout_idx):
+        """يشترط أن يكون حجم شمعة الاختراق أعلى من متوسط الحجم"""
+        if not CONFIG.get("REQUIRE_VOLUME_BREAKOUT", False):
+            return True
+        try:
+            row = self.df.loc[breakout_idx]
+            vol = float(row.get("Volume", 0))
+            vol_ma = float(row.get("Volume_MA", 0))
+            # إذا لم تكن هناك بيانات حجم، تخطى الفلتر
+            if vol_ma <= 0 or vol <= 0:
+                return True
+            factor = CONFIG.get("VOLUME_BREAKOUT_FACTOR", 1.2)
+            return vol >= (vol_ma * factor)
+        except Exception:
+            return True
+    
+    def trend_filter(self, breakout_idx, is_bearish):
+        """يشترط أن يكون الاختراق في اتجاه EMA 200"""
+        if not CONFIG.get("REQUIRE_TREND_FILTER", False):
+            return True
+        try:
+            row = self.df.loc[breakout_idx]
+            price = float(row["Close"])
+            ema = float(row.get("EMA_Trend", price))
+            if is_bearish:
+                # في نموذج H&S الهابط: السعر يجب أن يكون تحت EMA 200
+                return price < ema
+            else:
+                # في نموذج المعكوس الصاعد: السعر يجب أن يكون فوق EMA 200
+                return price > ema
+        except Exception:
+            return True
 
 
 def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200):
@@ -414,6 +492,11 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
 
+        # 🆕 تطبيق الفلاتر الذكية الثلاثة
+        if not validator.breakout_strength_filter(end_idx): continue   # فلتر قوة الاختراق
+        if not validator.volume_breakout_filter(end_idx): continue      # فلتر الحجم
+        if not validator.trend_filter(end_idx, is_bearish=True): continue  # فلتر الاتجاه
+
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = h2 - neckline
         entry = neckline
@@ -436,7 +519,7 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": f"Head and Shoulders (Reversal)",
-            "Entry Conditions": "Neckline + Live Limit",
+            "Entry Conditions": "Neckline + Strength + Volume + Trend",
         }
         pattern.update(simulate_trade_outcome(pattern, df))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
@@ -475,6 +558,11 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
 
+        # 🆕 تطبيق الفلاتر الذكية الثلاثة
+        if not validator.breakout_strength_filter(end_idx): continue
+        if not validator.volume_breakout_filter(end_idx): continue
+        if not validator.trend_filter(end_idx, is_bearish=False): continue
+
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = neckline - l2
         entry = neckline
@@ -497,7 +585,7 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
             "Pattern": f"Inverse Head and Shoulders (Reversal)",
-            "Entry Conditions": "Neckline + Live Limit",
+            "Entry Conditions": "Neckline + Strength + Volume + Trend",
         }
         pattern.update(simulate_trade_outcome(pattern, df))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
@@ -727,7 +815,15 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
     df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df)
 
-    stats = {"total_pivots": len(pivots), "raw_candidates": 0, "rejected_pattern_structure": 0, "rejected_neckline_diff": 0, "rejected_no_breakout": 0, "rejected_live_limit": 0, "passed": 0}
+    stats = {
+        "total_pivots": len(pivots), "raw_candidates": 0,
+        "rejected_pattern_structure": 0, "rejected_neckline_diff": 0,
+        "rejected_no_breakout": 0, "rejected_live_limit": 0,
+        "rejected_breakout_strength": 0,   # 🆕
+        "rejected_volume_filter": 0,       # 🆕
+        "rejected_trend_filter": 0,        # 🆕
+        "passed": 0
+    }
 
     if len(pivots) < 6: return stats
     validator = PatternValidatorPipeline(df)
@@ -761,6 +857,13 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             end_pos = df.index.get_loc(end_idx)
             if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
                 stats["rejected_live_limit"] += 1; continue
+            # الفلاتر الجديدة
+            if not validator.breakout_strength_filter(end_idx):
+                stats["rejected_breakout_strength"] += 1; continue
+            if not validator.volume_breakout_filter(end_idx):
+                stats["rejected_volume_filter"] += 1; continue
+            if not validator.trend_filter(end_idx, is_bearish=True):
+                stats["rejected_trend_filter"] += 1; continue
             stats["passed"] += 1
         else:
             h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
@@ -781,12 +884,20 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             end_pos = df.index.get_loc(end_idx)
             if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
                 stats["rejected_live_limit"] += 1; continue
+            # الفلاتر الجديدة
+            if not validator.breakout_strength_filter(end_idx):
+                stats["rejected_breakout_strength"] += 1; continue
+            if not validator.volume_breakout_filter(end_idx):
+                stats["rejected_volume_filter"] += 1; continue
+            if not validator.trend_filter(end_idx, is_bearish=False):
+                stats["rejected_trend_filter"] += 1; continue
             stats["passed"] += 1
     return stats
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — H&S Reversal + Continuation")
-    print(f"Reversal: {CONFIG['ENABLE_REVERSAL']}")
-    print(f"Continuation: {CONFIG['ENABLE_CONTINUATION']}")
-    print(f"TP: {CONFIG['TP_REACH_FACTOR']}× head | Safe SL: {CONFIG['USE_SAFE_SL']}")
+    print("ENGINE.PY — H&S Detector with Smart Filters")
+    print(f"Breakout Strength Filter: {CONFIG['REQUIRE_BREAKOUT_STRENGTH']}")
+    print(f"Volume Filter: {CONFIG['REQUIRE_VOLUME_BREAKOUT']}")
+    print(f"Trend Filter: {CONFIG['REQUIRE_TREND_FILTER']}")
+    print(f"TP: {CONFIG['TP_REACH_FACTOR']}× head | Trailing: {CONFIG['TRAILING_LEVELS_HEAD']}")
