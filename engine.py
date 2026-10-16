@@ -7,14 +7,15 @@ ENGINE.PY — H&S Detector (Reversal + Continuation)
 - وقف آمن 15% + TP = 1× الرأس + Trailing بوحدات الرأس
 - قياس الامتداد الكامل
 - [تحديث]: فلتر الكتف الأيمن (يجب أن يكون أعلى/أدنى نقطة بعد الرأس مباشرة)
+- [تحديث]: دالة diagnose_no_signals لتشخيص أسباب عدم وجود إشارات
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
     "ZIGZAG_DEPTH": 12,
-    "ZIGZAG_BACKSTEP": 4,
-    "MIN_WAVE_CANDLES": 4,
+    "ZIGZAG_BACKSTEP": 5,
+    "MIN_WAVE_CANDLES": 5,
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "HEAD_PROPORTION_MIN_RATIO": 0.15,
     "NECKLINE_DIFF_MAX_RATIO": 0.10,
@@ -433,18 +434,13 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
 
-        # =====================================================================
-        # [تعديل جديد]: التأكد من أن الكتف الأيمن (h3) هو أعلى نقطة بعد الرأس (h2)
-        # =====================================================================
-        h2_idx = p[3]["idx"]  # موقع الرأس
+        # فلتر الكتف الأيمن: يجب أن يكون الكتف الأيمن أعلى نقطة بعد الرأس
+        h2_idx = p[3]["idx"]
         if h2_idx in df.index and end_idx in df.index:
-            # نافذة البحث من الرأس إلى نقطة الاختراق
             post_head_window = df.loc[h2_idx:end_idx]
             if not post_head_window.empty:
                 if post_head_window["High"].max() > h3 + 1e-9:
-                    # توجد شمعة أعلى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
-                    continue
-        # =====================================================================
+                    continue  # توجد شمعة أعلى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
 
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = h2 - neckline
@@ -539,18 +535,13 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
 
-        # =====================================================================
-        # [تعديل جديد]: التأكد من أن الكتف الأيمن (l3) هو أدنى نقطة بعد الرأس (l2)
-        # =====================================================================
-        l2_idx = p[3]["idx"]  # موقع الرأس (القاع)
+        # فلتر الكتف الأيمن: يجب أن يكون الكتف الأيمن أدنى نقطة بعد الرأس
+        l2_idx = p[3]["idx"]
         if l2_idx in df.index and end_idx in df.index:
-            # نافذة البحث من الرأس إلى نقطة الاختراق
             post_head_window = df.loc[l2_idx:end_idx]
             if not post_head_window.empty:
                 if post_head_window["Low"].min() < l3 - 1e-9:
-                    # توجد شمعة أدنى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
-                    continue
-        # =====================================================================
+                    continue  # توجد شمعة أدنى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
 
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = neckline - l2
@@ -878,6 +869,156 @@ def diagnose_filters(df, interval="1h", symbol=None):
         recommendations.append({"severity": "منخفض", "message": f"{len(bes)} صفقة عند التعادل."})
     result["recommendations"] = recommendations
     return result
+
+
+# ==============================================================================
+# 🔍 diagnose_no_signals (تشخيص أسباب عدم وجود إشارات)
+# ==============================================================================
+def diagnose_no_signals(df, interval="1h"):
+    if df is None or df.empty or len(df) < 30:
+        return {"error": "بيانات غير كافية"}
+
+    df = df.copy()
+    for col in ["Open", "High", "Low", "Close"]:
+        if col not in df.columns: return {"error": f"مفقود: {col}"}
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+
+    df = calculate_indicators(df)
+    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    pivots = get_chronological_pivots(df)
+
+    stats = {
+        "total_pivots": len(pivots),
+        "raw_candidates": 0,
+        "rejected_time_filter": 0,
+        "rejected_pattern_structure": 0,
+        "rejected_prior_trend": 0,
+        "rejected_shoulder_diff": 0,
+        "rejected_head_proportion": 0,
+        "rejected_neckline_diff": 0,
+        "rejected_pattern_duration": 0,
+        "rejected_no_breakout": 0,
+        "rejected_breakout_confirm": 0,
+        "rejected_max_gap": 0,
+        "rejected_live_limit": 0,
+        "rejected_right_shoulder_high": 0,
+        "passed": 0
+    }
+
+    if len(pivots) < 6:
+        return stats
+
+    validator = PatternValidatorPipeline(df)
+    total_candles = len(df)
+    max_gap = _get_max_gap(interval)
+    max_pattern_duration = _get_max_pattern_duration(interval)
+
+    for i in range(len(pivots) - 5):
+        p = pivots[i:i + 6]
+        
+        is_bearish = [x["type"] for x in p] == ["L", "H", "L", "H", "L", "H"]
+        is_bullish = [x["type"] for x in p] == ["H", "L", "H", "L", "H", "L"]
+        
+        if not (is_bearish or is_bullish):
+            stats["rejected_pattern_structure"] += 1
+            continue
+            
+        stats["raw_candidates"] += 1
+
+        if not validator.time_filter(p):
+            stats["rejected_time_filter"] += 1
+            continue
+
+        if is_bearish:
+            l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
+            if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
+                stats["rejected_prior_trend"] += 1; continue
+            neckline_min = min(l1, l2)
+            head_height = h2 - neckline_min
+            if head_height <= 0:
+                stats["rejected_head_proportion"] += 1; continue
+            prior_trend = (pivots[i-1]["val"] - pivots[i-2]["val"]) if i >= 2 else (h1 - l0)
+            is_reversal = prior_trend >= head_height
+            is_continuation = (-prior_trend) >= head_height
+            if not ((is_reversal and CONFIG["ENABLE_REVERSAL"]) or (is_continuation and CONFIG["ENABLE_CONTINUATION"])):
+                stats["rejected_prior_trend"] += 1; continue
+            if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
+                stats["rejected_shoulder_diff"] += 1; continue
+            if (h2 - max(h1, h3)) < (head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
+                stats["rejected_head_proportion"] += 1; continue
+            if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
+                stats["rejected_neckline_diff"] += 1; continue
+            if (p[5]["pos"] - p[0]["pos"]) > max_pattern_duration:
+                stats["rejected_pattern_duration"] += 1; continue
+            
+            neckline = (l1 + l2) / 2.0
+            br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
+            if br is None:
+                stats["rejected_no_breakout"] += 1; continue
+            end_idx, end_val = br
+            if not validator.breakout_confirm_filter(True, neckline, end_val):
+                stats["rejected_breakout_confirm"] += 1; continue
+            if end_idx not in df.index: continue
+            end_pos = df.index.get_loc(end_idx)
+            if (end_pos - p[5]["pos"]) > max_gap:
+                stats["rejected_max_gap"] += 1; continue
+            if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
+                stats["rejected_live_limit"] += 1; continue
+            
+            h2_idx = p[3]["idx"]
+            if h2_idx in df.index and end_idx in df.index:
+                post_head_window = df.loc[h2_idx:end_idx]
+                if not post_head_window.empty and post_head_window["High"].max() > h3 + 1e-9:
+                    stats["rejected_right_shoulder_high"] += 1; continue
+            
+            stats["passed"] += 1
+
+        else: # Bullish (Inverse H&S)
+            h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
+            if l2 >= l1 or l2 >= l3: 
+                stats["rejected_prior_trend"] += 1; continue
+            neckline_max = max(h1, h2)
+            head_depth = neckline_max - l2
+            if head_depth <= 0:
+                stats["rejected_head_proportion"] += 1; continue
+            prior_trend = (pivots[i-1]["val"] - pivots[i-2]["val"]) if i >= 2 else (h0 - l1)
+            is_reversal = (-prior_trend) >= head_depth
+            is_continuation = prior_trend >= head_depth
+            if not ((is_reversal and CONFIG["ENABLE_REVERSAL"]) or (is_continuation and CONFIG["ENABLE_CONTINUATION"])):
+                stats["rejected_prior_trend"] += 1; continue
+            if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
+                stats["rejected_shoulder_diff"] += 1; continue
+            if (min(l1, l3) - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
+                stats["rejected_head_proportion"] += 1; continue
+            if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
+                stats["rejected_neckline_diff"] += 1; continue
+            if (p[5]["pos"] - p[0]["pos"]) > max_pattern_duration:
+                stats["rejected_pattern_duration"] += 1; continue
+            
+            neckline = (h1 + h2) / 2.0
+            br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
+            if br is None:
+                stats["rejected_no_breakout"] += 1; continue
+            end_idx, end_val = br
+            if not validator.breakout_confirm_filter(False, neckline, end_val):
+                stats["rejected_breakout_confirm"] += 1; continue
+            if end_idx not in df.index: continue
+            end_pos = df.index.get_loc(end_idx)
+            if (end_pos - p[5]["pos"]) > max_gap:
+                stats["rejected_max_gap"] += 1; continue
+            if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
+                stats["rejected_live_limit"] += 1; continue
+            
+            l2_idx = p[3]["idx"]
+            if l2_idx in df.index and end_idx in df.index:
+                post_head_window = df.loc[l2_idx:end_idx]
+                if not post_head_window.empty and post_head_window["Low"].min() < l3 - 1e-9:
+                    stats["rejected_right_shoulder_high"] += 1; continue
+            
+            stats["passed"] += 1
+
+    return stats
 
 
 if __name__ == "__main__":
