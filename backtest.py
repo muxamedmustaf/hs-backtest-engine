@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-backtest.py — H&S Analyzer (Robust Imports)
+backtest.py — H&S Analyzer (Robust Imports + Enhancements)
 """
 import calendar, datetime
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
 from data_provider import fetch_data
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ⚡ استيراد محصّن من engine
 # ══════════════════════════════════════════════════════════════════════════════
 try:
-    from engine import run_full_analysis, backtest_strategy
+    from engine import run_full_analysis, backtest_strategy, REASON_MAP
 except ImportError as e:
     st.error(f"❌ فشل استيراد الأساسيات من engine: {e}")
     st.info("تأكد أن engine.py يحتوي على: run_full_analysis، backtest_strategy")
@@ -39,30 +40,33 @@ except ImportError:
 st.set_page_config(page_title="H&S Analyzer", page_icon="📈",
                    layout="wide", initial_sidebar_state="collapsed")
 
+# زيادة العرض وتحسين القراءة والتنقل
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
-    .main .block-container { max-width: 100% !important; padding: 0.1rem !important; }
+    .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
     div[data-testid='stPlotlyChart'] { width: 100% !important; }
     iframe { width: 100% !important; }
-    html, body, [class*="css"] { direction: rtl; text-align: right; }
+    html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
     label, .stRadio label, .stTextInput label, .stSelectbox label {
-        direction: rtl; text-align: right;
+        direction: rtl; text-align: right; font-weight: 500;
     }
-    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; }
-    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; }
-    .stButton > button { direction: rtl; text-align: center; }
+    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; font-size: 14px; }
+    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; font-size: 20px; }
+    .stButton > button { direction: rtl; text-align: center; border-radius: 8px; }
     .stAlert, .stInfo, .stSuccess, .stWarning, .stError {
-        direction: rtl; text-align: right;
+        direction: rtl; text-align: right; border-radius: 8px;
     }
     .stDataFrame { direction: ltr; }
     * { transition: none !important; animation: none !important; }
     section.main > div { contain: layout style !important; }
     .stDataFrame, .stPlotlyChart { contain: content !important; }
     .stExpander, .stMetric, .stDataFrame { box-shadow: none !important; }
-    details { padding: 0.2rem !important; }
-    div[data-testid="stMetric"] { padding: 4px !important; }
+    details { padding: 0.3rem !important; }
+    div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -102,7 +106,6 @@ IC_MARKETS_SPECS = {
     "USDTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
     "USDNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
 }
-
 
 PLOTLY_CONFIG = {
     'responsive': True,
@@ -415,9 +418,9 @@ def draw_hs_pattern(fig, source, df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📊 Financial Report
+# 📊 Financial Report + Loss Analysis + Recommendations
 # ══════════════════════════════════════════════════════════════════════════════
-def render_financial_report(df, lot_size=0.01, symbol="—", period="—"):
+def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_df=None, interval="1h"):
     st.markdown("### 📊 التقرير المالي الكامل")
     if df is None or df.empty:
         st.info("ℹ️ لا توجد صفقات"); return
@@ -460,6 +463,69 @@ def render_financial_report(df, lot_size=0.01, symbol="—", period="—"):
     elif wr >= 50 and pf >= 1.2: st.success("✅ استراتيجية جيدة")
     elif wr >= 40 and pf >= 1.0: st.warning("🟡 استراتيجية مقبولة")
     else: st.error("🔴 استراتيجية ضعيفة")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🔍 تحليل الخسائر (القاسم المشترك)
+    # ═══════════════════════════════════════════════════════════════════════
+    if l > 0:
+        st.markdown("---")
+        st.markdown("### 🔍 تحليل الخسائر (القاسم المشترك)")
+        c1, c2, c3 = st.columns(3)
+        
+        # أكثر سبب للخسارة
+        if "Loss Category" in l_df.columns and not l_df["Loss Category"].dropna().empty:
+            common_cat = l_df["Loss Category"].mode().iloc[0]
+            reason_text = REASON_MAP.get(common_cat, {}).get("reason", common_cat) if REASON_MAP else common_cat
+            c1.metric("🚩 السبب الأكثر شيوعاً", reason_text)
+        else:
+            c1.metric("🚩 السبب الأكثر شيوعاً", "غير محدد")
+            
+        c2.metric("📉 متوسط الوصول للهدف", f"{l_df['Max Reach %'].mean():.1f}%")
+        c3.metric("📏 متوسط النقاط الخاسرة", f"{l_df['Pips'].mean():.1f}")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🧠 التوصيات والحلول (من محرك التشخيص)
+    # ═══════════════════════════════════════════════════════════════════════
+    if diagnose_filters is not None and raw_df is not None and not raw_df.empty:
+        st.markdown("---")
+        st.markdown("### 🧠 توصيات وحلول الثغرات المستخرجة من البيانات")
+        with st.spinner("جاري تحليل الثغرات..."):
+            try:
+                diag = diagnose_filters(raw_df, interval=interval, symbol=symbol)
+                if diag and diag.get("smart_diagnosis"):
+                    diag_smart = diag["smart_diagnosis"]
+                    st.info(f"**الحكم النهائي:** {diag_smart.get('verdict', '—')}")
+                    
+                    action_plan = diag_smart.get("action_plan", [])
+                    if action_plan:
+                        for action in action_plan:
+                            st.warning(action)
+                    
+                    # عرض تفاصيل إضافية
+                    with st.expander("📋 تفاصيل تشخيصية إضافية"):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.write("**توزيع الخسائر:**")
+                            st.json(diag_smart.get("loss_breakdown", {}))
+                        with col_b:
+                            st.write("**إحصائيات الأرباح:**")
+                            st.json(diag_smart.get("win_breakdown", {}))
+            except Exception as e:
+                st.caption(f"⚠️ تعذر تشغيل التشخيص التلقائي: {e}")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 📥 زر تنزيل البيانات
+    # ═══════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        label="📥 تنزيل بيانات الدورة (CSV)",
+        data=csv,
+        file_name=f"backtest_{symbol}_{period}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        type="primary"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -510,6 +576,14 @@ def render_advanced_risk_calculator(unique_id="main"):
     with ce: entry = st.number_input("📈 الدخول:", value=float(de), format="%.5f", key=f"{unique_id}_e_{sel}")
     with cs: sl_p  = st.number_input("🛑 SL:", value=float(ds), format="%.5f", key=f"{unique_id}_sl_{sel}")
     with ct: tp_p  = st.number_input("🏆 TP:", value=float(dt), format="%.5f", key=f"{unique_id}_tp_{sel}")
+
+    # حساب النقاط الصافية
+    try:
+        pip = pip_size_for(sel)
+        net_points = abs(float(tp_p) - float(entry)) / pip
+        st.metric("🎯 النقاط الصافية للهدف (TP)", f"{net_points:.1f} نقطة")
+    except Exception:
+        pass
 
     chk = check_risk_limit(entry, sl_p, lot, sel, capital, risk_pct)
     try:
@@ -740,121 +814,156 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         all_dfs = [i["trades_df"] for i in rl if "trades_df" in i and not i["trades_df"].empty]
         if all_dfs:
             comb = pd.concat(all_dfs, ignore_index=True)
-            with st.expander("📊 تقرير شامل", expanded=False):
+            
+            # استخدام التبويبات لتنظيم المحتوى
+            tab1, tab2, tab3 = st.tabs(["📊 التقرير المالي", "📉 الرسوم البيانية والصفقات", "🧠 التشخيص والحلول"])
+            
+            with tab1:
                 render_financial_report(comb, lot_size=lot,
                                        symbol="كل الأصول", period=pd_disp)
 
-        if bt_mode == "🎯 مجموعة" and len(rl) > 1:
-            opts = [f"{i['symbol']} | {i['total_signals']}" for i in rl]
-            ai = rl[opts.index(st.selectbox("👇 اختر:", opts))]
-        else:
-            ai = rl[0]
+            with tab2:
+                if bt_mode == "🎯 مجموعة" and len(rl) > 1:
+                    opts = [f"{i['symbol']} | {i['total_signals']}" for i in rl]
+                    ai = rl[opts.index(st.selectbox("👇 اختر:", opts))]
+                else:
+                    ai = rl[0]
 
-        sym = ai["symbol"]
-        tdf = compute_pips(ai["trades_df"])
-        tdf = compute_dollar_pnl(tdf, lot=lot)
-        st.session_state.current_symbol = sym
+                sym = ai["symbol"]
+                tdf = compute_pips(ai["trades_df"])
+                tdf = compute_dollar_pnl(tdf, lot=lot)
+                st.session_state.current_symbol = sym
 
-        if len(tdf) == 0:
-            st.warning(f"⚠️ **{sym}** — لا توجد أنماط")
-        else:
-            st.markdown(f"### 📊 {sym} — {len(tdf)} إشارة")
+                if len(tdf) == 0:
+                    st.warning(f"⚠️ **{sym}** — لا توجد أنماط")
+                else:
+                    st.markdown(f"### 📊 {sym} — {len(tdf)} إشارة")
 
-            last = tdf.iloc[-1]
-            st.session_state["active_signal_symbol"] = sym
-            st.session_state["active_signal_entry"] = last.get("Entry Price") or last.get("Entry")
-            st.session_state["active_signal_sl"] = last.get("Stop Loss") or last.get("SL")
-            st.session_state["active_signal_tp"] = last.get("Take Profit") or last.get("TP")
+                    last = tdf.iloc[-1]
+                    st.session_state["active_signal_symbol"] = sym
+                    st.session_state["active_signal_entry"] = last.get("Entry Price") or last.get("Entry")
+                    st.session_state["active_signal_sl"] = last.get("Stop Loss") or last.get("SL")
+                    st.session_state["active_signal_tp"] = last.get("Take Profit") or last.get("TP")
 
-            if st.session_state.get("_last_sym") != sym:
-                st.session_state.signal_index = len(tdf) - 1
-                st.session_state["_last_sym"] = sym
+                    if st.session_state.get("_last_sym") != sym:
+                        st.session_state.signal_index = len(tdf) - 1
+                        st.session_state["_last_sym"] = sym
 
-            si = max(0, min(st.session_state.signal_index, len(tdf) - 1))
-            n1, n2, n3, n4, n5 = st.columns([1, 1, 3, 1, 1])
-            with n1:
-                if st.button("⏮️", use_container_width=True, key="b1"): st.session_state.signal_index = 0; st.rerun()
-            with n2:
-                if st.button("◀", use_container_width=True, key="b2"): st.session_state.signal_index = max(0, si - 1); st.rerun()
-            with n3:
-                st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold'>إشارة {si+1} من {len(tdf)}</div>", unsafe_allow_html=True)
-            with n4:
-                if st.button("▶", use_container_width=True, key="b4"): st.session_state.signal_index = min(len(tdf)-1, si+1); st.rerun()
-            with n5:
-                if st.button("⏭️", use_container_width=True, key="b5"): st.session_state.signal_index = len(tdf)-1; st.rerun()
+                    si = max(0, min(st.session_state.signal_index, len(tdf) - 1))
+                    n1, n2, n3, n4, n5 = st.columns([1, 1, 3, 1, 1])
+                    with n1:
+                        if st.button("⏮️", use_container_width=True, key="b1"): st.session_state.signal_index = 0; st.rerun()
+                    with n2:
+                        if st.button("◀", use_container_width=True, key="b2"): st.session_state.signal_index = max(0, si - 1); st.rerun()
+                    with n3:
+                        st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold'>إشارة {si+1} من {len(tdf)}</div>", unsafe_allow_html=True)
+                    with n4:
+                        if st.button("▶", use_container_width=True, key="b4"): st.session_state.signal_index = min(len(tdf)-1, si+1); st.rerun()
+                    with n5:
+                        if st.button("⏭️", use_container_width=True, key="b5"): st.session_state.signal_index = len(tdf)-1; st.rerun()
 
-            cur = tdf.iloc[si]
-            ptype = cur.get("Pattern Type", "—")
-            icon = "🔄" if ptype == "Reversal" else "➡️" if ptype == "Continuation" else "📊"
-            st.markdown(f"**{icon} النوع:** {ptype}")
+                    cur = tdf.iloc[si]
+                    ptype = cur.get("Pattern Type", "—")
+                    icon = "🔄" if ptype == "Reversal" else "➡️" if ptype == "Continuation" else "📊"
+                    st.markdown(f"**{icon} النوع:** {ptype}")
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🎯 الدخول", f"{cur.get('Entry Price', '—')}")
-            m2.metric("🛑 SL", f"{cur.get('Stop Loss', '—')}")
-            m3.metric("🏆 TP", f"{cur.get('Take Profit', '—')}")
-            m4.metric("📊 النتيجة", f"{cur.get('Result', '—')}")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("🎯 الدخول", f"{cur.get('Entry Price', '—')}")
+                    m2.metric("🛑 SL", f"{cur.get('Stop Loss', '—')}")
+                    m3.metric("🏆 TP", f"{cur.get('Take Profit', '—')}")
+                    m4.metric("📊 النتيجة", f"{cur.get('Result', '—')}")
 
-            if cur.get("Trade Recommendation"):
-                st.info(cur["Trade Recommendation"])
+                    if cur.get("Trade Recommendation"):
+                        st.info(cur["Trade Recommendation"])
 
-            if sym in dfs_dict and not dfs_dict[sym].empty:
-                df_chart = dfs_dict[sym].copy()
-                df_chart["EMA50"] = df_chart["Close"].ewm(span=50, adjust=False).mean()
-                df_chart["EMA200"] = df_chart["Close"].ewm(span=200, adjust=False).mean()
+                    if sym in dfs_dict and not dfs_dict[sym].empty:
+                        df_chart = dfs_dict[sym].copy()
+                        df_chart["EMA50"] = df_chart["Close"].ewm(span=50, adjust=False).mean()
+                        df_chart["EMA200"] = df_chart["Close"].ewm(span=200, adjust=False).mean()
 
-                fig = go.Figure(data=[go.Candlestick(
-                    x=df_chart.index,
-                    open=df_chart["Open"], high=df_chart["High"],
-                    low=df_chart["Low"], close=df_chart["Close"],
-                    name="السعر")])
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA50"],
-                    line=dict(color="orange", width=1.2), name="EMA 50"))
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA200"],
-                    line=dict(color="blue", width=1.2), name="EMA 200"))
+                        fig = go.Figure(data=[go.Candlestick(
+                            x=df_chart.index,
+                            open=df_chart["Open"], high=df_chart["High"],
+                            low=df_chart["Low"], close=df_chart["Close"],
+                            name="السعر")])
+                        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA50"],
+                            line=dict(color="orange", width=1.2), name="EMA 50"))
+                        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA200"],
+                            line=dict(color="blue", width=1.2), name="EMA 200"))
 
-                draw_hs_pattern(fig, cur, df_chart)
+                        draw_hs_pattern(fig, cur, df_chart)
 
-                x_range = None
-                nodes = cur.get("nodes", [])
-                if nodes and len(nodes) >= 6:
-                    try:
-                        ps = nodes[0][0]; pe = nodes[-1][0]
-                        span = pe - ps
-                        xmin = ps - span * 1.0
-                        xmax = pe + span * 1.5
-                        if xmin < df_chart.index[0]: xmin = df_chart.index[0]
-                        if xmax > df_chart.index[-1]: xmax = df_chart.index[-1]
-                        x_range = [xmin, xmax]
-                    except Exception:
                         x_range = None
+                        nodes = cur.get("nodes", [])
+                        if nodes and len(nodes) >= 6:
+                            try:
+                                ps = nodes[0][0]; pe = nodes[-1][0]
+                                span = pe - ps
+                                xmin = ps - span * 1.0
+                                xmax = pe + span * 1.5
+                                if xmin < df_chart.index[0]: xmin = df_chart.index[0]
+                                if xmax > df_chart.index[-1]: xmax = df_chart.index[-1]
+                                x_range = [xmin, xmax]
+                            except Exception:
+                                x_range = None
 
-                fig.update_layout(
-                    template="plotly_white", height=850, autosize=True,
-                    margin=dict(l=50, r=15, t=40, b=50),
-                    xaxis_rangeslider_visible=False, dragmode="pan",
-                    hovermode="x unified",
-                    yaxis=dict(side="left", automargin=True,
-                               tickfont=dict(size=11, color="#333"),
-                               showgrid=True, gridcolor="#EEEEEE", zeroline=False),
-                    xaxis=dict(automargin=True, tickfont=dict(size=10),
-                               showgrid=True, gridcolor="#F5F5F5",
-                               rangeslider=dict(visible=False),
-                               fixedrange=False, range=x_range),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                xanchor="center", x=0.5,
-                                bgcolor="rgba(255,255,255,0.9)",
-                                bordercolor="#DDDDDD", borderwidth=1),
-                )
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                        fig.update_layout(
+                            template="plotly_white", height=850, autosize=True,
+                            margin=dict(l=50, r=15, t=40, b=50),
+                            xaxis_rangeslider_visible=False, dragmode="pan",
+                            hovermode="x unified",
+                            yaxis=dict(side="left", automargin=True,
+                                       tickfont=dict(size=11, color="#333"),
+                                       showgrid=True, gridcolor="#EEEEEE", zeroline=False),
+                            xaxis=dict(automargin=True, tickfont=dict(size=10),
+                                       showgrid=True, gridcolor="#F5F5F5",
+                                       rangeslider=dict(visible=False),
+                                       fixedrange=False, range=x_range),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                        xanchor="center", x=0.5,
+                                        bgcolor="rgba(255,255,255,0.9)",
+                                        bordercolor="#DDDDDD", borderwidth=1),
+                        )
+                        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-            with st.expander("📋 التفاصيل", expanded=False):
-                for col in ["Entry Date", "Exit Date", "Bias", "Pattern Type",
-                            "Result", "Entry Price", "Stop Loss", "Take Profit",
-                            "Structural SL", "Safe SL", "TP Factor Used",
-                            "Max Reach %", "Max Extension %", "SL Safety %",
-                            "Breakeven Activated", "Trailing Stage", "Loss Category"]:
-                    if col in cur:
-                        st.text(f"{col}: {cur[col]}")
+                    with st.expander("📋 التفاصيل", expanded=False):
+                        for col in ["Entry Date", "Exit Date", "Bias", "Pattern Type",
+                                    "Result", "Entry Price", "Stop Loss", "Take Profit",
+                                    "Structural SL", "Safe SL", "TP Factor Used",
+                                    "Max Reach %", "Max Extension %", "SL Safety %",
+                                    "Breakeven Activated", "Trailing Stage", "Loss Category"]:
+                            if col in cur:
+                                st.text(f"{col}: {cur[col]}")
+
+            with tab3:
+                st.markdown("### 🧠 تشخيص الإستراتيجية")
+                if st.session_state.backtest_dfs:
+                    sym_diag = st.selectbox("اختر الأصل للتشخيص:", list(st.session_state.backtest_dfs.keys()))
+                    if sym_diag:
+                        raw_d = st.session_state.backtest_dfs[sym_diag]
+                        if diagnose_filters:
+                            with st.spinner("جاري تحليل الثغرات..."):
+                                diag = diagnose_filters(raw_d, interval=interval, symbol=sym_diag)
+                                if diag and diag.get("smart_diagnosis"):
+                                    diag_smart = diag["smart_diagnosis"]
+                                    st.info(f"**الحكم النهائي:** {diag_smart.get('verdict', '—')}")
+                                    action_plan = diag_smart.get("action_plan", [])
+                                    if action_plan:
+                                        for action in action_plan:
+                                            st.warning(action)
+                                    
+                                    with st.expander("📋 تفاصيل تشخيصية إضافية"):
+                                        col_a, col_b = st.columns(2)
+                                        with col_a:
+                                            st.write("**توزيع الخسائر:**")
+                                            st.json(diag_smart.get("loss_breakdown", {}))
+                                        with col_b:
+                                            st.write("**إحصائيات الأرباح:**")
+                                            st.json(diag_smart.get("win_breakdown", {}))
+                                else:
+                                    st.info("لا توجد بيانات كافية للتشخيص.")
+                        else:
+                            st.warning("⚠️ محرك التشخيص (diagnose_filters) غير متوفر.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
