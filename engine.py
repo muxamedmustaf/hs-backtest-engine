@@ -4,7 +4,7 @@ ENGINE.PY — H&S Detector (Neckline + Live Candles Limit Only)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
 - [تحديث]: تم إلغاء جميع الشروط الفنية باستثناء شروط خط العنق وفلتر حد الشموع الحية
-- [تحديث]: تم إلغاء شرط الاتجاه السابق وفلتر الكتف الأيمن
+- [تحديث]: تم إصلاح خطأ KeyError بإعادة إضافة VOLUME_MA_PERIOD
 - وقف آمن 15% + TP = 1× الرأس + Trailing بوحدات الرأس
 - قياس الامتداد الكامل
 """
@@ -18,6 +18,7 @@ CONFIG = {
     "NECKLINE_DIFF_MAX_RATIO": 0.25,      # الشرط الأول: شروط خط العنق
     "LIVE_MAX_BREAKOUT_CANDLES": 15,      # الشرط الثاني: فلتر حد الشموع الحية
     "BREAKOUT_MIN_PCT": 0.0001,
+    "VOLUME_MA_PERIOD": 20,               # تمت إعادة إضافته لحل مشكلة KeyError
     "TP_REACH_FACTOR": 1.0,               # الهدف = 1× طول الرأس فقط
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
@@ -106,7 +107,9 @@ def calculate_indicators(df):
     if "Volume" in df.columns:
         v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
         df["Volume"] = v
-        df["Volume_MA"] = v.rolling(CONFIG["VOLUME_MA_PERIOD"]).mean().fillna(0.0)
+        # استخدام .get() لتجنب أي KeyError مستقبلي
+        vol_period = CONFIG.get("VOLUME_MA_PERIOD", 20)
+        df["Volume_MA"] = v.rolling(vol_period).mean().fillna(0.0)
     else:
         df["Volume"] = 0.0
         df["Volume_MA"] = 0.0
@@ -810,7 +813,7 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
         "rejected_pattern_structure": 0,
         "rejected_neckline_diff": 0,
         "rejected_no_breakout": 0,
-        "rejected_live_limit": 0,  # تمت إعادته
+        "rejected_live_limit": 0,
         "passed": 0
     }
 
@@ -818,7 +821,7 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
         return stats
 
     validator = PatternValidatorPipeline(df)
-    total_candles = len(df)  # ضروري لحساب فلتر الشموع الحية
+    total_candles = len(df)
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
