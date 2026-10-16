@@ -8,18 +8,19 @@ ENGINE.PY — H&S Detector (Reversal + Continuation)
 - قياس الامتداد الكامل
 - [تحديث]: فلتر الكتف الأيمن (يجب أن يكون أعلى/أدنى نقطة بعد الرأس مباشرة)
 - [تحديث]: دالة diagnose_no_signals لتشخيص أسباب عدم وجود إشارات
+- [تحديث]: تعديل الإعدادات لتكون أكثر مرونة (بناءً على تحليل الفلاتر)
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
-    "ZIGZAG_DEPTH": 12,
-    "ZIGZAG_BACKSTEP": 5,
-    "MIN_WAVE_CANDLES": 5,
-    "SHOULDER_DIFF_MAX_RATIO": 0.35,
-    "HEAD_PROPORTION_MIN_RATIO": 0.15,
-    "NECKLINE_DIFF_MAX_RATIO": 0.10,
-    "LIVE_MAX_BREAKOUT_CANDLES": 10,
+    "ZIGZAG_DEPTH": 10,               # تم التعديل من 12 إلى 10
+    "ZIGZAG_BACKSTEP": 4,             # تم التعديل من 5 إلى 4
+    "MIN_WAVE_CANDLES": 4,            # تم التعديل من 5 إلى 4
+    "SHOULDER_DIFF_MAX_RATIO": 0.50,  # تم التعديل من 0.35 إلى 0.50
+    "HEAD_PROPORTION_MIN_RATIO": 0.10,# تم التعديل من 0.15 إلى 0.10
+    "NECKLINE_DIFF_MAX_RATIO": 0.25,  # تم التعديل من 0.10 إلى 0.25
+    "LIVE_MAX_BREAKOUT_CANDLES": 15,  # تم التعديل من 10 إلى 15
     "BREAKOUT_MIN_PCT": 0.0001,
     "REQUIRE_VOLUME_BREAKOUT": False,
     "VOLUME_FACTOR": 1.2,
@@ -60,8 +61,9 @@ def _get_max_gap(interval):
 
 
 def _get_max_pattern_duration(interval):
-    return {"1m": 600, "5m": 200, "15m": 150, "30m": 120, "1h": 100,
-            "4h": 80, "1d": 60, "1wk": 30}.get(interval, 200)
+    # تم زيادة القيم لتقليل رفض النماذج بسبب المدة
+    return {"1m": 800, "5m": 300, "15m": 200, "30m": 180, "1h": 150,
+            "4h": 120, "1d": 90, "1wk": 60}.get(interval, 250)
 
 
 def compute_safe_sl_and_tp(bias, entry, structural_sl, head_size):
@@ -119,7 +121,7 @@ def calculate_indicators(df):
     return df
 
 
-def calculate_zigzag(df, depth=12, backstep=6):
+def calculate_zigzag(df, depth=10, backstep=4):
     df = df.copy()
     df["Pivot_H"] = np.nan
     df["Pivot_L"] = np.nan
