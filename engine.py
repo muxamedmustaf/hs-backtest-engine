@@ -4,9 +4,9 @@ ENGINE.PY — H&S Detector (Neckline + Live Candles Limit Only)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
 - [تحديث]: تم إلغاء جميع الشروط الفنية باستثناء شروط خط العنق وفلتر حد الشموع الحية
+- [تحديث]: إضافة نظام Trailing Stop تدريجي مبني على تحليل بيانات Backtest
 - [تحديث]: تم إصلاح خطأ KeyError بإعادة إضافة VOLUME_MA_PERIOD
-- وقف آمن 15% + TP = 1× الرأس + Trailing بوحدات الرأس
-- قياس الامتداد الكامل
+- وقف آمن 15% + TP = 1× الرأس
 """
 import pandas as pd
 import numpy as np
@@ -18,15 +18,19 @@ CONFIG = {
     "NECKLINE_DIFF_MAX_RATIO": 0.25,      # الشرط الأول: شروط خط العنق
     "LIVE_MAX_BREAKOUT_CANDLES": 15,      # الشرط الثاني: فلتر حد الشموع الحية
     "BREAKOUT_MIN_PCT": 0.0001,
-    "VOLUME_MA_PERIOD": 20,               # تمت إعادة إضافته لحل مشكلة KeyError
-    "TP_REACH_FACTOR": 1.0,               # الهدف = 1× طول الرأس فقط
+    "VOLUME_MA_PERIOD": 20,
+    "TP_REACH_FACTOR": 1.0,               # الهدف = 1× طول الرأس
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🎯 مستويات Trailing Stop الجديدة (مبنية على تحليل البيانات)
+    # ═══════════════════════════════════════════════════════════════════════
+    # (العتبة كنسبة من الرأس، الربح المؤمّن كنسبة من الرأس)
     "TRAILING_LEVELS_HEAD": [
-        (1.00, 0.00),
-        (1.40, 0.60),
-        (1.70, 1.00),
-        (1.90, 1.50),
+        (0.30, 0.00),   # عند 30% ربح → نقل SL إلى نقطة التعادل
+        (0.50, 0.25),   # عند 50% ربح → تأمين 25% من الرأس
+        (0.70, 0.45),   # عند 70% ربح → تأمين 45% من الرأس
+        (0.85, 0.65),   # عند 85% ربح → تأمين 65% من الرأس
     ],
     "MEASURE_FULL_EXTENSION": True,
     "ENABLE_REVERSAL": True,
@@ -107,7 +111,6 @@ def calculate_indicators(df):
     if "Volume" in df.columns:
         v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
         df["Volume"] = v
-        # استخدام .get() لتجنب أي KeyError مستقبلي
         vol_period = CONFIG.get("VOLUME_MA_PERIOD", 20)
         df["Volume_MA"] = v.rolling(vol_period).mean().fillna(0.0)
     else:
@@ -265,6 +268,9 @@ def simulate_trade_outcome(pattern, df):
             if candle_count >= TIMEOUT_CANDLES: break
             continue
 
+        # ═══════════════════════════════════════════════════════════════════
+        # 🎯 Trailing Stop Logic (محدّث)
+        # ═══════════════════════════════════════════════════════════════════
         for stage_idx, (th, ph) in enumerate(TRAILING):
             if stage_idx < trailing_stage: continue
             if progress_head < th: break
@@ -375,7 +381,7 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
     patterns = []
     if len(pivots) < 6: return patterns
     validator = PatternValidatorPipeline(df)
-    total_candles = len(df)  # ضروري لحساب فلتر الشموع الحية
+    total_candles = len(df)
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -383,7 +389,6 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
             continue
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
         
-        # شروط المنطق الأساسي للنموذج
         if h1 <= l0 or l1 <= l0: continue
         if h2 <= h1 or h2 <= h3: continue
         
@@ -443,7 +448,7 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
     patterns = []
     if len(pivots) < 6: return patterns
     validator = PatternValidatorPipeline(df)
-    total_candles = len(df)  # ضروري لحساب فلتر الشموع الحية
+    total_candles = len(df)
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -451,7 +456,6 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
             continue
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
         
-        # شروط المنطق الأساسي للنموذج
         if l2 >= l1 or l2 >= l3: continue
         
         neckline_max = max(h1, h2)
