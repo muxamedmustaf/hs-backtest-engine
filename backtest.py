@@ -13,7 +13,7 @@ from data_provider import fetch_data
 # ⚡ استيراد محصّن من engine
 # ══════════════════════════════════════════════════════════════════════════════
 try:
-    from engine import run_full_analysis, backtest_strategy, REASON_MAP
+    from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals
 except ImportError as e:
     st.error(f"❌ فشل استيراد الأساسيات من engine: {e}")
     st.info("تأكد أن engine.py يحتوي على: run_full_analysis، backtest_strategy")
@@ -418,7 +418,7 @@ def draw_hs_pattern(fig, source, df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📊 Financial Report + Loss Analysis + Recommendations
+# 📊 Financial Report + Loss Analysis + Recommendations + Download
 # ══════════════════════════════════════════════════════════════════════════════
 def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_df=None, interval="1h"):
     st.markdown("### 📊 التقرير المالي الكامل")
@@ -472,7 +472,6 @@ def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_d
         st.markdown("### 🔍 تحليل الخسائر (القاسم المشترك)")
         c1, c2, c3 = st.columns(3)
         
-        # أكثر سبب للخسارة
         if "Loss Category" in l_df.columns and not l_df["Loss Category"].dropna().empty:
             common_cat = l_df["Loss Category"].mode().iloc[0]
             reason_text = REASON_MAP.get(common_cat, {}).get("reason", common_cat) if REASON_MAP else common_cat
@@ -501,7 +500,6 @@ def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_d
                         for action in action_plan:
                             st.warning(action)
                     
-                    # عرض تفاصيل إضافية
                     with st.expander("📋 تفاصيل تشخيصية إضافية"):
                         col_a, col_b = st.columns(2)
                         with col_a:
@@ -790,11 +788,22 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 df, trades = _cached_backtest(fix_symbol(sym), interval, sd, ed)
                 if df is None or df.empty:
                     errs.append(f"⚠️ {sym}: لا توجد بيانات"); continue
+                
+                # حفظ البيانات دائماً حتى لو لم توجد صفقات
+                dfs[sym] = df
+                
                 if trades:
                     tdf = pd.DataFrame(trades)
                     if "symbol" not in tdf.columns: tdf["symbol"] = sym
                     results.append({"symbol": sym, "trades_df": tdf, "total_signals": len(tdf)})
-                    dfs[sym] = df
+                else:
+                    # إذا لم توجد صفقات، نضيف إدخالاً فارغاً مع علامة تشخيص
+                    results.append({
+                        "symbol": sym, 
+                        "trades_df": pd.DataFrame(), 
+                        "total_signals": 0,
+                        "no_signal_reason": "لم يتم العثور على أنماط مطابقة للفلاتر."
+                    })
             except Exception as e:
                 errs.append(f"❌ {sym}: {e}")
         txt.empty(); bar.empty()
@@ -810,6 +819,75 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         rl = st.session_state.backtest_scanned_signals
         dfs_dict = st.session_state.backtest_dfs
         pd_disp = st.session_state.get("backtest_period", "غير محدد")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # 🔍 قسم التشخيص: لماذا لم توجد إشارات؟
+        # ═══════════════════════════════════════════════════════════════════
+        no_signal_symbols = [r for r in rl if r.get("total_signals", 0) == 0]
+        if no_signal_symbols:
+            with st.expander("🔍 **تحليل: لماذا لم يتم العثور على إشارات؟**", expanded=True):
+                st.warning(f"تم فحص {len(no_signal_symbols)} أصل/أصول ولم يتم العثور على أي إشارة. إليك الأسباب المحتملة:")
+                
+                diag_sym = st.selectbox("اختر أصلاً لتحليل سبب عدم وجود إشارات:", [r["symbol"] for r in no_signal_symbols], key="diag_no_sig")
+                if diag_sym and diag_sym in dfs_dict:
+                    raw_d = dfs_dict[diag_sym]
+                    if diagnose_no_signals is not None:
+                        stats = diagnose_no_signals(raw_d, interval=interval)
+                        if "error" in stats:
+                            st.error(stats["error"])
+                        else:
+                            st.markdown(f"**نتائج تحليل الفلاتر لـ {diag_sym}:**")
+                            
+                            # عرض إحصائيات القمع (Funnel)
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("إجمالي نقاط الـ Pivot", stats["total_pivots"])
+                            c2.metric("نماذج أولية (6 نقاط)", stats["raw_candidates"])
+                            c3.metric("نماذج مرت من الفلاتر", stats["passed"])
+                            
+                            st.markdown("#### 📊 تفصيل أسباب الرفض (Funnel):")
+                            reasons = {
+                                "rejected_pattern_structure": "هيكل النموذج غير مطابق (L-H-L-H-L-H)",
+                                "rejected_time_filter": "الوقت بين القمم/القيعان أقل من الحد الأدنى",
+                                "rejected_prior_trend": "الاتجاه السابق لا يتوافق مع النموذج (انعكاس/استمرار)",
+                                "rejected_shoulder_diff": "الفرق بين الكتفين أكبر من المسموح",
+                                "rejected_head_proportion": "الرأس ليس بارزاً بما فيه الكفاية",
+                                "rejected_neckline_diff": "خط العنق غير مستوٍ",
+                                "rejected_pattern_duration": "مدة النموذج أطول من الحد الأقصى",
+                                "rejected_no_breakout": "لم يحدث اختراق لخط العنق",
+                                "rejected_breakout_confirm": "الاختراق لم يتأكد بنسبة كافية",
+                                "rejected_max_gap": "المسافة بين الكتف والاختراق كبيرة جداً",
+                                "rejected_live_limit": "الاختراق قديم جداً (تجاوز 10 شموع)",
+                                "rejected_right_shoulder_high": "الكتف الأيمن ليس أعلى نقطة بعد الرأس",
+                            }
+                            
+                            chart_data = []
+                            for k, v in stats.items():
+                                if k.startswith("rejected_") and v > 0:
+                                    chart_data.append({"السبب": reasons.get(k, k), "العدد": v})
+                            
+                            if chart_data:
+                                st.dataframe(pd.DataFrame(chart_data).sort_values("العدد", ascending=False), use_container_width=True)
+                                
+                                # التوصيات المقترحة
+                                st.markdown("#### 💡 توصيات لتحسين الإعدادات بناءً على البيانات:")
+                                top_reason = max(chart_data, key=lambda x: x["العدد"])["السبب"]
+                                
+                                if "الفرق بين الكتفين" in top_reason:
+                                    st.info(f"🔧 **الحل:** قم بزيادة `SHOULDER_DIFF_MAX_RATIO` في `engine.py` (القيمة الحالية: 0.35) إلى 0.50 مثلاً.")
+                                elif "الرأس ليس بارزاً" in top_reason:
+                                    st.info(f"🔧 **الحل:** قم بتقليل `HEAD_PROPORTION_MIN_RATIO` (القيمة الحالية: 0.15) إلى 0.10.")
+                                elif "هيكل النموذج" in top_reason:
+                                    st.info(f"🔧 **الحل:** قم بتقليل `ZIGZAG_DEPTH` (القيمة الحالية: 12) إلى 8 أو 10 لالتقاط المزيد من القمم/القيعان، أو تقليل `MIN_WAVE_CANDLES`.")
+                                elif "لم يحدث اختراق" in top_reason:
+                                    st.info(f"🔧 **الحل:** تأكد من أن السعر قد اخترق خط العنق فعلياً خلال الفترة المحددة. قد تحتاج إلى توسيع نطاق التاريخ.")
+                                elif "الكتف الأيمن" in top_reason:
+                                    st.info(f"🔧 **الحل:** هذا الفلتر الجديد يمنع النماذج التي يتجاوز فيها السعر الكتف الأيمن بعد الرأس مباشرة. قد تحتاج إلى تعطيله إذا كانت البيانات غير منتظمة.")
+                                else:
+                                    st.info(f"🔧 **الحل:** قم بمراجعة الإعدادات في `CONFIG` أو قم بتوسيع نطاق التاريخ.")
+                            else:
+                                st.success("✅ لم يتم رفض أي نموذج بسبب الفلاتر، ولكن ربما لا توجد بيانات كافية لتكوين نماذج في هذه الفترة.")
+                    else:
+                        st.warning("⚠️ دالة التشخيص غير متوفرة في `engine.py`.")
 
         all_dfs = [i["trades_df"] for i in rl if "trades_df" in i and not i["trades_df"].empty]
         if all_dfs:
