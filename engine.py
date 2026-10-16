@@ -14,8 +14,8 @@ import numpy as np
 
 CONFIG = {
     "ZIGZAG_DEPTH": 8,               # تم التعديل من 12 إلى 8
-    "ZIGZAG_BACKSTEP": 4,             # تم التعديل من 5 إلى 4
-    "MIN_WAVE_CANDLES": 4,            # تم التعديل من 5 إلى 4
+    "ZIGZAG_BACKSTEP": 3,             # تم التعديل من 5 إلى 4
+    "MIN_WAVE_CANDLES": 2,            # تم التعديل من 5 إلى 4
     "SHOULDER_DIFF_MAX_RATIO": 0.50,  # تم التعديل من 0.35 إلى 0.50
     "HEAD_PROPORTION_MIN_RATIO": 0.10,# تم التعديل من 0.15 إلى 0.10
     "NECKLINE_DIFF_MAX_RATIO": 0.25,  # تم التعديل من 0.10 إلى 0.25
