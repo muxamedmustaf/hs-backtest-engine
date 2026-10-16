@@ -1,780 +1,1183 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — H&S Detector (Neckline + Live Candles Limit Only)
+backtest.py — H&S Analyzer (Ultra Fast Navigation)
 """
+import calendar, datetime
+import streamlit as st
+import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
+from data_provider import fetch_data
 
-CONFIG = {
-    "ZIGZAG_DEPTH": 10,
-    "ZIGZAG_BACKSTEP": 4,
-    "MIN_WAVE_CANDLES": 4,
-    "NECKLINE_DIFF_MAX_RATIO": 0.25,
-    "LIVE_MAX_BREAKOUT_CANDLES": 15,
-    "BREAKOUT_MIN_PCT": 0.0001,
-    "VOLUME_MA_PERIOD": 20,
-    "TP_REACH_FACTOR": 1.0,
-    "USE_SAFE_SL": True,
-    "SAFE_SL_MARGIN": 0.15,
-    "TRAILING_LEVELS_HEAD": [
-        (0.30, 0.00),
-        (0.50, 0.25),
-        (0.70, 0.45),
-        (0.85, 0.65),
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚡ استيراد محصّن من engine
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals
+except ImportError as e:
+    st.error(f"❌ فشل استيراد الأساسيات من engine: {e}")
+    st.info("تأكد أن engine.py يحتوي على: run_full_analysis، backtest_strategy")
+    st.stop()
+
+try:
+    from engine import diagnose_filters
+except ImportError:
+    diagnose_filters = None
+
+try:
+    from engine import CONFIG as ENGINE_CONFIG
+except ImportError:
+    ENGINE_CONFIG = {}
+
+try:
+    from ffff import get_symbols_from_sheet
+except ImportError:
+    def get_symbols_from_sheet(*args, **kwargs):
+        return [["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "NZDUSD=X",
+                 "USDCAD=X", "USDCHF=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X"]]
+
+
+st.set_page_config(page_title="H&S Analyzer", page_icon="📈",
+                   layout="wide", initial_sidebar_state="collapsed")
+
+st.markdown("""
+<head><meta charset="UTF-8"></head>
+<style>
+    .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
+    div[data-testid='stPlotlyChart'] { width: 100% !important; }
+    iframe { width: 100% !important; }
+    html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
+    h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
+    label, .stRadio label, .stTextInput label, .stSelectbox label {
+        direction: rtl; text-align: right; font-weight: 500;
+    }
+    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; font-size: 14px; }
+    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; font-size: 20px; }
+    .stButton > button { direction: rtl; text-align: center; border-radius: 8px; }
+    .stAlert, .stInfo, .stSuccess, .stWarning, .stError {
+        direction: rtl; text-align: right; border-radius: 8px;
+    }
+    .stDataFrame { direction: ltr; }
+    * { transition: none !important; animation: none !important; }
+    section.main > div { contain: layout style !important; }
+    .stDataFrame, .stPlotlyChart { contain: content !important; }
+    .stExpander, .stMetric, .stDataFrame { box-shadow: none !important; }
+    details { padding: 0.3rem !important; }
+    div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Constants
+# ══════════════════════════════════════════════════════════════════════════════
+SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
+DEFAULT_SHEET_NAME = "GOLD"
+DEFAULT_COL_NAME = "TOKENS"
+
+ALL_GLOBAL_INTERVALS = [
+    "1m", "2m", "3m", "4m", "5m", "10m", "15m", "30m", "45m",
+    "1h", "2h", "3h", "4h", "6h", "8h", "12h",
+    "1d", "2d", "3d", "1wk", "1mo", "3mo", "6mo", "1y"
+]
+
+IC_MARKETS_SPECS = {
+    "BTC-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "ETH-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 JPY"},
+    "USDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "AUDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "NZDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "EURGBP=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "GBPJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "AUDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "NZDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "CADJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "CHFJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "NZDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "USDTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "USDNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
+}
+
+PLOTLY_CONFIG = {
+    'responsive': True,
+    'scrollZoom': True,
+    'displaylogo': False,
+    'displayModeBar': True,
+    'modeBarButtonsToRemove': [
+        'sendDataToCloud', 'lasso2d', 'select2d',
+        'autoScale2d', 'hoverClosestCartesian', 'hoverCompareCartesian',
+        'toggleSpikelines',
     ],
-    "MEASURE_FULL_EXTENSION": True,
-    "ENABLE_REVERSAL": True,
-    "ENABLE_CONTINUATION": True,
-}
-
-TIMEOUT_STATISTICAL_FLOOR = 200
-TIMEOUT_DURATION_MULTIPLIER = 3
-
-REASON_MAP = {
-    "immediate_rejection": {"reason": "السعر رفض خط العنق فورًا.", "action": "انتظر إعادة اختبار.", "prevention": "لا تدخل بأول لمسة."},
-    "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
-    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي 50%.", "prevention": "TP جزئي."},
-    "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing 30%.", "prevention": "راقب الأخبار."},
-    "timeout": {"reason": "انتهت المدة دون TP/SL.", "action": "أغلق يدويًا.", "prevention": "فلتر ADX."},
-    "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
-    "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
-    "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
-    "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
+    'toImageButtonOptions': {
+        'format': 'png', 'filename': 'hs_chart',
+        'height': 900, 'width': 1600, 'scale': 2,
+    },
+    'doubleClick': 'reset+autosize',
+    'showTips': False,
 }
 
 
-def _get_max_gap(interval):
-    return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
-            "4h": 15, "1d": 10, "1wk": 5}.get(interval, 50)
+# ══════════════════════════════════════════════════════════════════════════════
+# Helpers
+# ══════════════════════════════════════════════════════════════════════════════
+def fix_symbol(sym):
+    sym = str(sym).strip().upper()
+    if sym in ("XAUUSD", "XAUUSD=X", "GOLD"): return "GC=F"
+    if sym in ("XAGUSD", "XAGUSD=X", "SILVER"): return "SI=F"
+    if sym == "GBPADY=X": return "GBPNZD=X"
+    if len(sym) == 6 and sym.isalpha(): return f"{sym}=X"
+    return sym
 
 
-def _get_max_pattern_duration(interval):
-    return {"1m": 800, "5m": 300, "15m": 200, "30m": 180, "1h": 150,
-            "4h": 120, "1d": 90, "1wk": 60}.get(interval, 250)
+def pip_size_for(symbol):
+    s = str(symbol).upper()
+    for key, spec in IC_MARKETS_SPECS.items():
+        if key.upper() == s: return spec["pip"]
+    if "XAU" in s or "GOLD" in s: return 0.1
+    if "XAG" in s or "SILVER" in s: return 0.01
+    if any(x in s for x in ("BTC", "ETH")): return 1.0
+    if any(x in s for x in ("US30", "NAS", "SPX")): return 1.0
+    if "JPY" in s: return 0.01
+    if any(c in s for c in ("TRY","NOK","SEK","DKK","HKD","SGD","THB")):
+        return 0.01
+    return 0.0001
 
 
-def compute_safe_sl_and_tp(bias, entry, structural_sl, head_size):
-    structural_risk = abs(entry - structural_sl)
-    if bias == "Bullish":
-        safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
-    else:
-        safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
-    final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
-    target = head_size * CONFIG["TP_REACH_FACTOR"]
-    tp = entry + target if bias == "Bullish" else entry - target
-    return final_sl, tp, safe_sl, structural_sl
+def get_default_lot_for_symbol(symbol):
+    s = str(symbol).upper()
+    for key, spec in IC_MARKETS_SPECS.items():
+        if key.upper() == s: return spec["min_lot"]
+    return 0.01
 
 
-def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size, pattern_name):
-    risk = abs(entry - sl)
-    reward = abs(tp - entry)
-    rr = round(reward / risk, 2) if risk > 0 else 0.0
-    factor = CONFIG["TP_REACH_FACTOR"]
-    margin = round(CONFIG["SAFE_SL_MARGIN"] * 100, 0)
-    if bias == "Bullish":
-        return (
-            f"🟢 {pattern_name}:\n"
-            f"- الدخول: اختراق ({entry}).\n"
-            f"- SL: ({round(sl, 5)}) = القاع ({round(structural_sl, 5)}) + {margin}%.\n"
-            f"- TP: ({round(tp, 5)}) = {factor}× الرأس.\n"
-            f"- R:R = 1 : {rr}."
-        )
-    else:
-        return (
-            f"🔴 {pattern_name}:\n"
-            f"- الدخول: كسر ({entry}).\n"
-            f"- SL: ({round(sl, 5)}) = القمة ({round(structural_sl, 5)}) + {margin}%.\n"
-            f"- TP: ({round(tp, 5)}) = {factor}× الرأس.\n"
-            f"- R:R = 1 : {rr}."
-        )
+def get_available_symbols():
+    s = set(IC_MARKETS_SPECS.keys())
+    try:
+        for x in get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]:
+            s.add(str(x).strip())
+    except Exception:
+        pass
+    return sorted(s)
 
 
-def calculate_indicators(df):
+def get_last_known_price(symbol):
+    dfs = st.session_state.get("backtest_dfs", {})
+    df = dfs.get(symbol)
+    if df is not None and not df.empty:
+        try: return float(df["Close"].iloc[-1])
+        except Exception: pass
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚡ Cached fetch
+# ══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_fetch(symbol, interval, start_date=None, end_date=None, period=None):
+    try:
+        if start_date and end_date:
+            return fetch_data(symbol, interval=interval,
+                              start_date=start_date, end_date=end_date, cache_hours=1)
+        return fetch_data(symbol, interval=interval, period=period, cache_hours=1)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_backtest(symbol, interval, start_date, end_date):
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is None or df.empty: return None, None
+    try:
+        trades = backtest_strategy(df, interval=interval, symbol=symbol)
+    except Exception:
+        return df, None
+    return df, trades
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_live(symbol, interval, period):
+    df = _cached_fetch(symbol, interval, None, None, period)
+    if df is None or df.empty: return None, None
+    try:
+        res = run_full_analysis(df, interval=interval, symbol=symbol)
+    except Exception:
+        return df, None
+    return df, res
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚀 الدالة السحرية: تخزين بيانات الشارت مع EMA محسوبة مسبقاً
+# ══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def _prepare_chart_data(symbol, interval, start_date, end_date):
+    """تُحسب مرة واحدة فقط لكل عملة، ثم تُخزن مؤقتاً"""
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is None or df.empty: return None
     df = df.copy()
-    hl = df["High"] - df["Low"]
-    hc = np.abs(df["High"] - df["Close"].shift())
-    lc = np.abs(df["Low"] - df["Close"].shift())
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
-    df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
-    df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
-    if "Volume" in df.columns:
-        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
-        df["Volume"] = v
-        vol_period = CONFIG.get("VOLUME_MA_PERIOD", 20)
-        df["Volume_MA"] = v.rolling(vol_period).mean().fillna(0.0)
-    else:
-        df["Volume"] = 0.0
-        df["Volume_MA"] = 0.0
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
     return df
 
 
-def calculate_zigzag(df, depth=10, backstep=4):
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚀 Caching for Diagnostics
+# ══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_diagnose_no_signals(symbol, interval, start_date, end_date):
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is not None and not df.empty:
+        return diagnose_no_signals(df, interval=interval)
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_diagnose_filters(symbol, interval, start_date, end_date):
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is not None and not df.empty and diagnose_filters is not None:
+        return diagnose_filters(df, interval=interval, symbol=symbol)
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚀 Compute helpers (Vectorized - أسرع 100 مرة)
+# ══════════════════════════════════════════════════════════════════════════════
+def compute_pips(df):
+    if df is None or df.empty: return df
     df = df.copy()
-    df["Pivot_H"] = np.nan
-    df["Pivot_L"] = np.nan
-    highs = df["High"].astype(float).values
-    lows = df["Low"].astype(float).values
-    n = len(df)
-    if n < depth + backstep + 1:
-        return df
-    for i in range(depth, n - backstep):
-        hw = highs[i - depth:i + backstep + 1]
-        lw = lows[i - depth:i + backstep + 1]
-        ch, cl = highs[i], lows[i]
-        is_h = (ch == np.max(hw) and np.sum(hw == ch) == 1)
-        is_l = (cl == np.min(lw) and np.sum(lw == cl) == 1)
-        if is_h and not is_l:
-            df.iloc[i, df.columns.get_loc("Pivot_H")] = ch
-        elif is_l and not is_h:
-            df.iloc[i, df.columns.get_loc("Pivot_L")] = cl
+    
+    def _to_num(s):
+        return pd.to_numeric(s, errors="coerce")
+    
+    entry = _to_num(df.get("Entry Price", df.get("Entry", pd.Series([None]*len(df)))))
+    exit_p = _to_num(df.get("Exit Price", df.get("Exit", pd.Series([None]*len(df)))))
+    sl = _to_num(df.get("Stop Loss", df.get("SL", pd.Series([None]*len(df)))))
+    tp = _to_num(df.get("Take Profit", df.get("TP", pd.Series([None]*len(df)))))
+    bias = df.get("bias", df.get("Bias", pd.Series([""]*len(df)))).astype(str).str.upper()
+    
+    is_sell = bias.str.contains("SELL|SHORT|BEAR", na=False)
+    
+    # حساب حجم النقطة لكل صف
+    symbols = df.get("symbol", df.get("Symbol", pd.Series([""]*len(df)))).astype(str)
+    pips_list = [pip_size_for(s) for s in symbols]
+    pip = pd.Series(pips_list, index=df.index)
+    
+    # Pips: (entry - exit)/pip للبيع، (exit - entry)/pip للشراء
+    pips_buy = (exit_p - entry) / pip
+    pips_sell = (entry - exit_p) / pip
+    df["Pips"] = np.where(is_sell, pips_sell, pips_buy).round(1)
+    
+    # Risk
+    risk_buy = (entry - sl) / pip
+    risk_sell = (sl - entry) / pip
+    df["Risk_Pips"] = np.abs(np.where(is_sell, risk_sell, risk_buy)).round(1)
+    
+    # Reward
+    reward_buy = (tp - entry) / pip
+    reward_sell = (entry - tp) / pip
+    df["Reward_Pips"] = np.abs(np.where(is_sell, reward_sell, reward_buy)).round(1)
+    
+    # R:R
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rr = df["Reward_Pips"] / df["Risk_Pips"]
+    df["RR_Ratio"] = rr.round(2)
+    
     return df
 
 
-def get_chronological_pivots(df):
-    raw = []
-    for pos, (idx, row) in enumerate(df.iterrows()):
-        if not pd.isna(row["Pivot_H"]):
-            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_H"]),
-                        "type": "H", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
-        elif not pd.isna(row["Pivot_L"]):
-            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_L"]),
-                        "type": "L", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
-    if not raw:
-        return []
-    clean = []
-    for p in raw:
-        if not clean:
-            clean.append(p); continue
-        last = clean[-1]
-        ms = p["dynamic_swing"]
-        if last["type"] != p["type"]:
-            mv = abs(p["val"] - last["val"]) / max(abs(last["val"]), 1e-9)
-            if mv >= ms:
-                clean.append(p)
-            else:
-                if last["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
-                elif last["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
+def compute_dollar_pnl(df, lot=0.01):
+    if df is None or df.empty: return df
+    df = df.copy()
+    
+    def _to_num(s):
+        return pd.to_numeric(s, errors="coerce")
+    
+    entry = _to_num(df.get("Entry Price", df.get("Entry", pd.Series([None]*len(df)))))
+    exit_p = _to_num(df.get("Exit Price", df.get("Exit", pd.Series([None]*len(df)))))
+    bias = df.get("bias", df.get("Bias", pd.Series([""]*len(df)))).astype(str).str.upper()
+    is_sell = bias.str.contains("SELL|SHORT|BEAR", na=False)
+    
+    move_buy = exit_p - entry
+    move_sell = entry - exit_p
+    move = np.where(is_sell, move_sell, move_buy)
+    
+    symbols = df.get("symbol", df.get("Symbol", pd.Series([""]*len(df)))).astype(str)
+    
+    def _calc_pnl(sym, mv):
+        s = str(sym).upper()
+        if any(k in s for k in ("BTC", "ETH", "US30", "NAS", "SPX")):
+            return mv * lot
+        elif "XAU" in s or "GC=F" in s: return mv * lot * 100
+        elif "XAG" in s or "SI=F" in s: return mv * lot * 5000
+        elif s.endswith("USD"): return mv * lot * 100000
         else:
-            if p["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
-            elif p["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
-    final = []
-    for p in clean:
-        if not final:
-            final.append(p)
-        else:
-            if final[-1]["type"] != p["type"]:
-                final.append(p)
-            else:
-                if p["type"] == "H" and p["val"] > final[-1]["val"]: final[-1] = p
-                elif p["type"] == "L" and p["val"] < final[-1]["val"]: final[-1] = p
-    return final
+            return mv * lot * 100000 / (entry.iloc[0] if len(entry) else 1) if pd.notna(mv) else None
+    
+    # حساب PnL_USD بطريقة متجهة
+    df["PnL_USD"] = [
+        _calc_pnl(sym, mv) if pd.notna(mv) else None
+        for sym, mv in zip(symbols, move)
+    ]
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df["PnL_Pct"] = ((move / entry) * 100).round(2)
+    
+    return df
 
 
-def simulate_trade_outcome(pattern, df):
-    bias = pattern["bias"]
-    entry = float(pattern["entry"])
-    initial_sl = float(pattern["sl"])
-    sl = initial_sl
-    tp = float(pattern["tp"])
-    end_idx = pattern["neckline_end_idx"]
+def check_risk_limit(entry, sl, lot, symbol, capital, risk_pct):
+    try:
+        e = float(entry); s = float(sl); l = float(lot)
+    except (TypeError, ValueError):
+        return {"allowed": False, "risk_usd": None, "max_risk_usd": None,
+                "risk_pct_actual": None, "message": "⚠️ بيانات ناقصة"}
+    if e == 0:
+        return {"allowed": False, "risk_usd": None, "max_risk_usd": None,
+                "risk_pct_actual": None, "message": "⚠️ سعر غير صالح"}
+    pm = abs(e - s)
+    su = str(symbol).upper()
+    if any(x in su for x in ("BTC", "ETH", "US30", "NAS", "SPX")):
+        r = pm * l
+    elif "XAU" in su or "GC=F" in su: r = pm * l * 100
+    elif "XAG" in su or "SI=F" in su: r = pm * l * 5000
+    elif su.endswith("USD"): r = pm * l * 100000
+    else: r = pm * l * 100000 / e
+    mx = capital * (risk_pct / 100)
+    pct_a = (r / capital * 100) if capital > 0 else 0
+    ok = r <= mx
+    msg = (f"✅ مقبولة — المخاطرة {r:.2f}$ ({pct_a:.2f}%) ≤ الحد {mx:.2f}$" if ok
+           else f"❌ مرفوضة — المخاطرة {r:.2f}$ ({pct_a:.2f}%) > الحد {mx:.2f}$")
+    return {"allowed": ok, "risk_usd": round(r, 2), "max_risk_usd": round(mx, 2),
+            "risk_pct_actual": round(pct_a, 2), "message": msg}
 
-    head_size = abs(tp - entry) / CONFIG["TP_REACH_FACTOR"]
-    head_pct = (head_size / entry * 100) if entry > 0 else 0
-    MIN_HEAD_PCT = 0.10
-    MAX_HEAD_PCT = 10.00
 
-    if head_pct < MIN_HEAD_PCT:
-        return {"Result": "SKIPPED", "Head Result": "SKIPPED", "Loss Category": "too_small",
-                "Skip Reason": f"Head small ({head_pct:.3f}%)",
-                "Max Reach %": 0, "Max Extension %": 0, "Extension Beyond TP %": 0,
-                "SL Safety %": 0, "Entry Date": str(end_idx), "Exit Date": None,
-                "candles_to_exit": 0, "progress_ratio": 0}
-    if head_pct > MAX_HEAD_PCT:
-        return {"Result": "SKIPPED", "Head Result": "SKIPPED", "Loss Category": "too_large",
-                "Skip Reason": f"Head large ({head_pct:.3f}%)",
-                "Max Reach %": 0, "Max Extension %": 0, "Extension Beyond TP %": 0,
-                "SL Safety %": 0, "Entry Date": str(end_idx), "Exit Date": None,
-                "candles_to_exit": 0, "progress_ratio": 0}
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎨 draw_hs_pattern
+# ══════════════════════════════════════════════════════════════════════════════
+def draw_hs_pattern(fig, source, df):
+    if source is None: return
+    nodes = source.get("nodes", [])
+    if not nodes or len(nodes) < 6: return
 
-    nodes = pattern.get("nodes", [])
-    if len(nodes) >= 6:
+    xs = [n[0] for n in nodes]
+    ys = [n[1] for n in nodes]
+
+    fig.add_trace(go.Scatter(
+        x=xs, y=ys, mode="lines+markers",
+        name="H&S Pattern",
+        line=dict(color="#9C27B0", width=3),
+        marker=dict(size=11, color="#9C27B0",
+                    line=dict(color="white", width=2)),
+        showlegend=True, hoverinfo="skip",
+    ))
+
+    nn = source.get("neckline_nodes", [])
+    if len(nn) >= 2:
+        x0, y0 = nn[0]; x1, y1 = nn[1]
         try:
-            fp = df.index.get_loc(nodes[0][0])
-            hp = df.index.get_loc(nodes[-2][0])
-            pattern_duration = max(1, hp - fp)
-        except KeyError:
-            pattern_duration = 50
-    else:
-        pattern_duration = 50
-
-    TIMEOUT_CANDLES = max(TIMEOUT_STATISTICAL_FLOOR, pattern_duration * TIMEOUT_DURATION_MULTIPLIER)
-    TRAILING = CONFIG["TRAILING_LEVELS_HEAD"]
-
-    breakeven_activated = False
-    trailing_stage = 0
-    stats = {
-        "Result": "OPEN", "Head Result": "OPEN",
-        "progress_ratio": 0.0, "candles_to_exit": 0,
-        "exit_idx": None, "exit_price": None,
-        "Entry Date": None, "Exit Date": None,
-        "Max Reach %": 0.0, "SL Safety %": 0.0,
-        "Max Extension %": 0.0, "Extension Beyond TP %": 0.0,
-        "TP Hit At Candle": None, "Extension Duration Candles": 0,
-        "Pattern Duration": pattern_duration, "Timeout Used": TIMEOUT_CANDLES,
-        "Breakeven Activated": False, "Breakeven Exit": False,
-        "Trailing Stage": 0, "Initial SL": initial_sl, "Final SL": initial_sl,
-        "Loss Category": None,
-    }
-
-    if end_idx not in df.index: return stats
-    post_df = df.loc[end_idx:]
-    if len(post_df) <= 1: return stats
-
-    stats["Entry Date"] = str(end_idx)
-    total_tp_dist = abs(tp - entry)
-    total_sl_dist = abs(initial_sl - entry)
-    max_favorable = 0.0; max_adverse = 0.0; full_window_max = 0.0
-    tp_hit_candle = None; max_ext_candle = 0; exited = False
-
-    highs = post_df["High"].values
-    lows = post_df["Low"].values
-    closes = post_df["Close"].values
-    indices = post_df.index
-
-    for candle_count in range(1, len(highs)):
-        high = highs[candle_count]
-        low = lows[candle_count]
-        close = closes[candle_count]
-        idx = indices[candle_count]
-
-        if bias == "Bearish":
-            favorable = max(0.0, entry - low); adverse = max(0.0, high - entry)
-        else:
-            favorable = max(0.0, high - entry); adverse = max(0.0, entry - low)
-        progress = (favorable / total_tp_dist) if total_tp_dist > 0 else 0.0
-        progress_head = (favorable / head_size) if head_size > 0 else 0.0
-
-        if CONFIG.get("MEASURE_FULL_EXTENSION", True) and total_tp_dist > 0:
-            if progress * 100 > full_window_max:
-                full_window_max = progress * 100; max_ext_candle = candle_count
-
-        if not exited:
-            if total_tp_dist > 0: max_favorable = max(max_favorable, progress * 100)
-            if total_sl_dist > 0: max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
-        if exited:
-            if candle_count >= TIMEOUT_CANDLES: break
-            continue
-
-        for stage_idx, (th, ph) in enumerate(TRAILING):
-            if stage_idx < trailing_stage: continue
-            if progress_head < th: break
-            if ph == 0.0:
-                new_sl = entry
+            if hasattr(x0, 'timestamp'):
+                span = (x1 - x0).total_seconds()
+                x1_ext = x1 + pd.Timedelta(seconds=span * 0.3)
+                x0_ext = x0 - pd.Timedelta(seconds=span * 0.05)
             else:
-                new_sl = entry - ph * head_size if bias == "Bearish" else entry + ph * head_size
-            if bias == "Bearish":
-                if new_sl < sl:
-                    sl = new_sl; trailing_stage = stage_idx + 1
-                    if ph == 0.0: breakeven_activated = True; stats["Breakeven Activated"] = True
+                span = x1 - x0
+                x1_ext = x1 + span * 0.3
+                x0_ext = x0 - span * 0.05
+        except Exception:
+            x0_ext, x1_ext = x0, x1
+        fig.add_trace(go.Scatter(
+            x=[x0_ext, x1_ext], y=[y0, y1],
+            mode="lines", name="Neckline",
+            line=dict(color="#2962FF", width=3, dash="dash"),
+            showlegend=True, hoverinfo="skip",
+        ))
+
+    pivot_x = [n[0] for n in nodes[:5]]
+    pivot_y = [n[1] for n in nodes[:5]]
+    fig.add_trace(go.Scatter(
+        x=pivot_x, y=pivot_y,
+        mode="markers", name="Pivots",
+        marker=dict(size=15, color="#FF6F00", symbol="circle",
+                    line=dict(color="white", width=2.5)),
+        showlegend=True, hoverinfo="skip",
+    ))
+
+    start_x = nodes[0][0]
+    end_x = nodes[-1][0]
+    fig.add_shape(type="line", x0=start_x, x1=start_x, y0=0, y1=1, yref="paper",
+                  line=dict(color="#607D8B", width=1.5, dash="dot"), layer="below")
+    fig.add_shape(type="line", x0=end_x, x1=end_x, y0=0, y1=1, yref="paper",
+                  line=dict(color="#607D8B", width=1.5, dash="dot"), layer="below")
+
+    entry = source.get("entry")
+    if entry is not None:
+        entry_x = nodes[-1][0]
+        fig.add_trace(go.Scatter(
+            x=[entry_x], y=[float(entry)],
+            mode="markers", name="Entry",
+            marker=dict(size=22, color="#FFC107", symbol="star",
+                        line=dict(color="black", width=2)),
+            showlegend=True, hoverinfo="skip",
+        ))
+
+    if entry is not None:
+        tp = source.get("tp")
+        is_bull = "Bull" in source.get("bias", "")
+        col = "#00C853" if is_bull else "#D50000"
+        entry_x = nodes[-1][0]
+        try:
+            if hasattr(nodes[0][0], 'timestamp'):
+                total_span = (nodes[-1][0] - nodes[0][0]).total_seconds()
+                step = total_span / 5
+                x1_pos = nodes[-1][0] + pd.Timedelta(seconds=step * 3)
             else:
-                if new_sl > sl:
-                    sl = new_sl; trailing_stage = stage_idx + 1
-                    if ph == 0.0: breakeven_activated = True; stats["Breakeven Activated"] = True
+                total_span = nodes[-1][0] - nodes[0][0]
+                x1_pos = nodes[-1][0] + (total_span / 5) * 3
+        except Exception:
+            x1_pos = nodes[-1][0]
+        fig.add_annotation(
+            x=x1_pos, y=float(tp),
+            ax=entry_x, ay=float(entry),
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True, arrowhead=3, arrowsize=2.5, arrowwidth=4,
+            arrowcolor=col, opacity=0.95,
+            text=f"TP ({float(tp):.5f})",
+            font=dict(color=col, size=12),
+        )
 
-        stats["Trailing Stage"] = trailing_stage; stats["Final SL"] = sl
-
-        if bias == "Bearish":
-            hit_sl = high >= sl; hit_tp = low <= tp
-        else:
-            hit_sl = low <= sl; hit_tp = high >= tp
-
-        if hit_sl and not hit_tp:
-            if bias == "Bearish":
-                is_profit = sl < entry - 1e-9; is_be = abs(sl - entry) < 1e-9
-            else:
-                is_profit = sl > entry + 1e-9; is_be = abs(sl - entry) < 1e-9
-            if is_be:
-                stats["Result"] = "BREAKEVEN"; stats["Head Result"] = "BREAKEVEN"
-                stats["Breakeven Exit"] = True; stats["Loss Category"] = "breakeven"
-            elif is_profit:
-                stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
-                stats["Loss Category"] = "trailing_win"
-            else:
-                stats["Result"] = "LOSS"; stats["Head Result"] = "LOSS"
-                r = max_favorable
-                if r < 5: stats["Loss Category"] = "immediate_rejection"
-                elif r < 30: stats["Loss Category"] = "early_reversal"
-                elif r < 70: stats["Loss Category"] = "mid_reversal"
-                else: stats["Loss Category"] = "late_reversal"
-            stats["exit_idx"] = idx; stats["exit_price"] = sl
-            stats["candles_to_exit"] = candle_count; stats["Exit Date"] = str(idx)
-            exited = True; continue
-
-        elif hit_tp:
-            stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
-            stats["Loss Category"] = "success"
-            stats["exit_idx"] = idx; stats["exit_price"] = tp
-            stats["candles_to_exit"] = candle_count; stats["Exit Date"] = str(idx)
-            tp_hit_candle = candle_count; exited = True; continue
-
-        if candle_count >= TIMEOUT_CANDLES:
-            if breakeven_activated:
-                stats["Result"] = "BREAKEVEN"; stats["Head Result"] = "BREAKEVEN"
-                stats["Breakeven Exit"] = True; stats["Loss Category"] = "breakeven"
-                stats["exit_price"] = entry
-            else:
-                stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
-                stats["Loss Category"] = "timeout"; stats["exit_price"] = close
-            stats["exit_idx"] = idx; stats["candles_to_exit"] = candle_count
-            stats["Exit Date"] = str(idx)
-            moved = max(0.0, entry - close) if bias == "Bearish" else max(0.0, close - entry)
-            if total_tp_dist > 0:
-                stats["progress_ratio"] = round(moved / total_tp_dist * 100, 2)
-            exited = True; break
-    else:
-        stats["candles_to_exit"] = max(0, len(post_df) - 1)
-        stats["Exit Date"] = str(df.index[-1]); stats["Loss Category"] = "open"
-
-    stats["Max Reach %"] = round(max_favorable, 1)
-    stats["SL Safety %"] = round(100 - max_adverse, 1) if max_adverse <= 100 else 0.0
-    stats["Max Extension %"] = round(full_window_max, 1)
-    stats["Extension Beyond TP %"] = round(max(0.0, full_window_max - 100.0), 1)
-    stats["TP Hit At Candle"] = tp_hit_candle
-    stats["Extension Duration Candles"] = max(0, max_ext_candle - tp_hit_candle) if tp_hit_candle else 0
-
-    if stats["Result"] == "WIN":
-        stats["progress_ratio"] = 100.0
-    elif stats["Result"] in ["LOSS", "BREAKEVEN"]:
-        stats["progress_ratio"] = 0.0
-    return stats
+    sl = source.get("sl")
+    if sl is not None:
+        sl_y = float(sl)
+        sl_x = nodes[-1][0]
+        fig.add_annotation(
+            x=sl_x, y=sl_y,
+            text=f"SL ({sl_y:.5f})",
+            showarrow=False,
+            font=dict(color="#D50000", size=11),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#D50000", borderwidth=1,
+            xanchor="left", xshift=8,
+        )
 
 
-class PatternValidatorPipeline:
-    def __init__(self, df):
-        self.df = df
-
-    def time_filter(self, p):
-        return True
-
-    def breakout_filter(self, p, is_bearish, neckline):
-        idx_h3 = p[-1]["idx"]
-        post = self.df.loc[idx_h3:]
-        if is_bearish:
-            br = post[post["Close"] < neckline]
-        else:
-            br = post[post["Close"] > neckline]
-        if br.empty: return None
-        return br.index[0], float(br["Close"].iloc[0])
-
-    def breakout_confirm_filter(self, is_bearish, neckline, price):
-        return True
-
-
-def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200):
-    patterns = []
-    if len(pivots) < 6: return patterns
-    validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
-
-    for i in range(len(pivots) - 5):
-        p = pivots[i:i + 6]
-        if [x["type"] for x in p] != ["L", "H", "L", "H", "L", "H"]:
-            continue
-        l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
-        
-        if h1 <= l0 or l1 <= l0: continue
-        if h2 <= h1 or h2 <= h3: continue
-        
-        neckline_min = min(l1, l2)
-        head_height = h2 - neckline_min
-        if head_height <= 0: continue
-
-        if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]): continue
-
-        neckline = (l1 + l2) / 2.0
-        br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
-        if br is None: continue
-        end_idx, end_val = br
-        if end_idx not in df.index: continue
-        end_pos = df.index.get_loc(end_idx)
-
-        if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
-            continue
-
-        l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
-        actual_head = h2 - neckline
-        entry = neckline
-        structural_sl = h2
-        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bearish", entry, structural_sl, actual_head)
-
-        nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, float(end_val))]
-        pattern = {
-            "name": "Head and Shoulders", "pattern": "Head and Shoulders",
-            "pattern_type": "Reversal",
-            "bias": "Bearish", "match": 100.0, "nodes": nodes,
-            "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
-            "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-            "structural_sl": float(round(structural_sl, 5)),
-            "safe_sl": float(round(safe_sl, 5)),
-            "neckline_start_idx": l1_idx, "neckline_end_idx": end_idx,
-            "neckline_nodes": [(l1_idx, l1), (l2_idx, l2)],
-            "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
-            "end_pos": p[5]["pos"],
-            "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
-            "Entry": float(round(entry, 5)),
-            "Pattern": f"Head and Shoulders (Reversal)",
-            "Entry Conditions": "Neckline + Live Limit",
-        }
-        pattern.update(simulate_trade_outcome(pattern, df))
-        pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bearish", entry, final_sl, tp, structural_sl, actual_head, f"H&S Reversal")
-        patterns.append(pattern)
-    return patterns
-
-
-def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200):
-    patterns = []
-    if len(pivots) < 6: return patterns
-    validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
-
-    for i in range(len(pivots) - 5):
-        p = pivots[i:i + 6]
-        if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
-            continue
-        h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
-        
-        if l2 >= l1 or l2 >= l3: continue
-        
-        neckline_max = max(h1, h2)
-        head_depth = neckline_max - l2
-        if head_depth <= 0: continue
-
-        if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]): continue
-
-        neckline = (h1 + h2) / 2.0
-        br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
-        if br is None: continue
-        end_idx, end_val = br
-        if end_idx not in df.index: continue
-        end_pos = df.index.get_loc(end_idx)
-
-        if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
-            continue
-
-        h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
-        actual_head = neckline - l2
-        entry = neckline
-        structural_sl = l2
-        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bullish", entry, structural_sl, actual_head)
-
-        nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, end_val)]
-        pattern = {
-            "name": "Inverse Head and Shoulders", "pattern": "Inverse Head and Shoulders",
-            "pattern_type": "Reversal",
-            "bias": "Bullish", "match": 100.0, "nodes": nodes,
-            "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
-            "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-            "structural_sl": float(round(structural_sl, 5)),
-            "safe_sl": float(round(safe_sl, 5)),
-            "neckline_start_idx": h1_idx, "neckline_end_idx": end_idx,
-            "neckline_nodes": [(h1_idx, h1), (h2_idx, h2)],
-            "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
-            "end_pos": p[5]["pos"],
-            "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
-            "Entry": float(round(entry, 5)),
-            "Pattern": f"Inverse Head and Shoulders (Reversal)",
-            "Entry Conditions": "Neckline + Live Limit",
-        }
-        pattern.update(simulate_trade_outcome(pattern, df))
-        pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bullish", entry, final_sl, tp, structural_sl, actual_head, f"نموذج معكوس Reversal")
-        patterns.append(pattern)
-    return patterns
-
-
-def detect_all_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200):
-    a = detect_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration)
-    b = detect_inverse_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration)
-    all_p = a + b
-    all_p.sort(key=lambda x: x.get("end_pos", -1))
-    return all_p
-
-
-def run_full_analysis(df, interval="1h", symbol=None):
-    default_empty = {
-        "df": df, "symbol": symbol or "N/A",
-        "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
-        "bias": "Neutral", "entry": None, "sl": None, "tp": None,
-        "nodes": [], "pattern_nodes": [], "all_patterns": [], "error": None,
-    }
+# ══════════════════════════════════════════════════════════════════════════════
+# 📊 Financial Report
+# ══════════════════════════════════════════════════════════════════════════════
+def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_df=None, interval="1h"):
+    st.markdown("### 📊 التقرير المالي الكامل")
     if df is None or df.empty:
-        return default_empty
-    df = df.copy()
-    required = ["Open", "High", "Low", "Close"]
-    for col in required:
-        if col not in df.columns:
-            default_empty["error"] = f"Missing column: {col}"
-            return default_empty
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=required)
-    if len(df) < 30:
-        default_empty["error"] = f"Insufficient data: {len(df)}"
-        return default_empty
+        st.info("ℹ️ لا توجد صفقات"); return
 
-    df_active = df.tail(200).copy()
-    df_active = calculate_indicators(df_active)
-    df_active = calculate_zigzag(df_active, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-    pivots = get_chronological_pivots(df_active)
-    max_gap = _get_max_gap(interval)
-    max_pattern_dur = _get_max_pattern_duration(interval)
-    all_patterns = detect_all_head_shoulders(pivots, df_active, is_backtest=False, max_gap=max_gap, max_pattern_duration=max_pattern_dur)
-    if not all_patterns:
-        default_empty["df"] = df_active
-        return default_empty
+    df = compute_pips(df); df = compute_dollar_pnl(df, lot=lot_size)
+    rc = next((c for c in ["Result", "Head Result"] if c in df.columns), None)
+    if rc is None: st.warning("⚠️ لا عمود نتيجة"); return
 
-    latest = all_patterns[-1]
-    signal = "STRONG BUY" if latest["bias"] == "Bullish" else "STRONG SELL"
+    s = df[rc].astype(str).str.upper()
+    w_df = df[s.str.contains("WIN")]; l_df = df[s.str.contains("LOSS")]
+    o_df = df[s.str.contains("OPEN")]; t_df = df[s.str.contains("TIMEOUT")]
+    b_df = df[s.str.contains("BREAKEVEN")]
 
-    return {
-        "df": df_active, "symbol": symbol or "N/A",
-        "signal": signal, "pattern": latest["pattern"], "bias": latest["bias"],
-        "entry": latest["entry"], "entry_trigger": latest["entry_trigger"],
-        "sl": latest["sl"], "tp": latest["tp"],
-        "nodes": latest["nodes"], "pattern_nodes": latest["nodes"],
-        "neckline_nodes": latest.get("neckline_nodes", []),
-        "target_nodes": latest.get("target_nodes", []),
-        "all_patterns": all_patterns, "match": latest.get("match", 100.0),
-        "Result": latest.get("Result", "OPEN"),
-        "Entry Date": latest.get("Entry Date"),
-        "Exit Date": latest.get("Exit Date"),
-        "Trade Recommendation": latest.get("Trade Recommendation", ""),
-        "Max Reach %": latest.get("Max Reach %", 0),
-        "error": None,
-    }
+    w, l, o, t, b = len(w_df), len(l_df), len(o_df), len(t_df), len(b_df)
+    total = len(df); closed = w + l
+    wr = round(w / closed * 100, 1) if closed else 0
+    lr = round(l / closed * 100, 1) if closed else 0
 
+    wp = w_df["Pips"].dropna().sum() if not w_df.empty else 0
+    lp = l_df["Pips"].dropna().sum() if not l_df.empty else 0
+    wu = w_df["PnL_USD"].dropna().sum() if not w_df.empty else 0
+    lu = l_df["PnL_USD"].dropna().sum() if not l_df.empty else 0
+    net_p = wp + lp; net_u = wu + lu
+    pf = round(abs(wu / lu), 2) if lu != 0 else float("inf")
 
-def backtest_strategy(df, interval="1h", symbol=None):
-    if df is None or df.empty or len(df) < 30:
-        return []
-    df = df.copy()
-    for col in ["Open", "High", "Low", "Close"]:
-        if col not in df.columns: return []
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < 30: return []
+    st.markdown(f"#### 📍 {symbol} · {period}")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("📊 الصفقات", total)
+    k2.metric("✅ ناجحة", w, delta=f"{wr}%")
+    k3.metric("❌ خاسرة", l, delta=f"{lr}%", delta_color="inverse")
+    k4.metric("⏳ مفتوحة", o)
 
-    df = calculate_indicators(df)
-    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-    pivots = get_chronological_pivots(df)
-    patterns = detect_all_head_shoulders(pivots, df, is_backtest=True, max_gap=_get_max_gap(interval), max_pattern_duration=_get_max_pattern_duration(interval))
+    k5, k6, k7, k8 = st.columns(4)
+    k5.metric("📏 النقاط", f"{net_p:+.1f}")
+    k6.metric("💰 صافي الربح", f"${net_u:+.2f}")
+    k7.metric("⚖️ Profit Factor", f"{pf:.2f}" if pf != float("inf") else "∞")
+    k8.metric("⚖️ تعادل", b)
 
-    trades = []
-    for p in patterns:
-        trades.append({
-            "Symbol": symbol or "N/A", "symbol": symbol or "N/A",
-            "Pattern": p["pattern"], "pattern": p["pattern"],
-            "Pattern Type": p.get("pattern_type", "Reversal"),
-            "Bias": p["bias"], "bias": p["bias"],
-            "Result": p.get("Result", "OPEN"),
-            "Head Result": p.get("Head Result", "OPEN"),
-            "Entry": p["entry"], "Entry Price": p["entry"],
-            "SL": p["sl"], "Stop Loss": p["sl"],
-            "TP": p["tp"], "Take Profit": p["tp"],
-            "Structural SL": p.get("structural_sl"),
-            "Safe SL": p.get("safe_sl"),
-            "TP Factor Used": CONFIG["TP_REACH_FACTOR"],
-            "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
-            "Exit Price": p.get("exit_price"),
-            "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
-            "Max Reach %": p.get("Max Reach %", 0.0),
-            "Max Extension %": p.get("Max Extension %", 0.0),
-            "Extension Beyond TP %": p.get("Extension Beyond TP %", 0.0),
-            "TP Hit At Candle": p.get("TP Hit At Candle"),
-            "Extension Duration Candles": p.get("Extension Duration Candles", 0),
-            "SL Safety %": p.get("SL Safety %", 0.0),
-            "Entry Conditions": p.get("Entry Conditions", ""),
-            "nodes": p["nodes"],
-            "candles_to_exit": p.get("candles_to_exit", 0),
-            "progress_ratio": p.get("progress_ratio", 0.0),
-            "neckline_end_idx": p["neckline_end_idx"],
-            "Pattern Duration": p.get("Pattern Duration", 0),
-            "Timeout Used": p.get("Timeout Used", 0),
-            "Breakeven Activated": p.get("Breakeven Activated", False),
-            "Breakeven Exit": p.get("Breakeven Exit", False),
-            "Loss Category": p.get("Loss Category"),
-            "Trailing Stage": p.get("Trailing Stage", 0),
-            "Initial SL": p.get("Initial SL"),
-            "Final SL": p.get("Final SL"),
-            "Trade Recommendation": p.get("Trade Recommendation", ""),
-        })
-    return trades
+    if wr >= 60 and pf >= 1.5: st.success("🌟 استراتيجية ممتازة")
+    elif wr >= 50 and pf >= 1.2: st.success("✅ استراتيجية جيدة")
+    elif wr >= 40 and pf >= 1.0: st.warning("🟡 استراتيجية مقبولة")
+    else: st.error("🔴 استراتيجية ضعيفة")
 
-
-def diagnose_filters(df, interval="1h", symbol=None):
-    result = {"error": None, "total_raw_candidates": 0, "final_count": 0, "stages": {}, "smart_diagnosis": {}, "recommendations": [], "trade_analysis": [], "by_pattern_type": {}, "tp_distribution": {}, "extension_analysis": {}}
-    if df is None or df.empty or len(df) < 30:
-        result["error"] = "بيانات غير كافية"; return result
-    df = df.copy()
-    for col in ["Open", "High", "Low", "Close"]:
-        if col not in df.columns:
-            result["error"] = f"مفقود: {col}"; return result
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
-
-    df = calculate_indicators(df)
-    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-    pivots = get_chronological_pivots(df)
-
-    raw_count = 0
-    if len(pivots) >= 6:
-        for i in range(len(pivots) - 5):
-            p = pivots[i:i + 6]
-            if [x["type"] for x in p] in (["L","H","L","H","L","H"], ["H","L","H","L","H","L"]):
-                raw_count += 1
-    result["total_raw_candidates"] = raw_count
-
-    trades = backtest_strategy(df, interval=interval, symbol=symbol)
-    result["final_count"] = len(trades)
-
-    wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
-    losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
-    bes = [t for t in trades if "BREAKEVEN" in str(t.get("Result","")).upper()]
-    tos = [t for t in trades if "TIMEOUT" in str(t.get("Result","")).upper()]
-
-    for ptype in ["Reversal", "Continuation"]:
-        subset = [t for t in trades if t.get("Pattern Type") == ptype]
-        if not subset: continue
-        w = [t for t in subset if "WIN" in str(t.get("Result","")).upper()]
-        l = [t for t in subset if "LOSS" in str(t.get("Result","")).upper()]
-        total_closed = len(w) + len(l)
-        wr = round(len(w) / total_closed * 100, 1) if total_closed else 0
-        result["by_pattern_type"][ptype] = {"count": len(subset), "wins": len(w), "losses": len(l), "breakevens": len([t for t in subset if "BREAKEVEN" in str(t.get("Result","")).upper()]), "timeouts": len([t for t in subset if "TIMEOUT" in str(t.get("Result","")).upper()]), "win_rate_%": wr}
-
-    win_ext = [t.get("Max Extension %", 0) for t in wins if t.get("Max Extension %") is not None]
-    def _pct(lst, cond): return round(sum(1 for x in lst if cond(x)) / max(len(lst), 1) * 100, 1)
-
-    result["extension_analysis"] = {"sample_wins": len(win_ext), "median_extension_wins_%": round(float(np.median(win_ext)), 1) if win_ext else 0, "pct_wins_reach_1.0x": _pct(win_ext, lambda x: x >= 100)}
-    win_reach = [t.get("Max Reach %", 0) for t in wins]
-    result["tp_distribution"] = {"wins_count": len(wins), "pct_wins_>=60%": _pct(win_reach, lambda x: x >= 60), "pct_wins_>=100%": _pct(win_reach, lambda x: x >= 100)}
-
-    loss_breakdown = {"immediate_rejection": 0, "early_reversal": 0, "mid_reversal": 0, "late_reversal": 0, "unavoidable": 0, "avoidable": 0}
-    for t in losses:
-        cat = t.get("Loss Category") or ""
-        if cat in loss_breakdown: loss_breakdown[cat] += 1
-        if t.get("Max Reach %", 0) >= 60: loss_breakdown["unavoidable"] += 1
-        else: loss_breakdown["avoidable"] += 1
-
-    win_breakdown = {"total_wins": len(wins), "avg_max_reach": 0.0}
-    if wins: win_breakdown["avg_max_reach"] = round(sum(t.get("Max Reach %", 0) for t in wins) / len(wins), 1)
-
-    total_closed = len(wins) + len(losses)
-    win_rate = round(len(wins) / total_closed * 100, 1) if total_closed else 0
-
-    if total_closed == 0: verdict = "لا توجد صفقات كافية"
-    elif win_rate >= 70: verdict = f"ممتاز — {win_rate}%"
-    elif win_rate >= 50: verdict = f"جيد — {win_rate}%"
-    elif win_rate >= 35: verdict = f"متوسط — {win_rate}%"
-    else: verdict = f"ضعيف — {win_rate}%"
-
-    action_plan = []
-    avoidable = loss_breakdown["avoidable"]; unavoidable = loss_breakdown["unavoidable"]
-    if avoidable > unavoidable: action_plan.append(f"🔴 خسائر قابلة للتجنب ({avoidable}) > غير قابلة ({unavoidable}).")
-    elif unavoidable > 0: action_plan.append(f"🟢 معظم الخسائر ({unavoidable}) لا مفر منها.")
-
-    result["smart_diagnosis"] = {"verdict": verdict, "win_breakdown": win_breakdown, "loss_breakdown": loss_breakdown, "action_plan": action_plan}
-
-    trade_analysis = []
-    for i, t in enumerate(trades):
-        cat = t.get("Loss Category") or "open"
-        info = REASON_MAP.get(cat, REASON_MAP.get("open"))
-        entry = t.get("Entry", 0) or 0; sl = t.get("SL", 0) or 0; tp = t.get("TP", 0) or 0
-        risk = abs(entry - sl); reward = abs(tp - entry)
-        rr = round(reward / risk, 2) if risk > 0 else "—"
-        trade_analysis.append({"trade_num": i + 1, "bias": t.get("Bias", "—"), "pattern": t.get("Pattern", "—"), "pattern_type": t.get("Pattern Type", "—"), "result": t.get("Result", "—"), "category": cat, "max_reach_%": t.get("Max Reach %", 0), "rr_ratio": rr, "is_unavoidable": t.get("Max Reach %", 0) >= 60 and "LOSS" in str(t.get("Result", "")).upper(), "reason": info.get("reason", "—"), "action": info.get("action", "—"), "prevention": info.get("prevention", "—")})
-    result["trade_analysis"] = trade_analysis
-
-    recommendations = []
-    if len(tos) > len(wins): recommendations.append({"severity": "حرج", "message": "الصفقات المنتهية بالوقت كثيرة."})
-    if len(bes) > 0: recommendations.append({"severity": "منخفض", "message": f"{len(bes)} صفقة عند التعادل."})
-    result["recommendations"] = recommendations
-    return result
-
-
-def diagnose_no_signals(df, interval="1h", is_backtest=True):
-    if df is None or df.empty or len(df) < 30:
-        return {"error": "بيانات غير كافية"}
-    df = df.copy()
-    for col in ["Open", "High", "Low", "Close"]:
-        if col not in df.columns: return {"error": f"مفقود: {col}"}
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
-
-    df = calculate_indicators(df)
-    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-    pivots = get_chronological_pivots(df)
-
-    stats = {"total_pivots": len(pivots), "raw_candidates": 0, "rejected_pattern_structure": 0, "rejected_neckline_diff": 0, "rejected_no_breakout": 0, "rejected_live_limit": 0, "passed": 0}
-
-    if len(pivots) < 6: return stats
-    validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
-
-    for i in range(len(pivots) - 5):
-        p = pivots[i:i + 6]
-        is_bearish = [x["type"] for x in p] == ["L", "H", "L", "H", "L", "H"]
-        is_bullish = [x["type"] for x in p] == ["H", "L", "H", "L", "H", "L"]
-        if not (is_bearish or is_bullish):
-            stats["rejected_pattern_structure"] += 1
-            continue
-        stats["raw_candidates"] += 1
-
-        if is_bearish:
-            l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
-            if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
-                stats["rejected_pattern_structure"] += 1; continue
-            neckline_min = min(l1, l2)
-            head_height = h2 - neckline_min
-            if head_height <= 0:
-                stats["rejected_pattern_structure"] += 1; continue
-            if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
-                stats["rejected_neckline_diff"] += 1; continue
-            neckline = (l1 + l2) / 2.0
-            br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
-            if br is None:
-                stats["rejected_no_breakout"] += 1; continue
-            end_idx, end_val = br
-            if end_idx not in df.index: continue
-            end_pos = df.index.get_loc(end_idx)
-            if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
-                stats["rejected_live_limit"] += 1; continue
-            stats["passed"] += 1
+    if l > 0:
+        st.markdown("---")
+        st.markdown("### 🔍 تحليل الخسائر (القاسم المشترك)")
+        c1, c2, c3 = st.columns(3)
+        
+        if "Loss Category" in l_df.columns and not l_df["Loss Category"].dropna().empty:
+            common_cat = l_df["Loss Category"].mode().iloc[0]
+            reason_text = REASON_MAP.get(common_cat, {}).get("reason", common_cat) if REASON_MAP else common_cat
+            c1.metric("🚩 السبب الأكثر شيوعاً", reason_text)
         else:
-            h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
-            if l2 >= l1 or l2 >= l3: 
-                stats["rejected_pattern_structure"] += 1; continue
-            neckline_max = max(h1, h2)
-            head_depth = neckline_max - l2
-            if head_depth <= 0:
-                stats["rejected_pattern_structure"] += 1; continue
-            if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
-                stats["rejected_neckline_diff"] += 1; continue
-            neckline = (h1 + h2) / 2.0
-            br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
-            if br is None:
-                stats["rejected_no_breakout"] += 1; continue
-            end_idx, end_val = br
-            if end_idx not in df.index: continue
-            end_pos = df.index.get_loc(end_idx)
-            if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
-                stats["rejected_live_limit"] += 1; continue
-            stats["passed"] += 1
-    return stats
+            c1.metric("🚩 السبب الأكثر شيوعاً", "غير محدد")
+            
+        c2.metric("📉 متوسط الوصول للهدف", f"{l_df['Max Reach %'].mean():.1f}%")
+        c3.metric("📏 متوسط النقاط الخاسرة", f"{l_df['Pips'].mean():.1f}")
+
+    st.markdown("---")
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        label="📥 تنزيل بيانات الدورة (CSV)",
+        data=csv,
+        file_name=f"backtest_{symbol}_{period}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        type="primary"
+    )
 
 
-if __name__ == "__main__":
-    print("ENGINE.PY — H&S Reversal + Continuation")
-    print(f"Reversal: {CONFIG['ENABLE_REVERSAL']}")
-    print(f"Continuation: {CONFIG['ENABLE_CONTINUATION']}")
-    print(f"TP: {CONFIG['TP_REACH_FACTOR']}× head | Safe SL: {CONFIG['USE_SAFE_SL']}")
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 دالة رسم الشارت (مُحسّنة للسرعة القصوى)
+# ══════════════════════════════════════════════════════════════════════════════
+def render_chart_fast(sym, cur, df_chart_full):
+    """رسم الشارت بسرعة فائقة باستخدام نافذة زمنية محددة"""
+    if df_chart_full is None or df_chart_full.empty:
+        st.warning("⚠️ لا توجد بيانات للرسم")
+        return
+    
+    nodes = cur.get("nodes", [])
+    if not nodes or len(nodes) < 6:
+        st.warning("⚠️ لا توجد عقد كافية للرسم")
+        return
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🚀 الحل: تحديد نافذة زمنية صغيرة حول النموذج فقط
+    # ═══════════════════════════════════════════════════════════════════════
+    pattern_start = nodes[0][0]
+    pattern_end = nodes[-1][0]
+    span = pattern_end - pattern_start
+    
+    # نافذة = 100% قبل النموذج + 200% بعده (لتشمل حركة السعر بعد الدخول)
+    x_min = pattern_start - span * 1.0
+    x_max = pattern_end + span * 2.5
+    
+    # تحويل إلى شرائح حسب الفهرس
+    try:
+        idx_min = df_chart_full.index.searchsorted(x_min)
+        idx_max = df_chart_full.index.searchsorted(x_max)
+        idx_min = max(0, idx_min)
+        idx_max = min(len(df_chart_full), idx_max)
+        
+        if idx_max - idx_min < 20:
+            # احتياطي: إذا كانت النافذة صغيرة جداً، خذ 200 شمعة حول النموذج
+            center = (idx_min + idx_max) // 2
+            idx_min = max(0, center - 150)
+            idx_max = min(len(df_chart_full), center + 150)
+        
+        df_window = df_chart_full.iloc[idx_min:idx_max]
+    except Exception:
+        df_window = df_chart_full
+    
+    if df_window.empty:
+        df_window = df_chart_full
+    
+    # إنشاء الشارت
+    fig = go.Figure(data=[go.Candlestick(
+        x=df_window.index,
+        open=df_window["Open"], high=df_window["High"],
+        low=df_window["Low"], close=df_window["Close"],
+        name="السعر",
+        increasing_line_color='#00C853',
+        decreasing_line_color='#D50000',
+    )])
+    
+    if "EMA50" in df_window.columns:
+        fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"],
+            line=dict(color="orange", width=1.2), name="EMA 50"))
+    if "EMA200" in df_window.columns:
+        fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA200"],
+            line=dict(color="blue", width=1.2), name="EMA 200"))
+    
+    # رسم النموذج
+    draw_hs_pattern(fig, cur, df_window)
+    
+    fig.update_layout(
+        template="plotly_white", height=800, autosize=True,
+        margin=dict(l=50, r=15, t=40, b=50),
+        xaxis_rangeslider_visible=False, dragmode="pan",
+        hovermode="x unified",
+        yaxis=dict(side="left", automargin=True,
+                   tickfont=dict(size=11, color="#333"),
+                   showgrid=True, gridcolor="#EEEEEE", zeroline=False),
+        xaxis=dict(automargin=True, tickfont=dict(size=10),
+                   showgrid=True, gridcolor="#F5F5F5",
+                   rangeslider=dict(visible=False),
+                   fixedrange=False, range=[x_min, x_max]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="center", x=0.5,
+                    bgcolor="rgba(255,255,255,0.9)",
+                    bordercolor="#DDDDDD", borderwidth=1),
+        uirevision=sym,  # يحافظ على حالة الزوم عند التنقل
+    )
+    
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 💰 Risk Calculator + Calculator
+# ══════════════════════════════════════════════════════════════════════════════
+def render_advanced_risk_calculator(unique_id="main"):
+    st.markdown("### 💰 حاسبة المخاطرة المتقدمة")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        capital = st.number_input("💵 رأس المال ($):", min_value=10.0, max_value=10_000_000.0,
+            value=1000.0, step=100.0, format="%.2f", key=f"{unique_id}_cap")
+    with c2:
+        risk_pct = st.selectbox("📊 المخاطرة (%):", [1,2,3,4,5,6,7,8,9,10],
+            index=4, key=f"{unique_id}_rp")
+    mx = capital * (risk_pct / 100)
+    with c3:
+        st.metric("🛑 الحد الأقصى", f"${mx:,.2f}")
+
+    avail = get_available_symbols()
+    search = st.text_input("🔍 ابحث:", placeholder="EUR, GBP, BTC...", key=f"{unique_id}_s")
+    if search:
+        avail = [s for s in avail if search.upper() in s.upper()]
+    if not avail:
+        st.warning("⚠️ لا توجد عملات مطابقة"); return
+
+    act = st.session_state.get("active_signal_symbol")
+    di = avail.index(act) if act and act in avail else 0
+
+    c_s, c_l = st.columns([2, 1])
+    with c_s:
+        sel = st.selectbox("🔽 العملة:", avail, index=di, key=f"{unique_id}_sym")
+    with c_l:
+        lot = st.number_input("💰 اللوت:", min_value=0.0001, max_value=100.0,
+            value=get_default_lot_for_symbol(sel), step=0.01, format="%.2f",
+            key=f"{unique_id}_lot_{sel}")
+
+    if act == sel and st.session_state.get("active_signal_entry"):
+        de = float(st.session_state["active_signal_entry"])
+        ds = float(st.session_state.get("active_signal_sl") or de * 1.01)
+        dt = float(st.session_state.get("active_signal_tp") or de * 0.98)
+        st.info("🔗 مُحمّل من الإشارة النشطة")
+    else:
+        lp = get_last_known_price(sel)
+        de = float(lp) if lp else 1.0
+        ds = de * 1.01; dt = de * 0.98
+
+    ce, cs, ct = st.columns(3)
+    with ce: entry = st.number_input("📈 الدخول:", value=float(de), format="%.5f", key=f"{unique_id}_e_{sel}")
+    with cs: sl_p  = st.number_input("🛑 SL:", value=float(ds), format="%.5f", key=f"{unique_id}_sl_{sel}")
+    with ct: tp_p  = st.number_input("🏆 TP:", value=float(dt), format="%.5f", key=f"{unique_id}_tp_{sel}")
+
+    try:
+        pip = pip_size_for(sel)
+        net_points = abs(float(tp_p) - float(entry)) / pip
+        st.metric("🎯 النقاط الصافية للهدف (TP)", f"{net_points:.1f} نقطة")
+    except Exception:
+        pass
+
+    chk = check_risk_limit(entry, sl_p, lot, sel, capital, risk_pct)
+    try:
+        rd = abs(float(entry) - float(sl_p)); rw = abs(float(tp_p) - float(entry))
+        rr = round(rw / rd, 2) if rd > 0 else "—"
+    except Exception: rr = "—"
+
+    if chk["allowed"]: st.success("### ✅ مقبولة")
+    else: st.error("### ❌ مرفوضة")
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("💸 المخاطرة", f"${chk['risk_usd']:,.2f}" if chk['risk_usd'] else "—")
+    m2.metric("📊 النسبة", f"{chk['risk_pct_actual']}%" if chk['risk_pct_actual'] else "—")
+    m3.metric("⚖️ R:R", f"1:{rr}" if rr != "—" else "—")
+    st.info(f"**التفاصيل:** {chk['message']}")
+
+    st.markdown("---")
+    st.markdown("### 🧮 حاسبة حسابية")
+    st.caption("أدخل رقمين ثم اختر العملية")
+
+    calc_key = f"{unique_id}_calc_result"
+    if calc_key not in st.session_state:
+        st.session_state[calc_key] = 0.0
+
+    c_a, c_b = st.columns(2)
+    with c_a:
+        num_a = st.number_input("🔢 الرقم الأول:",
+            value=float(st.session_state.get(f"{unique_id}_calc_a", 0.0)),
+            step=1.0, format="%.4f", key=f"{unique_id}_calc_a")
+    with c_b:
+        num_b = st.number_input("🔢 الرقم الثاني:",
+            value=float(st.session_state.get(f"{unique_id}_calc_b", 0.0)),
+            step=1.0, format="%.4f", key=f"{unique_id}_calc_b")
+
+    op1, op2, op3, op4 = st.columns(4)
+    result_val = None; op_symbol = ""
+
+    with op1:
+        if st.button("➕ جمع", use_container_width=True, key=f"{unique_id}_calc_add"):
+            result_val = num_a + num_b; op_symbol = "+"
+    with op2:
+        if st.button("➖ طرح", use_container_width=True, key=f"{unique_id}_calc_sub"):
+            result_val = num_a - num_b; op_symbol = "−"
+    with op3:
+        if st.button("✖️ ضرب", use_container_width=True, key=f"{unique_id}_calc_mul"):
+            result_val = num_a * num_b; op_symbol = "×"
+    with op4:
+        if st.button("➗ قسمة", use_container_width=True, key=f"{unique_id}_calc_div"):
+            if num_b != 0:
+                result_val = num_a / num_b; op_symbol = "÷"
+            else:
+                st.error("⚠️ لا يمكن القسمة على صفر")
+
+    if result_val is not None:
+        st.session_state[calc_key] = result_val
+        st.session_state[f"{unique_id}_calc_last_op"] = op_symbol
+        st.session_state[f"{unique_id}_calc_last_a"] = num_a
+        st.session_state[f"{unique_id}_calc_last_b"] = num_b
+
+    last_op = st.session_state.get(f"{unique_id}_calc_last_op", "")
+    last_a = st.session_state.get(f"{unique_id}_calc_last_a", 0)
+    last_b = st.session_state.get(f"{unique_id}_calc_last_b", 0)
+    current_result = st.session_state.get(calc_key, 0.0)
+
+    if last_op:
+        st.success(f"### = `{current_result:.4f}`  ({last_a:.4f} {last_op} {last_b:.4f})")
+    else:
+        st.info(f"### النتيجة: `{current_result:.4f}`")
+
+    ax1, ax2, ax3 = st.columns(3)
+    with ax1:
+        if st.button("↩️ مسح", use_container_width=True, key=f"{unique_id}_calc_clear"):
+            st.session_state[calc_key] = 0.0
+            st.session_state[f"{unique_id}_calc_last_op"] = ""
+            st.session_state[f"{unique_id}_calc_a"] = 0.0
+            st.session_state[f"{unique_id}_calc_b"] = 0.0
+            st.rerun()
+    with ax2:
+        if st.button("📋 للدخول", use_container_width=True, key=f"{unique_id}_calc_copy_entry"):
+            st.session_state[f"{unique_id}_e_{sel}"] = float(current_result)
+            st.rerun()
+    with ax3:
+        if st.button("📋 للوت", use_container_width=True, key=f"{unique_id}_calc_copy_lot"):
+            st.session_state[f"{unique_id}_lot_{sel}"] = max(0.0001, float(current_result))
+            st.rerun()
+
+    st.markdown("##### ⚡ عمليات سريعة")
+    q1, q2, q3, q4, q5, q6 = st.columns(6)
+    quick_ops = [("×2", "*2"), ("÷2", "/2"), ("×3", "*3"),
+                 ("÷3", "/3"), ("+10%", "*1.10"), ("-10%", "*0.90")]
+    for col, (label, op) in zip([q1,q2,q3,q4,q5,q6], quick_ops):
+        with col:
+            if st.button(label, use_container_width=True, key=f"{unique_id}_calc_q_{label}"):
+                if op == "*2": r = current_result * 2
+                elif op == "/2": r = current_result / 2
+                elif op == "*3": r = current_result * 3
+                elif op == "/3": r = current_result / 3
+                elif op == "*1.10": r = current_result * 1.10
+                else: r = current_result * 0.90
+                st.session_state[calc_key] = r
+                st.session_state[f"{unique_id}_calc_last_op"] = label
+                st.session_state[f"{unique_id}_calc_last_a"] = current_result
+                st.session_state[f"{unique_id}_calc_last_b"] = 0
+                st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Session State
+# ══════════════════════════════════════════════════════════════════════════════
+for k, v in [
+    ("current_symbol", "EURUSD=X"),
+    ("status_summary", "⚡ H&S Analyzer"),
+    ("scanned_signals", []),
+    ("backtest_scanned_signals", []),
+    ("backtest_dfs", {}),
+    ("backtest_period", ""),
+    ("active_signal_symbol", None),
+    ("active_signal_entry", None),
+    ("active_signal_sl", None),
+    ("active_signal_tp", None),
+    ("live_picked_symbols", []),
+    ("bt_picked_symbols", []),
+    ("signal_index", 0),
+]:
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+st.markdown(f'''<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;direction:rtl;">
+    <div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📈 {st.session_state.current_symbol}</div>
+    <div style="border:1px solid #DADCE0;background:#FFF;border-radius:30px;padding:8px 14px;font-weight:700;color:#0B57D0;">{st.session_state.status_summary}</div>
+</div>''', unsafe_allow_html=True)
+
+app_mode = st.radio("وضع التطبيق:",
+    ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"],
+    horizontal=True)
+st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ================= BACKTEST MODE =================
+# ══════════════════════════════════════════════════════════════════════════════
+if app_mode == "🧪 مختبر الاختبار الرجعي":
+
+    st.markdown("### 🧪 مختبر H&S")
+
+    bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"],
+        horizontal=True, key="bt_scan_mode")
+
+    if bt_mode == "سهم فردي":
+        bt_symbols = [st.text_input("رمز الأصل", value="EURUSD=X", key="bt_sym")]
+    else:
+        av = get_available_symbols()
+        dp = [s for s in st.session_state.get("bt_picked_symbols", []) if s in av]
+        picked = st.multiselect("🔽 اختر:", av, default=dp, key="bt_multi")
+        st.session_state["bt_picked_symbols"] = picked
+        bt_symbols = picked
+        if not bt_symbols: st.warning("⚠️ اختر عملة")
+
+    now = datetime.datetime.now()
+    years = [now.year, now.year - 1, now.year - 2]
+    months = {1:"يناير",2:"فبراير",3:"مارس",4:"إبريل",5:"مايو",6:"يونيو",
+              7:"يوليو",8:"أغسطس",9:"سبتمبر",10:"أكتوبر",11:"نوفمبر",12:"ديسمبر"}
+
+    st.markdown("#### 📅 الفترة")
+    pm = st.radio("نمط:", ["📆 شهر", "📅 نطاق", "🗓️ سنة"],
+        horizontal=True, key="bt_pmode")
+
+    sd = ed = pl = None
+    if pm == "📆 شهر":
+        c1, c2 = st.columns(2)
+        yy = c1.selectbox("السنة:", years, index=0, key="bt_y1")
+        mm = c2.selectbox("الشهر:", list(months.keys()),
+            format_func=lambda x: months[x], index=now.month - 1, key="bt_m1")
+        _, ld = calendar.monthrange(yy, mm)
+        sd = f"{yy}-{mm:02d}-01"; ed = f"{yy}-{mm:02d}-{ld:02d}"
+        pl = f"{months[mm]} {yy}"
+    elif pm == "📅 نطاق":
+        c1, c2 = st.columns(2)
+        p1 = c1.date_input("من:", value=datetime.date(now.year, max(1, now.month-1), 1),
+            min_value=datetime.date(now.year-5, 1, 1), max_value=datetime.date.today(), key="bt_p1")
+        p2 = c2.date_input("إلى:", value=datetime.date.today(),
+            min_value=datetime.date(now.year-5, 1, 1), max_value=datetime.date.today(), key="bt_p2")
+        if p1 < p2:
+            sd = p1.strftime("%Y-%m-%d"); ed = p2.strftime("%Y-%m-%d")
+            pl = f"{sd} → {ed}"
+    else:
+        yy = st.selectbox("السنة:", years, index=0, key="bt_y2")
+        sd = f"{yy}-01-01"; ed = f"{yy}-12-31"; pl = f"السنة {yy}"
+
+    st.markdown("---")
+    interval = st.selectbox("⏱️ الإطار:", ALL_GLOBAL_INTERVALS, index=9, key="bt_int")
+    lot = st.number_input("حجم اللوت:", 0.01, 100.0, 0.01, 0.01, "%.2f", key="bt_lot")
+
+    if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols and sd and ed:
+        results, dfs = [], {}
+        bar = st.progress(0); txt = st.empty(); errs = []
+        for i, sym in enumerate(bt_symbols):
+            txt.text(f"({i+1}/{len(bt_symbols)}): {sym}...")
+            bar.progress((i + 1) / len(bt_symbols))
+            try:
+                df, trades = _cached_backtest(fix_symbol(sym), interval, sd, ed)
+                if df is None or df.empty:
+                    errs.append(f"⚠️ {sym}: لا توجد بيانات"); continue
+                
+                dfs[sym] = df
+                
+                if trades:
+                    tdf = pd.DataFrame(trades)
+                    if "symbol" not in tdf.columns: tdf["symbol"] = sym
+                    results.append({"symbol": sym, "trades_df": tdf, "total_signals": len(tdf)})
+                else:
+                    results.append({
+                        "symbol": sym, 
+                        "trades_df": pd.DataFrame(), 
+                        "total_signals": 0,
+                        "no_signal_reason": "لم يتم العثور على أنماط مطابقة للفلاتر."
+                    })
+            except Exception as e:
+                errs.append(f"❌ {sym}: {e}")
+        txt.empty(); bar.empty()
+        st.session_state.backtest_scanned_signals = results
+        st.session_state.backtest_dfs = dfs
+        st.session_state.backtest_period = pl
+        st.session_state.signal_index = 0
+        st.session_state["_chart_cache_sym"] = None  # إعادة تعيين cache الشارت
+        if errs:
+            with st.expander(f"⚠️ تحذيرات ({len(errs)})"):
+                for m in errs: st.text(m)
+
+    if st.session_state.backtest_scanned_signals:
+        rl = st.session_state.backtest_scanned_signals
+        dfs_dict = st.session_state.backtest_dfs
+        pd_disp = st.session_state.get("backtest_period", "غير محدد")
+
+        no_signal_symbols = [r for r in rl if r.get("total_signals", 0) == 0]
+        if no_signal_symbols:
+            with st.expander("🔍 **تحليل: لماذا لم يتم العثور على إشارات؟**", expanded=True):
+                st.warning(f"تم فحص {len(no_signal_symbols)} أصل/أصول ولم يتم العثور على أي إشارة.")
+                
+                diag_sym = st.selectbox("اختر أصلاً لتحليل سبب عدم وجود إشارات:", [r["symbol"] for r in no_signal_symbols], key="diag_no_sig")
+                if diag_sym:
+                    with st.spinner("جاري التحليل..."):
+                        stats = _cached_diagnose_no_signals(fix_symbol(diag_sym), interval, sd, ed)
+                    
+                    if stats is None:
+                        st.error("تعذر تحميل البيانات للتشخيص.")
+                    elif "error" in stats:
+                        st.error(stats["error"])
+                    else:
+                        st.markdown(f"**نتائج تحليل الفلاتر لـ {diag_sym}:**")
+                        
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("إجمالي نقاط الـ Pivot", stats["total_pivots"])
+                        c2.metric("نماذج أولية (6 نقاط)", stats["raw_candidates"])
+                        c3.metric("نماذج مرت من الفلاتر", stats["passed"])
+                        
+                        st.markdown("#### 📊 تفصيل أسباب الرفض (Funnel):")
+                        reasons = {
+                            "rejected_pattern_structure": "هيكل النموذج غير مطابق (L-H-L-H-L-H)",
+                            "rejected_neckline_diff": "خط العنق غير مستوٍ",
+                            "rejected_no_breakout": "لم يحدث اختراق لخط العنق",
+                            "rejected_live_limit": "الاختراق قديم جداً (تجاوز 15 شمعة)",
+                        }
+                        
+                        chart_data = []
+                        for k, v in stats.items():
+                            if k.startswith("rejected_") and v > 0:
+                                chart_data.append({"السبب": reasons.get(k, k), "العدد": v})
+                        
+                        if chart_data:
+                            st.dataframe(pd.DataFrame(chart_data).sort_values("العدد", ascending=False), use_container_width=True)
+                            
+                            st.markdown("#### 💡 توصيات لتحسين الإعدادات:")
+                            top_reason = max(chart_data, key=lambda x: x["العدد"])["السبب"]
+                            
+                            if "خط العنق" in top_reason:
+                                st.info(f"🔧 **الحل:** قم بزيادة `NECKLINE_DIFF_MAX_RATIO` في `engine.py`.")
+                            elif "لم يحدث اختراق" in top_reason:
+                                st.info(f"🔧 **الحل:** قم بتوسيع نطاق التاريخ.")
+                            elif "الاختراق قديم" in top_reason:
+                                st.info(f"🔧 **الحل:** قم بزيادة `LIVE_MAX_BREAKOUT_CANDLES` في `engine.py`.")
+                            else:
+                                st.info(f"🔧 **الحل:** راجع الإعدادات أو وسّع نطاق التاريخ.")
+                        else:
+                            st.success("✅ لم يتم رفض أي نموذج بسبب الفلاتر.")
+
+        all_dfs = [i["trades_df"] for i in rl if "trades_df" in i and not i["trades_df"].empty]
+        if all_dfs:
+            comb = pd.concat(all_dfs, ignore_index=True)
+            
+            # ═══════════════════════════════════════════════════════════════
+            # 🚀 استخدام radio بدلاً من tabs لتسريع التنقل
+            # ═══════════════════════════════════════════════════════════════
+            view_mode = st.radio("العرض:", ["📉 الشارت والصفقات", "📊 التقرير المالي", "🧠 التشخيص"],
+                horizontal=True, key="bt_view_mode")
+            
+            if view_mode == "📊 التقرير المالي":
+                render_financial_report(comb, lot_size=lot, symbol="كل الأصول", period=pd_disp)
+
+            elif view_mode == "📉 الشارت والصفقات":
+                if bt_mode == "🎯 مجموعة" and len(rl) > 1:
+                    opts = [f"{i['symbol']} | {i['total_signals']}" for i in rl]
+                    ai = rl[opts.index(st.selectbox("👇 اختر:", opts))]
+                else:
+                    ai = rl[0]
+
+                sym = ai["symbol"]
+                tdf = compute_pips(ai["trades_df"])
+                tdf = compute_dollar_pnl(tdf, lot=lot)
+                st.session_state.current_symbol = sym
+
+                if len(tdf) == 0:
+                    st.warning(f"⚠️ **{sym}** — لا توجد أنماط")
+                else:
+                    st.markdown(f"### 📊 {sym} — {len(tdf)} إشارة")
+
+                    last = tdf.iloc[-1]
+                    st.session_state["active_signal_symbol"] = sym
+                    st.session_state["active_signal_entry"] = last.get("Entry Price") or last.get("Entry")
+                    st.session_state["active_signal_sl"] = last.get("Stop Loss") or last.get("SL")
+                    st.session_state["active_signal_tp"] = last.get("Take Profit") or last.get("TP")
+
+                    if st.session_state.get("_last_sym") != sym:
+                        st.session_state.signal_index = len(tdf) - 1
+                        st.session_state["_last_sym"] = sym
+
+                    si = max(0, min(st.session_state.signal_index, len(tdf) - 1))
+                    n1, n2, n3, n4, n5 = st.columns([1, 1, 3, 1, 1])
+                    with n1:
+                        if st.button("⏮️", use_container_width=True, key="b1"): st.session_state.signal_index = 0; st.rerun()
+                    with n2:
+                        if st.button("◀", use_container_width=True, key="b2"): st.session_state.signal_index = max(0, si - 1); st.rerun()
+                    with n3:
+                        st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold'>إشارة {si+1} من {len(tdf)}</div>", unsafe_allow_html=True)
+                    with n4:
+                        if st.button("▶", use_container_width=True, key="b4"): st.session_state.signal_index = min(len(tdf)-1, si+1); st.rerun()
+                    with n5:
+                        if st.button("⏭️", use_container_width=True, key="b5"): st.session_state.signal_index = len(tdf)-1; st.rerun()
+
+                    cur = tdf.iloc[si]
+                    ptype = cur.get("Pattern Type", "—")
+                    icon = "🔄" if ptype == "Reversal" else "➡️" if ptype == "Continuation" else "📊"
+                    st.markdown(f"**{icon} النوع:** {ptype}")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("🎯 الدخول", f"{cur.get('Entry Price', '—')}")
+                    m2.metric("🛑 SL", f"{cur.get('Stop Loss', '—')}")
+                    m3.metric("🏆 TP", f"{cur.get('Take Profit', '—')}")
+                    m4.metric("📊 النتيجة", f"{cur.get('Result', '—')}")
+
+                    if cur.get("Trade Recommendation"):
+                        st.info(cur["Trade Recommendation"])
+
+                    # ═══════════════════════════════════════════════════════════
+                    # 🚀 استخدام الدالة السريعة لرسم الشارت
+                    # ═══════════════════════════════════════════════════════════
+                    with st.spinner("جاري تحضير الشارت..."):
+                        df_chart = _prepare_chart_data(fix_symbol(sym), interval, sd, ed)
+                    
+                    if df_chart is not None and not df_chart.empty:
+                        render_chart_fast(sym, cur, df_chart)
+                    else:
+                        st.warning("⚠️ لا توجد بيانات للرسم")
+
+                    with st.expander("📋 التفاصيل", expanded=False):
+                        for col in ["Entry Date", "Exit Date", "Bias", "Pattern Type",
+                                    "Result", "Entry Price", "Stop Loss", "Take Profit",
+                                    "Structural SL", "Safe SL", "TP Factor Used",
+                                    "Max Reach %", "Max Extension %", "SL Safety %",
+                                    "Breakeven Activated", "Trailing Stage", "Loss Category"]:
+                            if col in cur:
+                                st.text(f"{col}: {cur[col]}")
+
+            else:  # التشخيص
+                st.markdown("### 🧠 تشخيص الإستراتيجية")
+                if st.session_state.backtest_dfs:
+                    sym_diag = st.selectbox("اختر الأصل للتشخيص:", list(st.session_state.backtest_dfs.keys()))
+                    if sym_diag:
+                        with st.spinner("جاري تحليل الثغرات..."):
+                            diag = _cached_diagnose_filters(fix_symbol(sym_diag), interval, sd, ed)
+                        
+                        if diag and diag.get("smart_diagnosis"):
+                            diag_smart = diag["smart_diagnosis"]
+                            st.info(f"**الحكم النهائي:** {diag_smart.get('verdict', '—')}")
+                            action_plan = diag_smart.get("action_plan", [])
+                            if action_plan:
+                                for action in action_plan:
+                                    st.warning(action)
+                            
+                            with st.expander("📋 تفاصيل تشخيصية إضافية"):
+                                col_a, col_b = st.columns(2)
+                                with col_a:
+                                    st.write("**توزيع الخسائر:**")
+                                    st.json(diag_smart.get("loss_breakdown", {}))
+                                with col_b:
+                                    st.write("**إحصائيات الأرباح:**")
+                                    st.json(diag_smart.get("win_breakdown", {}))
+                        else:
+                            st.info("لا توجد بيانات كافية للتشخيص.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ================= LIVE SCAN MODE =================
+# ══════════════════════════════════════════════════════════════════════════════
+else:
+
+    mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"],
+        horizontal=True, key="live_mode")
+
+    if mode == "سهم فردي":
+        symbols = [st.text_input("رمز:", value="EURUSD=X", key="live_sym")]
+    else:
+        av = get_available_symbols()
+        dp = [s for s in st.session_state.get("live_picked_symbols", []) if s in av]
+        picked = st.multiselect("🔽 اختر:", av, default=dp, key="live_multi")
+        st.session_state["live_picked_symbols"] = picked
+        symbols = picked
+        if not symbols: st.warning("⚠️ اختر عملة")
+
+    c1, c2 = st.columns(2)
+    interval = c1.selectbox("⏱️ الإطار:", ALL_GLOBAL_INTERVALS, index=9, key="live_int")
+    period = c2.selectbox("📅 النطاق:",
+        ["1d","5d","1mo","3mo","6mo","1y","2y","5y","10y","ytd","max"],
+        index=4, key="live_period")
+
+    if st.button("🚀 بدء المسح", use_container_width=True) and symbols:
+        valid = []; bar = st.progress(0); txt = st.empty(); errs = []
+        for i, sym in enumerate(symbols):
+            txt.text(f"({i+1}/{len(symbols)}): {sym}...")
+            bar.progress((i + 1) / len(symbols))
+            try:
+                df, res = _cached_live(fix_symbol(sym), interval, period)
+                if df is None or df.empty:
+                    errs.append(f"⚠️ {sym}: لا توجد بيانات"); continue
+                if res and res.get("signal") in ("STRONG BUY", "STRONG SELL"):
+                    valid.append({"symbol": sym, "result": res})
+            except Exception as e:
+                errs.append(f"❌ {sym}: {e}")
+        txt.empty(); bar.empty()
+        st.session_state.scanned_signals = valid
+        st.session_state.signal_index = 0
+        if errs:
+            with st.expander(f"⚠️ تحذيرات ({len(errs)})"):
+                for m in errs: st.text(m)
+
+    if st.session_state.scanned_signals:
+        sigs = st.session_state.scanned_signals
+        st.success(f"✅ تم العثور على **{len(sigs)}** إشارة")
+
+        if st.toggle("🔽 عرض النتائج", value=False, key="live_show"):
+            si = max(0, min(st.session_state.signal_index, len(sigs) - 1))
+            n1, n2, n3, n4, n5 = st.columns([1, 1, 3, 1, 1])
+            with n1:
+                if st.button("⏮️", use_container_width=True, key="l1"): st.session_state.signal_index = 0; st.rerun()
+            with n2:
+                if st.button("◀", use_container_width=True, key="l2"): st.session_state.signal_index = max(0, si - 1); st.rerun()
+            with n3:
+                st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold'>إشارة {si+1} من {len(sigs)}</div>", unsafe_allow_html=True)
+            with n4:
+                if st.button("▶", use_container_width=True, key="l4"): st.session_state.signal_index = min(len(sigs)-1, si+1); st.rerun()
+            with n5:
+                if st.button("⏭️", use_container_width=True, key="l5"): st.session_state.signal_index = len(sigs)-1; st.rerun()
+
+            ar = sigs[si]["result"]
+            asy = ar.get("symbol", "N/A")
+
+            e1, e2, e3 = st.columns(3)
+            e1.metric("🎯 الدخول", f"{ar.get('entry', 0)}")
+            e2.metric("🛑 SL", f"{ar.get('sl', 0)}")
+            e3.metric("🏆 TP", f"{ar.get('tp', 0)}")
+
+            if ar.get("Trade Recommendation"):
+                st.info(ar["Trade Recommendation"])
+
+            st.session_state["active_signal_symbol"] = asy
+            st.session_state["active_signal_entry"] = ar.get("entry")
+            st.session_state["active_signal_sl"] = ar.get("sl")
+            st.session_state["active_signal_tp"] = ar.get("tp")
+
+            dfo = ar.get("df")
+            if dfo is not None and not dfo.empty:
+                # إضافة EMA للبيانات الحية (مخزنة مؤقتاً)
+                df_chart = dfo.copy()
+                if "EMA50" not in df_chart.columns:
+                    df_chart["EMA50"] = df_chart["Close"].ewm(span=50, adjust=False).mean()
+                if "EMA200" not in df_chart.columns:
+                    df_chart["EMA200"] = df_chart["Close"].ewm(span=200, adjust=False).mean()
+                
+                # استخدام نفس دالة الرسم السريعة
+                render_chart_fast(asy, ar, df_chart)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Footer
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+with st.expander("💰 حاسبة المخاطرة المتقدمة + 🧮 حاسبة حسابية", expanded=False):
+    render_advanced_risk_calculator(unique_id="end")
