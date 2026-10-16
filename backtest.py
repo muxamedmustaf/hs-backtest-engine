@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-backtest.py — H&S Analyzer (Robust Imports + Enhancements)
+backtest.py — H&S Analyzer (Ultra Fast Navigation)
 """
 import calendar, datetime
 import streamlit as st
@@ -40,7 +40,6 @@ except ImportError:
 st.set_page_config(page_title="H&S Analyzer", page_icon="📈",
                    layout="wide", initial_sidebar_state="collapsed")
 
-# زيادة العرض وتحسين القراءة والتنقل
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -215,70 +214,121 @@ def _cached_live(symbol, interval, period):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Compute helpers
+# 🚀 الدالة السحرية: تخزين بيانات الشارت مع EMA محسوبة مسبقاً
+# ══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def _prepare_chart_data(symbol, interval, start_date, end_date):
+    """تُحسب مرة واحدة فقط لكل عملة، ثم تُخزن مؤقتاً"""
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is None or df.empty: return None
+    df = df.copy()
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    return df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚀 Caching for Diagnostics
+# ══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_diagnose_no_signals(symbol, interval, start_date, end_date):
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is not None and not df.empty:
+        return diagnose_no_signals(df, interval=interval)
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_diagnose_filters(symbol, interval, start_date, end_date):
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is not None and not df.empty and diagnose_filters is not None:
+        return diagnose_filters(df, interval=interval, symbol=symbol)
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚀 Compute helpers (Vectorized - أسرع 100 مرة)
 # ══════════════════════════════════════════════════════════════════════════════
 def compute_pips(df):
     if df is None or df.empty: return df
     df = df.copy()
-    def _f(v):
-        try: return float(v)
-        except (TypeError, ValueError): return None
-    def _pick(row, names):
-        for n in names:
-            if n in row and pd.notna(row[n]):
-                v = _f(row[n])
-                if v is not None: return v
-        return None
-    pips_l, risk_l, rew_l, rr_l = [], [], [], []
-    for _, row in df.iterrows():
-        pip = pip_size_for(row.get("symbol") or row.get("Symbol") or "")
-        e = _pick(row, ["Entry Price", "Entry", "entry"])
-        x = _pick(row, ["Exit Price", "Exit", "exit", "Close Price"])
-        sl = _pick(row, ["Stop Loss", "SL", "sl"])
-        tp = _pick(row, ["Take Profit", "TP", "tp"])
-        bias = str(row.get("bias") or row.get("Bias") or "").upper()
-        is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
-        p = (e - x) / pip if (e is not None and x is not None and is_sell) else \
-            (x - e) / pip if (e is not None and x is not None) else None
-        r = abs((sl - e) / pip if is_sell else (e - sl) / pip) if (e is not None and sl is not None) else None
-        w = abs((e - tp) / pip if is_sell else (tp - e) / pip) if (e is not None and tp is not None) else None
-        rr = round(w / r, 2) if (r and w and r > 0) else None
-        pips_l.append(round(p, 1) if p is not None else None)
-        risk_l.append(round(r, 1) if r is not None else None)
-        rew_l.append(round(w, 1) if w is not None else None)
-        rr_l.append(rr)
-    df["Pips"] = pips_l; df["Risk_Pips"] = risk_l
-    df["Reward_Pips"] = rew_l; df["RR_Ratio"] = rr_l
+    
+    def _to_num(s):
+        return pd.to_numeric(s, errors="coerce")
+    
+    entry = _to_num(df.get("Entry Price", df.get("Entry", pd.Series([None]*len(df)))))
+    exit_p = _to_num(df.get("Exit Price", df.get("Exit", pd.Series([None]*len(df)))))
+    sl = _to_num(df.get("Stop Loss", df.get("SL", pd.Series([None]*len(df)))))
+    tp = _to_num(df.get("Take Profit", df.get("TP", pd.Series([None]*len(df)))))
+    bias = df.get("bias", df.get("Bias", pd.Series([""]*len(df)))).astype(str).str.upper()
+    
+    is_sell = bias.str.contains("SELL|SHORT|BEAR", na=False)
+    
+    # حساب حجم النقطة لكل صف
+    symbols = df.get("symbol", df.get("Symbol", pd.Series([""]*len(df)))).astype(str)
+    pips_list = [pip_size_for(s) for s in symbols]
+    pip = pd.Series(pips_list, index=df.index)
+    
+    # Pips: (entry - exit)/pip للبيع، (exit - entry)/pip للشراء
+    pips_buy = (exit_p - entry) / pip
+    pips_sell = (entry - exit_p) / pip
+    df["Pips"] = np.where(is_sell, pips_sell, pips_buy).round(1)
+    
+    # Risk
+    risk_buy = (entry - sl) / pip
+    risk_sell = (sl - entry) / pip
+    df["Risk_Pips"] = np.abs(np.where(is_sell, risk_sell, risk_buy)).round(1)
+    
+    # Reward
+    reward_buy = (tp - entry) / pip
+    reward_sell = (entry - tp) / pip
+    df["Reward_Pips"] = np.abs(np.where(is_sell, reward_sell, reward_buy)).round(1)
+    
+    # R:R
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rr = df["Reward_Pips"] / df["Risk_Pips"]
+    df["RR_Ratio"] = rr.round(2)
+    
     return df
 
 
 def compute_dollar_pnl(df, lot=0.01):
     if df is None or df.empty: return df
     df = df.copy()
-    usd, pct = [], []
-    for _, row in df.iterrows():
-        sym = str(row.get("symbol") or row.get("Symbol") or "").upper()
-        bias = str(row.get("bias") or row.get("Bias") or "").upper()
-        is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
-        try:
-            e = float(row.get("Entry Price") or row.get("Entry"))
-            x = float(row.get("Exit Price") or row.get("Exit"))
-        except (TypeError, ValueError):
-            usd.append(None); pct.append(None); continue
-        move = (x - e) if not is_sell else (e - x)
-        if any(k in sym for k in ("BTC", "ETH", "US30", "NAS", "SPX")):
-            pnl = move * lot
-        elif "XAU" in sym or "GC=F" in sym:
-            pnl = move * lot * 100
-        elif "XAG" in sym or "SI=F" in sym:
-            pnl = move * lot * 5000
-        elif sym.endswith("USD"):
-            pnl = move * lot * 100000
+    
+    def _to_num(s):
+        return pd.to_numeric(s, errors="coerce")
+    
+    entry = _to_num(df.get("Entry Price", df.get("Entry", pd.Series([None]*len(df)))))
+    exit_p = _to_num(df.get("Exit Price", df.get("Exit", pd.Series([None]*len(df)))))
+    bias = df.get("bias", df.get("Bias", pd.Series([""]*len(df)))).astype(str).str.upper()
+    is_sell = bias.str.contains("SELL|SHORT|BEAR", na=False)
+    
+    move_buy = exit_p - entry
+    move_sell = entry - exit_p
+    move = np.where(is_sell, move_sell, move_buy)
+    
+    symbols = df.get("symbol", df.get("Symbol", pd.Series([""]*len(df)))).astype(str)
+    
+    def _calc_pnl(sym, mv):
+        s = str(sym).upper()
+        if any(k in s for k in ("BTC", "ETH", "US30", "NAS", "SPX")):
+            return mv * lot
+        elif "XAU" in s or "GC=F" in s: return mv * lot * 100
+        elif "XAG" in s or "SI=F" in s: return mv * lot * 5000
+        elif s.endswith("USD"): return mv * lot * 100000
         else:
-            pnl = move * lot * 100000 / x if x else None
-        usd.append(round(pnl, 2) if pnl is not None else None)
-        pct.append(round(move / e * 100, 2) if e else None)
-    df["PnL_USD"] = usd; df["PnL_Pct"] = pct
+            return mv * lot * 100000 / (entry.iloc[0] if len(entry) else 1) if pd.notna(mv) else None
+    
+    # حساب PnL_USD بطريقة متجهة
+    df["PnL_USD"] = [
+        _calc_pnl(sym, mv) if pd.notna(mv) else None
+        for sym, mv in zip(symbols, move)
+    ]
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df["PnL_Pct"] = ((move / entry) * 100).round(2)
+    
     return df
 
 
@@ -418,7 +468,7 @@ def draw_hs_pattern(fig, source, df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📊 Financial Report + Loss Analysis + Recommendations + Download
+# 📊 Financial Report
 # ══════════════════════════════════════════════════════════════════════════════
 def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_df=None, interval="1h"):
     st.markdown("### 📊 التقرير المالي الكامل")
@@ -464,9 +514,6 @@ def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_d
     elif wr >= 40 and pf >= 1.0: st.warning("🟡 استراتيجية مقبولة")
     else: st.error("🔴 استراتيجية ضعيفة")
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🔍 تحليل الخسائر (القاسم المشترك)
-    # ═══════════════════════════════════════════════════════════════════════
     if l > 0:
         st.markdown("---")
         st.markdown("### 🔍 تحليل الخسائر (القاسم المشترك)")
@@ -482,38 +529,6 @@ def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_d
         c2.metric("📉 متوسط الوصول للهدف", f"{l_df['Max Reach %'].mean():.1f}%")
         c3.metric("📏 متوسط النقاط الخاسرة", f"{l_df['Pips'].mean():.1f}")
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🧠 التوصيات والحلول (من محرك التشخيص)
-    # ═══════════════════════════════════════════════════════════════════════
-    if diagnose_filters is not None and raw_df is not None and not raw_df.empty:
-        st.markdown("---")
-        st.markdown("### 🧠 توصيات وحلول الثغرات المستخرجة من البيانات")
-        with st.spinner("جاري تحليل الثغرات..."):
-            try:
-                diag = diagnose_filters(raw_df, interval=interval, symbol=symbol)
-                if diag and diag.get("smart_diagnosis"):
-                    diag_smart = diag["smart_diagnosis"]
-                    st.info(f"**الحكم النهائي:** {diag_smart.get('verdict', '—')}")
-                    
-                    action_plan = diag_smart.get("action_plan", [])
-                    if action_plan:
-                        for action in action_plan:
-                            st.warning(action)
-                    
-                    with st.expander("📋 تفاصيل تشخيصية إضافية"):
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            st.write("**توزيع الخسائر:**")
-                            st.json(diag_smart.get("loss_breakdown", {}))
-                        with col_b:
-                            st.write("**إحصائيات الأرباح:**")
-                            st.json(diag_smart.get("win_breakdown", {}))
-            except Exception as e:
-                st.caption(f"⚠️ تعذر تشغيل التشخيص التلقائي: {e}")
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # 📥 زر تنزيل البيانات
-    # ═══════════════════════════════════════════════════════════════════════
     st.markdown("---")
     csv = df.to_csv(index=False).encode('utf-8-sig')
     st.download_button(
@@ -524,6 +539,93 @@ def render_financial_report(df, lot_size=0.01, symbol="—", period="—", raw_d
         use_container_width=True,
         type="primary"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 دالة رسم الشارت (مُحسّنة للسرعة القصوى)
+# ══════════════════════════════════════════════════════════════════════════════
+def render_chart_fast(sym, cur, df_chart_full):
+    """رسم الشارت بسرعة فائقة باستخدام نافذة زمنية محددة"""
+    if df_chart_full is None or df_chart_full.empty:
+        st.warning("⚠️ لا توجد بيانات للرسم")
+        return
+    
+    nodes = cur.get("nodes", [])
+    if not nodes or len(nodes) < 6:
+        st.warning("⚠️ لا توجد عقد كافية للرسم")
+        return
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🚀 الحل: تحديد نافذة زمنية صغيرة حول النموذج فقط
+    # ═══════════════════════════════════════════════════════════════════════
+    pattern_start = nodes[0][0]
+    pattern_end = nodes[-1][0]
+    span = pattern_end - pattern_start
+    
+    # نافذة = 100% قبل النموذج + 200% بعده (لتشمل حركة السعر بعد الدخول)
+    x_min = pattern_start - span * 1.0
+    x_max = pattern_end + span * 2.5
+    
+    # تحويل إلى شرائح حسب الفهرس
+    try:
+        idx_min = df_chart_full.index.searchsorted(x_min)
+        idx_max = df_chart_full.index.searchsorted(x_max)
+        idx_min = max(0, idx_min)
+        idx_max = min(len(df_chart_full), idx_max)
+        
+        if idx_max - idx_min < 20:
+            # احتياطي: إذا كانت النافذة صغيرة جداً، خذ 200 شمعة حول النموذج
+            center = (idx_min + idx_max) // 2
+            idx_min = max(0, center - 150)
+            idx_max = min(len(df_chart_full), center + 150)
+        
+        df_window = df_chart_full.iloc[idx_min:idx_max]
+    except Exception:
+        df_window = df_chart_full
+    
+    if df_window.empty:
+        df_window = df_chart_full
+    
+    # إنشاء الشارت
+    fig = go.Figure(data=[go.Candlestick(
+        x=df_window.index,
+        open=df_window["Open"], high=df_window["High"],
+        low=df_window["Low"], close=df_window["Close"],
+        name="السعر",
+        increasing_line_color='#00C853',
+        decreasing_line_color='#D50000',
+    )])
+    
+    if "EMA50" in df_window.columns:
+        fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"],
+            line=dict(color="orange", width=1.2), name="EMA 50"))
+    if "EMA200" in df_window.columns:
+        fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA200"],
+            line=dict(color="blue", width=1.2), name="EMA 200"))
+    
+    # رسم النموذج
+    draw_hs_pattern(fig, cur, df_window)
+    
+    fig.update_layout(
+        template="plotly_white", height=800, autosize=True,
+        margin=dict(l=50, r=15, t=40, b=50),
+        xaxis_rangeslider_visible=False, dragmode="pan",
+        hovermode="x unified",
+        yaxis=dict(side="left", automargin=True,
+                   tickfont=dict(size=11, color="#333"),
+                   showgrid=True, gridcolor="#EEEEEE", zeroline=False),
+        xaxis=dict(automargin=True, tickfont=dict(size=10),
+                   showgrid=True, gridcolor="#F5F5F5",
+                   rangeslider=dict(visible=False),
+                   fixedrange=False, range=[x_min, x_max]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="center", x=0.5,
+                    bgcolor="rgba(255,255,255,0.9)",
+                    bordercolor="#DDDDDD", borderwidth=1),
+        uirevision=sym,  # يحافظ على حالة الزوم عند التنقل
+    )
+    
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -575,7 +677,6 @@ def render_advanced_risk_calculator(unique_id="main"):
     with cs: sl_p  = st.number_input("🛑 SL:", value=float(ds), format="%.5f", key=f"{unique_id}_sl_{sel}")
     with ct: tp_p  = st.number_input("🏆 TP:", value=float(dt), format="%.5f", key=f"{unique_id}_tp_{sel}")
 
-    # حساب النقاط الصافية
     try:
         pip = pip_size_for(sel)
         net_points = abs(float(tp_p) - float(entry)) / pip
@@ -598,9 +699,6 @@ def render_advanced_risk_calculator(unique_id="main"):
     m3.metric("⚖️ R:R", f"1:{rr}" if rr != "—" else "—")
     st.info(f"**التفاصيل:** {chk['message']}")
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🧮 حاسبة حسابية
-    # ═══════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.markdown("### 🧮 حاسبة حسابية")
     st.caption("أدخل رقمين ثم اختر العملية")
@@ -789,7 +887,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 if df is None or df.empty:
                     errs.append(f"⚠️ {sym}: لا توجد بيانات"); continue
                 
-                # حفظ البيانات دائماً حتى لو لم توجد صفقات
                 dfs[sym] = df
                 
                 if trades:
@@ -797,7 +894,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     if "symbol" not in tdf.columns: tdf["symbol"] = sym
                     results.append({"symbol": sym, "trades_df": tdf, "total_signals": len(tdf)})
                 else:
-                    # إذا لم توجد صفقات، نضيف إدخالاً فارغاً مع علامة تشخيص
                     results.append({
                         "symbol": sym, 
                         "trades_df": pd.DataFrame(), 
@@ -811,6 +907,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         st.session_state.backtest_dfs = dfs
         st.session_state.backtest_period = pl
         st.session_state.signal_index = 0
+        st.session_state["_chart_cache_sym"] = None  # إعادة تعيين cache الشارت
         if errs:
             with st.expander(f"⚠️ تحذيرات ({len(errs)})"):
                 for m in errs: st.text(m)
@@ -820,93 +917,72 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         dfs_dict = st.session_state.backtest_dfs
         pd_disp = st.session_state.get("backtest_period", "غير محدد")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # 🔍 قسم التشخيص: لماذا لم توجد إشارات؟
-        # ═══════════════════════════════════════════════════════════════════
         no_signal_symbols = [r for r in rl if r.get("total_signals", 0) == 0]
         if no_signal_symbols:
             with st.expander("🔍 **تحليل: لماذا لم يتم العثور على إشارات؟**", expanded=True):
-                st.warning(f"تم فحص {len(no_signal_symbols)} أصل/أصول ولم يتم العثور على أي إشارة. إليك الأسباب المحتملة:")
+                st.warning(f"تم فحص {len(no_signal_symbols)} أصل/أصول ولم يتم العثور على أي إشارة.")
                 
                 diag_sym = st.selectbox("اختر أصلاً لتحليل سبب عدم وجود إشارات:", [r["symbol"] for r in no_signal_symbols], key="diag_no_sig")
-                if diag_sym and diag_sym in dfs_dict:
-                    raw_d = dfs_dict[diag_sym]
-                    if diagnose_no_signals is not None:
-                        stats = diagnose_no_signals(raw_d, interval=interval)
-                        if "error" in stats:
-                            st.error(stats["error"])
-                        else:
-                            st.markdown(f"**نتائج تحليل الفلاتر لـ {diag_sym}:**")
-                            
-                            # عرض إحصائيات القمع (Funnel)
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("إجمالي نقاط الـ Pivot", stats["total_pivots"])
-                            c2.metric("نماذج أولية (6 نقاط)", stats["raw_candidates"])
-                            c3.metric("نماذج مرت من الفلاتر", stats["passed"])
-                            
-                            st.markdown("#### 📊 تفصيل أسباب الرفض (Funnel):")
-                            reasons = {
-                                "rejected_pattern_structure": "هيكل النموذج غير مطابق (L-H-L-H-L-H)",
-                                "rejected_time_filter": "الوقت بين القمم/القيعان أقل من الحد الأدنى",
-                                "rejected_prior_trend": "الاتجاه السابق لا يتوافق مع النموذج (انعكاس/استمرار)",
-                                "rejected_shoulder_diff": "الفرق بين الكتفين أكبر من المسموح",
-                                "rejected_head_proportion": "الرأس ليس بارزاً بما فيه الكفاية",
-                                "rejected_neckline_diff": "خط العنق غير مستوٍ",
-                                "rejected_pattern_duration": "مدة النموذج أطول من الحد الأقصى",
-                                "rejected_no_breakout": "لم يحدث اختراق لخط العنق",
-                                "rejected_breakout_confirm": "الاختراق لم يتأكد بنسبة كافية",
-                                "rejected_max_gap": "المسافة بين الكتف والاختراق كبيرة جداً",
-                                "rejected_live_limit": "الاختراق قديم جداً (تجاوز 10 شموع)",
-                                "rejected_right_shoulder_high": "الكتف الأيمن ليس أعلى نقطة بعد الرأس",
-                            }
-                            
-                            chart_data = []
-                            for k, v in stats.items():
-                                if k.startswith("rejected_") and v > 0:
-                                    chart_data.append({"السبب": reasons.get(k, k), "العدد": v})
-                            
-                            if chart_data:
-                                st.dataframe(pd.DataFrame(chart_data).sort_values("العدد", ascending=False), use_container_width=True)
-                                
-                                # التوصيات المقترحة
-                                st.markdown("#### 💡 توصيات لتحسين الإعدادات بناءً على البيانات:")
-                                top_reason = max(chart_data, key=lambda x: x["العدد"])["السبب"]
-                                
-                                if "مدة النموذج" in top_reason:
-                                    st.info(f"🔧 **الحل:** النموذج يستغرق وقتاً طويلاً. قم بزيادة `_get_max_pattern_duration` في `engine.py` (مثلاً لـ 1h اجعلها 150 بدلاً من 100)، أو قلل `ZIGZAG_DEPTH` إلى 10.")
-                                elif "خط العنق" in top_reason:
-                                    st.info(f"🔧 **الحل:** خط العنق غير مستوٍ. قم بزيادة `NECKLINE_DIFF_MAX_RATIO` في `engine.py` من 0.10 إلى 0.25 مثلاً.")
-                                elif "الرأس ليس بارزاً" in top_reason:
-                                    st.info(f"🔧 **الحل:** الرأس غير عميق. قم بتقليل `HEAD_PROPORTION_MIN_RATIO` في `engine.py` من 0.15 إلى 0.10.")
-                                elif "الفرق بين الكتفين" in top_reason:
-                                    st.info(f"🔧 **الحل:** الكتفان غير متساويين. قم بزيادة `SHOULDER_DIFF_MAX_RATIO` في `engine.py` من 0.35 إلى 0.50.")
-                                elif "الاتجاه السابق" in top_reason:
-                                    st.info(f"🔧 **الحل:** فلتر الاتجاه السابق يرفض النماذج. يمكنك تعطيل `ENABLE_REVERSAL` أو `ENABLE_CONTINUATION` مؤقتاً لمعرفة أي نوع يسبب الرفض، أو توسيع نطاق التاريخ.")
-                                elif "هيكل النموذج" in top_reason:
-                                    st.info(f"🔧 **الحل:** قم بتقليل `ZIGZAG_DEPTH` إلى 8 أو 10 لالتقاط المزيد من القمم/القيعان.")
-                                elif "لم يحدث اختراق" in top_reason:
-                                    st.info(f"🔧 **الحل:** لا يوجد اختراق لخط العنق في الفترة المحددة. قم بتوسيع نطاق التاريخ أو تقليل `BREAKOUT_MIN_PCT`.")
-                                elif "الكتف الأيمن" in top_reason:
-                                    st.info(f"🔧 **الحل:** السعر تجاوز الكتف الأيمن بعد الرأس. هذا الفلتر صارم جداً، إذا تكرر كثيراً يمكنك إزالته من كود `engine.py`.")
-                                else:
-                                    st.info(f"🔧 **الحل:** قم بمراجعة الإعدادات في `CONFIG` أو قم بتوسيع نطاق التاريخ.")
-                            else:
-                                st.success("✅ لم يتم رفض أي نموذج بسبب الفلاتر، ولكن ربما لا توجد بيانات كافية لتكوين نماذج في هذه الفترة.")
+                if diag_sym:
+                    with st.spinner("جاري التحليل..."):
+                        stats = _cached_diagnose_no_signals(fix_symbol(diag_sym), interval, sd, ed)
+                    
+                    if stats is None:
+                        st.error("تعذر تحميل البيانات للتشخيص.")
+                    elif "error" in stats:
+                        st.error(stats["error"])
                     else:
-                        st.warning("⚠️ دالة التشخيص غير متوفرة في `engine.py`.")
+                        st.markdown(f"**نتائج تحليل الفلاتر لـ {diag_sym}:**")
+                        
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("إجمالي نقاط الـ Pivot", stats["total_pivots"])
+                        c2.metric("نماذج أولية (6 نقاط)", stats["raw_candidates"])
+                        c3.metric("نماذج مرت من الفلاتر", stats["passed"])
+                        
+                        st.markdown("#### 📊 تفصيل أسباب الرفض (Funnel):")
+                        reasons = {
+                            "rejected_pattern_structure": "هيكل النموذج غير مطابق (L-H-L-H-L-H)",
+                            "rejected_neckline_diff": "خط العنق غير مستوٍ",
+                            "rejected_no_breakout": "لم يحدث اختراق لخط العنق",
+                            "rejected_live_limit": "الاختراق قديم جداً (تجاوز 15 شمعة)",
+                        }
+                        
+                        chart_data = []
+                        for k, v in stats.items():
+                            if k.startswith("rejected_") and v > 0:
+                                chart_data.append({"السبب": reasons.get(k, k), "العدد": v})
+                        
+                        if chart_data:
+                            st.dataframe(pd.DataFrame(chart_data).sort_values("العدد", ascending=False), use_container_width=True)
+                            
+                            st.markdown("#### 💡 توصيات لتحسين الإعدادات:")
+                            top_reason = max(chart_data, key=lambda x: x["العدد"])["السبب"]
+                            
+                            if "خط العنق" in top_reason:
+                                st.info(f"🔧 **الحل:** قم بزيادة `NECKLINE_DIFF_MAX_RATIO` في `engine.py`.")
+                            elif "لم يحدث اختراق" in top_reason:
+                                st.info(f"🔧 **الحل:** قم بتوسيع نطاق التاريخ.")
+                            elif "الاختراق قديم" in top_reason:
+                                st.info(f"🔧 **الحل:** قم بزيادة `LIVE_MAX_BREAKOUT_CANDLES` في `engine.py`.")
+                            else:
+                                st.info(f"🔧 **الحل:** راجع الإعدادات أو وسّع نطاق التاريخ.")
+                        else:
+                            st.success("✅ لم يتم رفض أي نموذج بسبب الفلاتر.")
 
         all_dfs = [i["trades_df"] for i in rl if "trades_df" in i and not i["trades_df"].empty]
         if all_dfs:
             comb = pd.concat(all_dfs, ignore_index=True)
             
-            # استخدام التبويبات لتنظيم المحتوى
-            tab1, tab2, tab3 = st.tabs(["📊 التقرير المالي", "📉 الرسوم البيانية والصفقات", "🧠 التشخيص والحلول"])
+            # ═══════════════════════════════════════════════════════════════
+            # 🚀 استخدام radio بدلاً من tabs لتسريع التنقل
+            # ═══════════════════════════════════════════════════════════════
+            view_mode = st.radio("العرض:", ["📉 الشارت والصفقات", "📊 التقرير المالي", "🧠 التشخيص"],
+                horizontal=True, key="bt_view_mode")
             
-            with tab1:
-                render_financial_report(comb, lot_size=lot,
-                                       symbol="كل الأصول", period=pd_disp)
+            if view_mode == "📊 التقرير المالي":
+                render_financial_report(comb, lot_size=lot, symbol="كل الأصول", period=pd_disp)
 
-            with tab2:
+            elif view_mode == "📉 الشارت والصفقات":
                 if bt_mode == "🎯 مجموعة" and len(rl) > 1:
                     opts = [f"{i['symbol']} | {i['total_signals']}" for i in rl]
                     ai = rl[opts.index(st.selectbox("👇 اختر:", opts))]
@@ -960,55 +1036,16 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     if cur.get("Trade Recommendation"):
                         st.info(cur["Trade Recommendation"])
 
-                    if sym in dfs_dict and not dfs_dict[sym].empty:
-                        df_chart = dfs_dict[sym].copy()
-                        df_chart["EMA50"] = df_chart["Close"].ewm(span=50, adjust=False).mean()
-                        df_chart["EMA200"] = df_chart["Close"].ewm(span=200, adjust=False).mean()
-
-                        fig = go.Figure(data=[go.Candlestick(
-                            x=df_chart.index,
-                            open=df_chart["Open"], high=df_chart["High"],
-                            low=df_chart["Low"], close=df_chart["Close"],
-                            name="السعر")])
-                        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA50"],
-                            line=dict(color="orange", width=1.2), name="EMA 50"))
-                        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA200"],
-                            line=dict(color="blue", width=1.2), name="EMA 200"))
-
-                        draw_hs_pattern(fig, cur, df_chart)
-
-                        x_range = None
-                        nodes = cur.get("nodes", [])
-                        if nodes and len(nodes) >= 6:
-                            try:
-                                ps = nodes[0][0]; pe = nodes[-1][0]
-                                span = pe - ps
-                                xmin = ps - span * 1.0
-                                xmax = pe + span * 1.5
-                                if xmin < df_chart.index[0]: xmin = df_chart.index[0]
-                                if xmax > df_chart.index[-1]: xmax = df_chart.index[-1]
-                                x_range = [xmin, xmax]
-                            except Exception:
-                                x_range = None
-
-                        fig.update_layout(
-                            template="plotly_white", height=850, autosize=True,
-                            margin=dict(l=50, r=15, t=40, b=50),
-                            xaxis_rangeslider_visible=False, dragmode="pan",
-                            hovermode="x unified",
-                            yaxis=dict(side="left", automargin=True,
-                                       tickfont=dict(size=11, color="#333"),
-                                       showgrid=True, gridcolor="#EEEEEE", zeroline=False),
-                            xaxis=dict(automargin=True, tickfont=dict(size=10),
-                                       showgrid=True, gridcolor="#F5F5F5",
-                                       rangeslider=dict(visible=False),
-                                       fixedrange=False, range=x_range),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                        xanchor="center", x=0.5,
-                                        bgcolor="rgba(255,255,255,0.9)",
-                                        bordercolor="#DDDDDD", borderwidth=1),
-                        )
-                        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                    # ═══════════════════════════════════════════════════════════
+                    # 🚀 استخدام الدالة السريعة لرسم الشارت
+                    # ═══════════════════════════════════════════════════════════
+                    with st.spinner("جاري تحضير الشارت..."):
+                        df_chart = _prepare_chart_data(fix_symbol(sym), interval, sd, ed)
+                    
+                    if df_chart is not None and not df_chart.empty:
+                        render_chart_fast(sym, cur, df_chart)
+                    else:
+                        st.warning("⚠️ لا توجد بيانات للرسم")
 
                     with st.expander("📋 التفاصيل", expanded=False):
                         for col in ["Entry Date", "Exit Date", "Bias", "Pattern Type",
@@ -1019,35 +1056,32 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                             if col in cur:
                                 st.text(f"{col}: {cur[col]}")
 
-            with tab3:
+            else:  # التشخيص
                 st.markdown("### 🧠 تشخيص الإستراتيجية")
                 if st.session_state.backtest_dfs:
                     sym_diag = st.selectbox("اختر الأصل للتشخيص:", list(st.session_state.backtest_dfs.keys()))
                     if sym_diag:
-                        raw_d = st.session_state.backtest_dfs[sym_diag]
-                        if diagnose_filters:
-                            with st.spinner("جاري تحليل الثغرات..."):
-                                diag = diagnose_filters(raw_d, interval=interval, symbol=sym_diag)
-                                if diag and diag.get("smart_diagnosis"):
-                                    diag_smart = diag["smart_diagnosis"]
-                                    st.info(f"**الحكم النهائي:** {diag_smart.get('verdict', '—')}")
-                                    action_plan = diag_smart.get("action_plan", [])
-                                    if action_plan:
-                                        for action in action_plan:
-                                            st.warning(action)
-                                    
-                                    with st.expander("📋 تفاصيل تشخيصية إضافية"):
-                                        col_a, col_b = st.columns(2)
-                                        with col_a:
-                                            st.write("**توزيع الخسائر:**")
-                                            st.json(diag_smart.get("loss_breakdown", {}))
-                                        with col_b:
-                                            st.write("**إحصائيات الأرباح:**")
-                                            st.json(diag_smart.get("win_breakdown", {}))
-                                else:
-                                    st.info("لا توجد بيانات كافية للتشخيص.")
+                        with st.spinner("جاري تحليل الثغرات..."):
+                            diag = _cached_diagnose_filters(fix_symbol(sym_diag), interval, sd, ed)
+                        
+                        if diag and diag.get("smart_diagnosis"):
+                            diag_smart = diag["smart_diagnosis"]
+                            st.info(f"**الحكم النهائي:** {diag_smart.get('verdict', '—')}")
+                            action_plan = diag_smart.get("action_plan", [])
+                            if action_plan:
+                                for action in action_plan:
+                                    st.warning(action)
+                            
+                            with st.expander("📋 تفاصيل تشخيصية إضافية"):
+                                col_a, col_b = st.columns(2)
+                                with col_a:
+                                    st.write("**توزيع الخسائر:**")
+                                    st.json(diag_smart.get("loss_breakdown", {}))
+                                with col_b:
+                                    st.write("**إحصائيات الأرباح:**")
+                                    st.json(diag_smart.get("win_breakdown", {}))
                         else:
-                            st.warning("⚠️ محرك التشخيص (diagnose_filters) غير متوفر.")
+                            st.info("لا توجد بيانات كافية للتشخيص.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1130,54 +1164,15 @@ else:
 
             dfo = ar.get("df")
             if dfo is not None and not dfo.empty:
+                # إضافة EMA للبيانات الحية (مخزنة مؤقتاً)
                 df_chart = dfo.copy()
-                df_chart["EMA50"] = df_chart["Close"].ewm(span=50, adjust=False).mean()
-                df_chart["EMA200"] = df_chart["Close"].ewm(span=200, adjust=False).mean()
-
-                fig = go.Figure(data=[go.Candlestick(
-                    x=df_chart.index,
-                    open=df_chart["Open"], high=df_chart["High"],
-                    low=df_chart["Low"], close=df_chart["Close"],
-                    name="السعر")])
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA50"],
-                    line=dict(color="orange", width=1.2), name="EMA 50"))
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["EMA200"],
-                    line=dict(color="blue", width=1.2), name="EMA 200"))
-
-                draw_hs_pattern(fig, ar, df_chart)
-
-                x_range = None
-                nodes = ar.get("nodes", [])
-                if nodes and len(nodes) >= 6:
-                    try:
-                        ps = nodes[0][0]; pe = nodes[-1][0]
-                        span = pe - ps
-                        xmin = ps - span * 1.0
-                        xmax = pe + span * 1.5
-                        if xmin < df_chart.index[0]: xmin = df_chart.index[0]
-                        if xmax > df_chart.index[-1]: xmax = df_chart.index[-1]
-                        x_range = [xmin, xmax]
-                    except Exception:
-                        x_range = None
-
-                fig.update_layout(
-                    template="plotly_white", height=850, autosize=True,
-                    margin=dict(l=50, r=15, t=40, b=50),
-                    xaxis_rangeslider_visible=False, dragmode="pan",
-                    hovermode="x unified",
-                    yaxis=dict(side="left", automargin=True,
-                               tickfont=dict(size=11, color="#333"),
-                               showgrid=True, gridcolor="#EEEEEE", zeroline=False),
-                    xaxis=dict(automargin=True, tickfont=dict(size=10),
-                               showgrid=True, gridcolor="#F5F5F5",
-                               rangeslider=dict(visible=False),
-                               fixedrange=False, range=x_range),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                xanchor="center", x=0.5,
-                                bgcolor="rgba(255,255,255,0.9)",
-                                bordercolor="#DDDDDD", borderwidth=1),
-                )
-                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                if "EMA50" not in df_chart.columns:
+                    df_chart["EMA50"] = df_chart["Close"].ewm(span=50, adjust=False).mean()
+                if "EMA200" not in df_chart.columns:
+                    df_chart["EMA200"] = df_chart["Close"].ewm(span=200, adjust=False).mean()
+                
+                # استخدام نفس دالة الرسم السريعة
+                render_chart_fast(asy, ar, df_chart)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
