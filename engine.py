@@ -1,30 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — H&S Detector (Reversal + Continuation)
+ENGINE.PY — H&S Detector (Neckline + Live Candles Limit Only)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
-- [تحديث]: تم إلغاء شرط الاتجاه السابق (Prior Trend) لقبول المزيد من النماذج
+- [تحديث]: تم إلغاء جميع الشروط الفنية باستثناء شروط خط العنق وفلتر حد الشموع الحية
+- [تحديث]: تم إلغاء شرط الاتجاه السابق وفلتر الكتف الأيمن
 - وقف آمن 15% + TP = 1× الرأس + Trailing بوحدات الرأس
 - قياس الامتداد الكامل
-- [تحديث]: فلتر الكتف الأيمن (يجب أن يكون أعلى/أدنى نقطة بعد الرأس مباشرة)
-- [تحديث]: دالة diagnose_no_signals لتشخيص أسباب عدم وجود إشارات
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
-    "ZIGZAG_DEPTH": 8,               # تم التعديل من 12 إلى 8
-    "ZIGZAG_BACKSTEP": 3,             # تم التعديل من 5 إلى 4
-    "MIN_WAVE_CANDLES": 2,            # تم التعديل من 5 إلى 4
-    "SHOULDER_DIFF_MAX_RATIO": 0.50,  # تم التعديل من 0.35 إلى 0.50
-    "HEAD_PROPORTION_MIN_RATIO": 0.10,# تم التعديل من 0.15 إلى 0.10
-    "NECKLINE_DIFF_MAX_RATIO": 0.25,  # تم التعديل من 0.10 إلى 0.25
-    "LIVE_MAX_BREAKOUT_CANDLES": 15,  # تم التعديل من 10 إلى 15
+    "ZIGZAG_DEPTH": 10,
+    "ZIGZAG_BACKSTEP": 4,
+    "MIN_WAVE_CANDLES": 4,
+    "NECKLINE_DIFF_MAX_RATIO": 0.25,      # الشرط الأول: شروط خط العنق
+    "LIVE_MAX_BREAKOUT_CANDLES": 15,      # الشرط الثاني: فلتر حد الشموع الحية
     "BREAKOUT_MIN_PCT": 0.0001,
-    "REQUIRE_VOLUME_BREAKOUT": False,
-    "VOLUME_FACTOR": 1.2,
-    "VOLUME_MA_PERIOD": 20,
-    "TP_REACH_FACTOR": 1.0,  # الهدف = 1× طول الرأس فقط
+    "TP_REACH_FACTOR": 1.0,               # الهدف = 1× طول الرأس فقط
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
     "TRAILING_LEVELS_HEAD": [
@@ -60,7 +54,6 @@ def _get_max_gap(interval):
 
 
 def _get_max_pattern_duration(interval):
-    # تم زيادة القيم لتقليل رفض النماذج بسبب المدة
     return {"1m": 800, "5m": 300, "15m": 200, "30m": 180, "1h": 150,
             "4h": 120, "1d": 90, "1wk": 60}.get(interval, 250)
 
@@ -358,10 +351,6 @@ class PatternValidatorPipeline:
         self.df = df
 
     def time_filter(self, p):
-        positions = [x["pos"] for x in p]
-        for j in range(len(positions) - 1):
-            if positions[j + 1] - positions[j] < CONFIG["MIN_WAVE_CANDLES"]:
-                return False
         return True
 
     def breakout_filter(self, p, is_bearish, neckline):
@@ -375,10 +364,7 @@ class PatternValidatorPipeline:
         return br.index[0], float(br["Close"].iloc[0])
 
     def breakout_confirm_filter(self, is_bearish, neckline, price):
-        mp = CONFIG["BREAKOUT_MIN_PCT"]
-        if is_bearish:
-            return price <= neckline * (1 - mp)
-        return price >= neckline * (1 + mp)
+        return True
 
 
 def detect_head_shoulders(pivots, df, is_backtest=False,
@@ -386,50 +372,35 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
     patterns = []
     if len(pivots) < 6: return patterns
     validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
+    total_candles = len(df)  # ضروري لحساب فلتر الشموع الحية
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
         if [x["type"] for x in p] != ["L", "H", "L", "H", "L", "H"]:
             continue
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
+        
+        # شروط المنطق الأساسي للنموذج
         if h1 <= l0 or l1 <= l0: continue
         if h2 <= h1 or h2 <= h3: continue
+        
         neckline_min = min(l1, l2)
         head_height = h2 - neckline_min
         if head_height <= 0: continue
 
-        # ═══════════════════════════════════════════════════════════════
-        # تم إلغاء شرط الاتجاه السابق (Prior Trend) هنا
-        # ═══════════════════════════════════════════════════════════════
-        pattern_type = "Reversal" # تصنيف افتراضي لضمان عمل باقي الكود
-
-        if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
-        max_sh = max(h1, h3)
-        if (h2 - max_sh) < (head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]): continue
+        # 1. شرط خط العنق (Neckline)
         if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]): continue
-
-        l0_pos, h3_pos = p[0]["pos"], p[5]["pos"]
-        if (h3_pos - l0_pos) > max_pattern_duration: continue
 
         neckline = (l1 + l2) / 2.0
         br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
         if br is None: continue
         end_idx, end_val = br
-        if not validator.breakout_confirm_filter(True, neckline, end_val): continue
         if end_idx not in df.index: continue
         end_pos = df.index.get_loc(end_idx)
-        if (end_pos - h3_pos) > max_gap: continue
+
+        # 2. فلتر حد الشموع الحية (Live Candles Limit)
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
-
-        # فلتر الكتف الأيمن: يجب أن يكون الكتف الأيمن أعلى نقطة بعد الرأس
-        h2_idx = p[3]["idx"]
-        if h2_idx in df.index and end_idx in df.index:
-            post_head_window = df.loc[h2_idx:end_idx]
-            if not post_head_window.empty:
-                if post_head_window["High"].max() > h3 + 1e-9:
-                    continue  # توجد شمعة أعلى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
 
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = h2 - neckline
@@ -441,7 +412,7 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
         nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, float(end_val))]
         pattern = {
             "name": "Head and Shoulders", "pattern": "Head and Shoulders",
-            "pattern_type": pattern_type,
+            "pattern_type": "Reversal",
             "bias": "Bearish", "match": 100.0, "nodes": nodes,
             "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
             "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
@@ -453,13 +424,13 @@ def detect_head_shoulders(pivots, df, is_backtest=False,
             "end_pos": p[5]["pos"],
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
-            "Pattern": f"Head and Shoulders ({pattern_type})",
-            "Entry Conditions": "Breakout Only",
+            "Pattern": f"Head and Shoulders (Reversal)",
+            "Entry Conditions": "Neckline + Live Limit",
         }
         pattern.update(simulate_trade_outcome(pattern, df))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
             "Bearish", entry, final_sl, tp, structural_sl, actual_head,
-            f"H&S {pattern_type}")
+            f"H&S Reversal")
         patterns.append(pattern)
     return patterns
 
@@ -469,56 +440,34 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
     patterns = []
     if len(pivots) < 6: return patterns
     validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
+    total_candles = len(df)  # ضروري لحساب فلتر الشموع الحية
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
         if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]:
             continue
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
+        
+        # شروط المنطق الأساسي للنموذج
         if l2 >= l1 or l2 >= l3: continue
+        
         neckline_max = max(h1, h2)
         head_depth = neckline_max - l2
         if head_depth <= 0: continue
 
-        # ═══════════════════════════════════════════════════════════════
-        # تم إلغاء شرط الاتجاه السابق (Prior Trend) هنا
-        # ═══════════════════════════════════════════════════════════════
-        pattern_type = "Reversal" # تصنيف افتراضي لضمان عمل باقي الكود
-
-        if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
-        min_sh = min(l1, l3)
-        if (min_sh - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]): continue
+        # 1. شرط خط العنق (Neckline)
         if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]): continue
-
-        positions = [x["pos"] for x in p]
-        if any((positions[j+1] - positions[j]) < CONFIG["MIN_WAVE_CANDLES"] for j in range(len(positions)-1)):
-            continue
-        h0_pos, l3_pos = p[0]["pos"], p[5]["pos"]
-        if (l3_pos - h0_pos) > max_pattern_duration: continue
-
-        idx_l2 = p[3]["idx"]
-        post_l2 = df.loc[idx_l2:]
-        if not post_l2.empty and post_l2["Low"].min() < l2: continue
 
         neckline = (h1 + h2) / 2.0
         br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
         if br is None: continue
         end_idx, end_val = br
-        if not validator.breakout_confirm_filter(False, neckline, end_val): continue
         if end_idx not in df.index: continue
         end_pos = df.index.get_loc(end_idx)
-        if (end_pos - l3_pos) > max_gap: continue
+
+        # 2. فلتر حد الشموع الحية (Live Candles Limit)
         if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
             continue
-
-        # فلتر الكتف الأيمن: يجب أن يكون الكتف الأيمن أدنى نقطة بعد الرأس
-        l2_idx = p[3]["idx"]
-        if l2_idx in df.index and end_idx in df.index:
-            post_head_window = df.loc[l2_idx:end_idx]
-            if not post_head_window.empty:
-                if post_head_window["Low"].min() < l3 - 1e-9:
-                    continue  # توجد شمعة أدنى من الكتف الأيمن بعد الرأس -> النموذج غير صالح
 
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = neckline - l2
@@ -530,7 +479,7 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
         nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, end_val)]
         pattern = {
             "name": "Inverse Head and Shoulders", "pattern": "Inverse Head and Shoulders",
-            "pattern_type": pattern_type,
+            "pattern_type": "Reversal",
             "bias": "Bullish", "match": 100.0, "nodes": nodes,
             "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)),
             "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
@@ -542,13 +491,13 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False,
             "end_pos": p[5]["pos"],
             "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)),
-            "Pattern": f"Inverse Head and Shoulders ({pattern_type})",
-            "Entry Conditions": "Breakout Only",
+            "Pattern": f"Inverse Head and Shoulders (Reversal)",
+            "Entry Conditions": "Neckline + Live Limit",
         }
         pattern.update(simulate_trade_outcome(pattern, df))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
             "Bullish", entry, final_sl, tp, structural_sl, actual_head,
-            f"نموذج معكوس {pattern_type}")
+            f"نموذج معكوس Reversal")
         patterns.append(pattern)
     return patterns
 
@@ -796,16 +745,6 @@ def diagnose_filters(df, interval="1h", symbol=None):
     elif unavoidable > 0:
         action_plan.append(f"🟢 معظم الخسائر ({unavoidable}) لا مفر منها.")
 
-    rev = result["by_pattern_type"].get("Reversal", {})
-    con = result["by_pattern_type"].get("Continuation", {})
-    if rev and con:
-        rev_wr = rev.get("win_rate_%", 0)
-        con_wr = con.get("win_rate_%", 0)
-        if con_wr < 50 and rev_wr >= 60:
-            action_plan.append(f"🔴 Continuation ضعيف ({con_wr}%) — أوصي بتعطيله.")
-        elif con_wr >= 60:
-            action_plan.append(f"🟢 Continuation مقبول ({con_wr}%) — يمكن دمجه.")
-
     result["smart_diagnosis"] = {
         "verdict": verdict,
         "win_breakdown": win_breakdown,
@@ -868,17 +807,10 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
     stats = {
         "total_pivots": len(pivots),
         "raw_candidates": 0,
-        "rejected_time_filter": 0,
         "rejected_pattern_structure": 0,
-        "rejected_shoulder_diff": 0,
-        "rejected_head_proportion": 0,
         "rejected_neckline_diff": 0,
-        "rejected_pattern_duration": 0,
         "rejected_no_breakout": 0,
-        "rejected_breakout_confirm": 0,
-        "rejected_max_gap": 0,
-        "rejected_live_limit": 0,
-        "rejected_right_shoulder_high": 0,
+        "rejected_live_limit": 0,  # تمت إعادته
         "passed": 0
     }
 
@@ -886,9 +818,7 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
         return stats
 
     validator = PatternValidatorPipeline(df)
-    total_candles = len(df)
-    max_gap = _get_max_gap(interval)
-    max_pattern_duration = _get_max_pattern_duration(interval)
+    total_candles = len(df)  # ضروري لحساب فلتر الشموع الحية
 
     for i in range(len(pivots) - 5):
         p = pivots[i:i + 6]
@@ -902,14 +832,6 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             
         stats["raw_candidates"] += 1
 
-        # فلتر الوقت
-        if not validator.time_filter(p):
-            stats["rejected_time_filter"] += 1
-            continue
-
-        # ═══════════════════════════════════════════════════════════════
-        # الحالة الأولى: Head and Shoulders (Bearish)
-        # ═══════════════════════════════════════════════════════════════
         if is_bearish:
             l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
             if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3:
@@ -918,19 +840,10 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             neckline_min = min(l1, l2)
             head_height = h2 - neckline_min
             if head_height <= 0:
-                stats["rejected_head_proportion"] += 1; continue
-                
-            if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
-                stats["rejected_shoulder_diff"] += 1; continue
-                
-            if (h2 - max(h1, h3)) < (head_height * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
-                stats["rejected_head_proportion"] += 1; continue
+                stats["rejected_pattern_structure"] += 1; continue
                 
             if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
                 stats["rejected_neckline_diff"] += 1; continue
-                
-            if (p[5]["pos"] - p[0]["pos"]) > max_pattern_duration:
-                stats["rejected_pattern_duration"] += 1; continue
             
             neckline = (l1 + l2) / 2.0
             br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
@@ -938,29 +851,14 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
                 stats["rejected_no_breakout"] += 1; continue
                 
             end_idx, end_val = br
-            if not validator.breakout_confirm_filter(True, neckline, end_val):
-                stats["rejected_breakout_confirm"] += 1; continue
-                
             if end_idx not in df.index: continue
             end_pos = df.index.get_loc(end_idx)
-            if (end_pos - p[5]["pos"]) > max_gap:
-                stats["rejected_max_gap"] += 1; continue
-                
+            
             if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
                 stats["rejected_live_limit"] += 1; continue
             
-            # فلتر الكتف الأيمن الجديد
-            h2_idx = p[3]["idx"]
-            if h2_idx in df.index and end_idx in df.index:
-                post_head_window = df.loc[h2_idx:end_idx]
-                if not post_head_window.empty and post_head_window["High"].max() > h3 + 1e-9:
-                    stats["rejected_right_shoulder_high"] += 1; continue
-            
             stats["passed"] += 1
 
-        # ═══════════════════════════════════════════════════════════════
-        # الحالة الثانية: Inverse Head and Shoulders (Bullish)
-        # ═══════════════════════════════════════════════════════════════
         else: # Bullish (Inverse H&S)
             h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
             if l2 >= l1 or l2 >= l3: 
@@ -969,19 +867,10 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             neckline_max = max(h1, h2)
             head_depth = neckline_max - l2
             if head_depth <= 0:
-                stats["rejected_head_proportion"] += 1; continue
-                
-            if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
-                stats["rejected_shoulder_diff"] += 1; continue
-                
-            if (min(l1, l3) - l2) < (head_depth * CONFIG["HEAD_PROPORTION_MIN_RATIO"]):
-                stats["rejected_head_proportion"] += 1; continue
+                stats["rejected_pattern_structure"] += 1; continue
                 
             if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]):
                 stats["rejected_neckline_diff"] += 1; continue
-                
-            if (p[5]["pos"] - p[0]["pos"]) > max_pattern_duration:
-                stats["rejected_pattern_duration"] += 1; continue
             
             neckline = (h1 + h2) / 2.0
             br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
@@ -989,23 +878,11 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
                 stats["rejected_no_breakout"] += 1; continue
                 
             end_idx, end_val = br
-            if not validator.breakout_confirm_filter(False, neckline, end_val):
-                stats["rejected_breakout_confirm"] += 1; continue
-                
             if end_idx not in df.index: continue
             end_pos = df.index.get_loc(end_idx)
-            if (end_pos - p[5]["pos"]) > max_gap:
-                stats["rejected_max_gap"] += 1; continue
-                
+            
             if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
                 stats["rejected_live_limit"] += 1; continue
-            
-            # فلتر الكتف الأيمن الجديد
-            l2_idx = p[3]["idx"]
-            if l2_idx in df.index and end_idx in df.index:
-                post_head_window = df.loc[l2_idx:end_idx]
-                if not post_head_window.empty and post_head_window["Low"].min() < l3 - 1e-9:
-                    stats["rejected_right_shoulder_high"] += 1; continue
             
             stats["passed"] += 1
 
