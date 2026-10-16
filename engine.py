@@ -27,7 +27,6 @@ CONFIG = {
     (2.50, 1.50),   # عند 250% → تأمين 150% من الرأس
     (3.00, 2.00),   # عند 300% → تأمين 200% من الرأس
 ],
-    ],
     "MEASURE_FULL_EXTENSION": True,
     "ENABLE_REVERSAL": True,
     "ENABLE_CONTINUATION": True,
