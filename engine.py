@@ -13,7 +13,7 @@ import numpy as np
 
 CONFIG = {
     "ZIGZAG_DEPTH": 12,
-    "ZIGZAG_BACKSTEP": 5,
+    "ZIGZAG_BACKSTEP": 7,
     "MIN_WAVE_CANDLES": 5,
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "HEAD_PROPORTION_MIN_RATIO": 0.15,
