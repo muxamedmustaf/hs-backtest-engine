@@ -16,7 +16,7 @@ import numpy as np
 # 🌍 الإعدادات الافتراضية (تُطبق على أي زوج لم يتم إدراجه في القائمة أدناه)
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    "ZIGZAG_DEPTH": 10,
+    "ZIGZAG_DEPTH": 7,
     "ZIGZAG_BACKSTEP": 4,
     "MIN_WAVE_CANDLES": 4,
     "NECKLINE_DIFF_MAX_RATIO": 0.25,
