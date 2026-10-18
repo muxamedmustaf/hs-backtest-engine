@@ -1,31 +1,38 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — H&S Detector (Multi-Symbol Custom Configuration + No Timeout)
+ENGINE.PY — H&S Detector (True Breakout + Multi-Symbol Configuration)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
-- [تحديث]: إلغاء شرط الوقت (Timeout) تماماً. الصفقة تستمر حتى تصيب TP أو SL.
+- [تحديث]: إلغاء شرط الوقت (Timeout) تماماً.
+- [تحديث]: إضافة شرط "الاختراق الحقيقي" (True Breakout) بإغلاق واضح يتجاوز خط العنق.
+- [تحديث]: إعدادات ZigZag دقيقة (Depth=7, Backstep=4, Min_Candles=4).
 - [تحديث]: إضافة نظام الإعدادات المخصصة لكل زوج (SYMBOL_OVERRIDES)
-- [تحديث]: إضافة فلاتر هندسية صارمة لضمان أن النماذج هي "موجات رئيسية"
-- [تحديث]: إضافة فلاتر الاختراق (قوة الشمعة + الحجم)
 - [تحديث]: التريلينغ الذكي (يبدأ عند 100% ويسمح بالامتداد)
 """
 import pandas as pd
 import numpy as np
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🌍 الإعدادات الافتراضية (تُطبق على أي زوج لم يتم إدراجه في القائمة أدناه)
+# 🌍 الإعدادات الافتراضية
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    "ZIGZAG_DEPTH": 7,
-    "ZIGZAG_BACKSTEP": 4,
-    "MIN_WAVE_CANDLES": 4,
+    "ZIGZAG_DEPTH": 7,                     # تم التعديل بناءً على طلبك
+    "ZIGZAG_BACKSTEP": 4,                  # تم التعديل بناءً على طلبك
+    "MIN_WAVE_CANDLES": 4,                 # تم التعديل بناءً على طلبك
+    
     "NECKLINE_DIFF_MAX_RATIO": 0.25,
     "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "MIN_WAVE_HEIGHT_PCT": 0.015,
     "MIN_WAVE_ATR_MULTIPLE": 2.0,
-    "MIN_PATTERN_DURATION_CANDLES": 20,
+    "MIN_PATTERN_DURATION_CANDLES": 15,    # خفضناها قليلاً لتتناسب مع Depth=7
     "HEAD_PROMINENCE_MIN_RATIO": 0.15,
     "LIVE_MAX_BREAKOUT_CANDLES": 15,
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🆕 فلتر الاختراق الحقيقي (Jabin Dhab Ah / True Breakout)
+    # ═══════════════════════════════════════════════════════════════════════
+    "REQUIRE_TRUE_BREAKOUT": True,         # تفعيل شرط الاختراق الحقيقي
+    "TRUE_BREAKOUT_MIN_PCT": 0.0005,       # يجب أن يتجاوز السعر خط العنق بنسبة 0.05% على الأقل
     "BREAKOUT_MIN_PCT": 0.0001,
     "VOLUME_MA_PERIOD": 20,
     "REQUIRE_BREAKOUT_STRENGTH": True,
@@ -48,7 +55,7 @@ CONFIG = {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎯 الإعدادات المخصصة لكل زوج (Overrides)
+# 🎯 الإعدادات المخصصة لكل زوج
 # ══════════════════════════════════════════════════════════════════════════════
 SYMBOL_OVERRIDES = {
     "BTC-USD": {
@@ -57,6 +64,7 @@ SYMBOL_OVERRIDES = {
         "MIN_WAVE_ATR_MULTIPLE": 2.5,
         "BREAKOUT_ATR_MULTIPLIER": 1.5,
         "VOLUME_BREAKOUT_FACTOR": 1.5,
+        "TRUE_BREAKOUT_MIN_PCT": 0.001,    # الكريبتو يحتاج اختراقاً أقوى (0.1%)
         "REQUIRE_TREND_FILTER": False,
         "TRAILING_LEVELS_HEAD": [
             (1.00, 0.00),
@@ -169,7 +177,7 @@ def calculate_indicators(df, cfg):
     
     return df
 
-def calculate_zigzag(df, depth=10, backstep=4):
+def calculate_zigzag(df, depth=7, backstep=4):
     df = df.copy()
     df["Pivot_H"] = np.nan
     df["Pivot_L"] = np.nan
@@ -299,7 +307,6 @@ def simulate_trade_outcome(pattern, df, cfg):
     closes = post_df["Close"].values
     indices = post_df.index
 
-    # 🚀 إلغاء الـ Timeout: الحلقة تستمر حتى نهاية البيانات أو اصطدام TP/SL
     for candle_count in range(1, len(highs)):
         high = highs[candle_count]
         low = lows[candle_count]
@@ -321,7 +328,7 @@ def simulate_trade_outcome(pattern, df, cfg):
             if total_tp_dist > 0: max_favorable = max(max_favorable, progress * 100)
             if total_sl_dist > 0: max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
         if exited:
-            continue # استمر في حساب الامتدادات حتى النهاية ولكن لا تتداول
+            continue
 
         for stage_idx, (th, ph) in enumerate(TRAILING):
             if stage_idx < trailing_stage: continue
@@ -376,8 +383,6 @@ def simulate_trade_outcome(pattern, df, cfg):
             tp_hit_candle = candle_count; exited = True; continue
 
     else:
-        # 🚀 ماذا يحدث إذا انتهت البيانات والصفقة لم تصل لـ TP أو SL؟
-        # تبقى مفتوحة (OPEN)
         stats["candles_to_exit"] = max(0, len(post_df) - 1)
         stats["Exit Date"] = str(df.index[-1]); stats["Loss Category"] = "open"
         if stats["Result"] == "OPEN":
@@ -407,10 +412,22 @@ class PatternValidatorPipeline:
     def breakout_filter(self, p, is_bearish, neckline):
         idx_h3 = p[-1]["idx"]
         post = self.df.loc[idx_h3:]
-        if is_bearish:
-            br = post[post["Close"] < neckline]
+        
+        # 🆕 تطبيق شرط الاختراق الحقيقي (True Breakout)
+        if self.cfg.get("REQUIRE_TRUE_BREAKOUT", False):
+            min_pct = self.cfg.get("TRUE_BREAKOUT_MIN_PCT", 0.0005)
+            if is_bearish:
+                # يجب أن يغلق السعر أسفل خط العنق بمسافة الأمان
+                br = post[post["Close"] < neckline * (1 - min_pct)]
+            else:
+                # يجب أن يغلق السعر أعلى خط العنق بمسافة الأمان
+                br = post[post["Close"] > neckline * (1 + min_pct)]
         else:
-            br = post[post["Close"] > neckline]
+            if is_bearish:
+                br = post[post["Close"] < neckline]
+            else:
+                br = post[post["Close"] > neckline]
+                
         if br.empty: return None
         return br.index[0], float(br["Close"].iloc[0])
 
@@ -508,7 +525,7 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
             "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"], "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)), "Pattern": f"Head and Shoulders (Reversal)",
-            "Entry Conditions": "Major Wave + Geometry + Breakout",
+            "Entry Conditions": "True Breakout + Geometry",
         }
         pattern.update(simulate_trade_outcome(pattern, df, cfg))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
@@ -577,7 +594,7 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
             "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"], "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)), "Pattern": f"Inverse Head and Shoulders (Reversal)",
-            "Entry Conditions": "Major Wave + Geometry + Breakout",
+            "Entry Conditions": "True Breakout + Geometry",
         }
         pattern.update(simulate_trade_outcome(pattern, df, cfg))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
@@ -784,7 +801,7 @@ def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
             
             stats["passed"] += 1
 
-        else: # Bullish
+        else:
             h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
             if l2 >= l1 or l2 >= l3:
                 stats["rejected_pattern_structure"] += 1; continue
@@ -834,4 +851,4 @@ def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — H&S Detector (No Timeout + Multi-Symbol Configuration)")
+    print("ENGINE.PY — H&S Detector (True Breakout + ZigZag 7,4,4)")
