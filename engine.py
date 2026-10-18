@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — H&S Detector (Multi-Symbol Custom Configuration)
+ENGINE.PY — H&S Detector (Multi-Symbol Custom Configuration + No Timeout)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
+- [تحديث]: إلغاء شرط الوقت (Timeout) تماماً. الصفقة تستمر حتى تصيب TP أو SL.
 - [تحديث]: إضافة نظام الإعدادات المخصصة لكل زوج (SYMBOL_OVERRIDES)
-- [تحديث]: إضافة فلاتر هندسية صارمة لضمان أن النماذج هي "موجات رئيسية" وليست ضوضاء
+- [تحديث]: إضافة فلاتر هندسية صارمة لضمان أن النماذج هي "موجات رئيسية"
 - [تحديث]: إضافة فلاتر الاختراق (قوة الشمعة + الحجم)
 - [تحديث]: التريلينغ الذكي (يبدأ عند 100% ويسمح بالامتداد)
 """
@@ -49,37 +50,31 @@ CONFIG = {
 # ══════════════════════════════════════════════════════════════════════════════
 # 🎯 الإعدادات المخصصة لكل زوج (Overrides)
 # ══════════════════════════════════════════════════════════════════════════════
-# أي زوج تضعه هنا، سيتم دمج إعداداته مع الإعدادات الافتراضية أعلاه.
 SYMBOL_OVERRIDES = {
-    # 🪙 الكريبتو: يحتاج أهداف بعيدة وتريلينغ واسع لتركه يركض
     "BTC-USD": {
-        "TP_REACH_FACTOR": 3.0,               # الهدف 3× الرأس
-        "MIN_WAVE_HEIGHT_PCT": 0.020,         # حركة أكبر
+        "TP_REACH_FACTOR": 3.0,
+        "MIN_WAVE_HEIGHT_PCT": 0.020,
         "MIN_WAVE_ATR_MULTIPLE": 2.5,
-        "BREAKOUT_ATR_MULTIPLIER": 1.5,       # تأكيد اختراق أقوى
+        "BREAKOUT_ATR_MULTIPLIER": 1.5,
         "VOLUME_BREAKOUT_FACTOR": 1.5,
-        "REQUIRE_TREND_FILTER": False,        # لا نريد تقييد الكريبتو باتجاه
+        "REQUIRE_TREND_FILTER": False,
         "TRAILING_LEVELS_HEAD": [
             (1.00, 0.00),
             (1.50, 0.50),
             (2.00, 1.00),
-            (3.00, 2.00),                     # تأمين ربح ضخم عند 300%
+            (3.00, 2.00),
         ],
     },
-    
-    # 💵 الفوركس (الجنيه): يحتاج فلتر اتجاه صارم وأهداف أقرب
     "GBPUSD=X": {
-        "TP_REACH_FACTOR": 1.5,               # الهدف 1.5× الرأس فقط
-        "REQUIRE_TREND_FILTER": True,         # ضروري جداً لتجنب التذبذب
-        "BREAKOUT_ATR_MULTIPLIER": 1.5,       # صرامة عالية ضد الاختراقات الوهمية
+        "TP_REACH_FACTOR": 1.5,
+        "REQUIRE_TREND_FILTER": True,
+        "BREAKOUT_ATR_MULTIPLIER": 1.5,
         "TRAILING_LEVELS_HEAD": [
-            (0.80, 0.00),                     # نقل للتعادل عند 80% (لأن الهدف قريب)
+            (0.80, 0.00),
             (1.20, 0.50),
             (1.50, 1.00),
         ],
     },
-
-    # 💶 اليورو: مشابه للجنيه ولكن قد يحتاج ضبطاً مختلفاً قليلاً
     "EURUSD=X": {
         "TP_REACH_FACTOR": 1.5,
         "REQUIRE_TREND_FILTER": True,
@@ -88,46 +83,33 @@ SYMBOL_OVERRIDES = {
 }
 
 def get_symbol_config(symbol):
-    """دالة ذكية تدمج الإعدادات الافتراضية مع إعدادات الزوج المخصصة"""
     base = CONFIG.copy()
-    if not symbol:
-        return base
-    
-    # البحث عن الزوج في القائمة (نتجاهل حالة الأحرف)
+    if not symbol: return base
     sym_upper = str(symbol).upper()
     for key, overrides in SYMBOL_OVERRIDES.items():
-        # نتحقق مما إذا كان اسم الزوج يحتوي على الكلمة المفتاحية (مثلاً BTC-USD أو BTCUSDT)
         if key.upper() in sym_upper or sym_upper in key.upper():
             base.update(overrides)
             break
     return base
-
-
-TIMEOUT_STATISTICAL_FLOOR = 200
-TIMEOUT_DURATION_MULTIPLIER = 3
 
 REASON_MAP = {
     "immediate_rejection": {"reason": "السعر رفض خط العنق فورًا.", "action": "انتظر إعادة اختبار.", "prevention": "لا تدخل بأول لمسة."},
     "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
     "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي 50%.", "prevention": "TP جزئي."},
     "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing 30%.", "prevention": "راقب الأخبار."},
-    "timeout": {"reason": "انتهت المدة دون TP/SL.", "action": "أغلق يدويًا.", "prevention": "فلتر ADX."},
     "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
     "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
     "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
     "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
-
 def _get_max_gap(interval):
     return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
             "4h": 15, "1d": 10, "1wk": 5}.get(interval, 50)
 
-
 def _get_max_pattern_duration(interval):
     return {"1m": 800, "5m": 300, "15m": 200, "30m": 180, "1h": 150,
             "4h": 120, "1d": 90, "1wk": 60}.get(interval, 250)
-
 
 def compute_safe_sl_and_tp(bias, entry, structural_sl, head_size, cfg):
     structural_risk = abs(entry - structural_sl)
@@ -139,7 +121,6 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, head_size, cfg):
     target = head_size * cfg["TP_REACH_FACTOR"]
     tp = entry + target if bias == "Bullish" else entry - target
     return final_sl, tp, safe_sl, structural_sl
-
 
 def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size, pattern_name, cfg):
     risk = abs(entry - sl)
@@ -163,7 +144,6 @@ def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size,
             f"- TP: ({round(tp, 5)}) = {factor}× الرأس.\n"
             f"- R:R = 1 : {rr}."
         )
-
 
 def calculate_indicators(df, cfg):
     df = df.copy()
@@ -189,7 +169,6 @@ def calculate_indicators(df, cfg):
     
     return df
 
-
 def calculate_zigzag(df, depth=10, backstep=4):
     df = df.copy()
     df["Pivot_H"] = np.nan
@@ -210,7 +189,6 @@ def calculate_zigzag(df, depth=10, backstep=4):
         elif is_l and not is_h:
             df.iloc[i, df.columns.get_loc("Pivot_L")] = cl
     return df
-
 
 def get_chronological_pivots(df):
     raw = []
@@ -251,7 +229,6 @@ def get_chronological_pivots(df):
                 elif p["type"] == "L" and p["val"] < final[-1]["val"]: final[-1] = p
     return final
 
-
 def simulate_trade_outcome(pattern, df, cfg):
     bias = pattern["bias"]
     entry = float(pattern["entry"])
@@ -289,7 +266,6 @@ def simulate_trade_outcome(pattern, df, cfg):
     else:
         pattern_duration = 50
 
-    TIMEOUT_CANDLES = max(TIMEOUT_STATISTICAL_FLOOR, pattern_duration * TIMEOUT_DURATION_MULTIPLIER)
     TRAILING = cfg["TRAILING_LEVELS_HEAD"]
 
     breakeven_activated = False
@@ -302,7 +278,7 @@ def simulate_trade_outcome(pattern, df, cfg):
         "Max Reach %": 0.0, "SL Safety %": 0.0,
         "Max Extension %": 0.0, "Extension Beyond TP %": 0.0,
         "TP Hit At Candle": None, "Extension Duration Candles": 0,
-        "Pattern Duration": pattern_duration, "Timeout Used": TIMEOUT_CANDLES,
+        "Pattern Duration": pattern_duration, "Timeout Used": 0,
         "Breakeven Activated": False, "Breakeven Exit": False,
         "Trailing Stage": 0, "Initial SL": initial_sl, "Final SL": initial_sl,
         "Loss Category": None,
@@ -323,6 +299,7 @@ def simulate_trade_outcome(pattern, df, cfg):
     closes = post_df["Close"].values
     indices = post_df.index
 
+    # 🚀 إلغاء الـ Timeout: الحلقة تستمر حتى نهاية البيانات أو اصطدام TP/SL
     for candle_count in range(1, len(highs)):
         high = highs[candle_count]
         low = lows[candle_count]
@@ -344,8 +321,7 @@ def simulate_trade_outcome(pattern, df, cfg):
             if total_tp_dist > 0: max_favorable = max(max_favorable, progress * 100)
             if total_sl_dist > 0: max_adverse = max(max_adverse, adverse / total_sl_dist * 100)
         if exited:
-            if candle_count >= TIMEOUT_CANDLES: break
-            continue
+            continue # استمر في حساب الامتدادات حتى النهاية ولكن لا تتداول
 
         for stage_idx, (th, ph) in enumerate(TRAILING):
             if stage_idx < trailing_stage: continue
@@ -399,23 +375,15 @@ def simulate_trade_outcome(pattern, df, cfg):
             stats["candles_to_exit"] = candle_count; stats["Exit Date"] = str(idx)
             tp_hit_candle = candle_count; exited = True; continue
 
-        if candle_count >= TIMEOUT_CANDLES:
-            if breakeven_activated:
-                stats["Result"] = "BREAKEVEN"; stats["Head Result"] = "BREAKEVEN"
-                stats["Breakeven Exit"] = True; stats["Loss Category"] = "breakeven"
-                stats["exit_price"] = entry
-            else:
-                stats["Result"] = "TIMEOUT"; stats["Head Result"] = "TIMEOUT"
-                stats["Loss Category"] = "timeout"; stats["exit_price"] = close
-            stats["exit_idx"] = idx; stats["candles_to_exit"] = candle_count
-            stats["Exit Date"] = str(idx)
-            moved = max(0.0, entry - close) if bias == "Bearish" else max(0.0, close - entry)
-            if total_tp_dist > 0:
-                stats["progress_ratio"] = round(moved / total_tp_dist * 100, 2)
-            exited = True; break
     else:
+        # 🚀 ماذا يحدث إذا انتهت البيانات والصفقة لم تصل لـ TP أو SL؟
+        # تبقى مفتوحة (OPEN)
         stats["candles_to_exit"] = max(0, len(post_df) - 1)
         stats["Exit Date"] = str(df.index[-1]); stats["Loss Category"] = "open"
+        if stats["Result"] == "OPEN":
+            moved = max(0.0, entry - closes[-1]) if bias == "Bearish" else max(0.0, closes[-1] - entry)
+            if total_tp_dist > 0:
+                stats["progress_ratio"] = round(moved / total_tp_dist * 100, 2)
 
     stats["Max Reach %"] = round(max_favorable, 1)
     stats["SL Safety %"] = round(100 - max_adverse, 1) if max_adverse <= 100 else 0.0
@@ -866,4 +834,4 @@ def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — H&S Detector with Multi-Symbol Custom Configuration")
+    print("ENGINE.PY — H&S Detector (No Timeout + Multi-Symbol Configuration)")
