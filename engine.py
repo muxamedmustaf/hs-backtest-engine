@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — H&S Detector (True Breakout + Multi-Symbol Configuration)
+ENGINE.PY — H&S Detector (Strict Symmetry + No Breakeven)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
-- [تحديث]: إلغاء شرط الوقت (Timeout) تماماً.
-- [تحديث]: إضافة شرط "الاختراق الحقيقي" (True Breakout) بإغلاق واضح يتجاوز خط العنق.
+- [تحديث]: إلغاء البريك إيفن (Breakeven) تماماً. الصفقة تستمر حتى تضرب SL الأصلي أو تحقق ربحاً وتتفعل التريلينغ.
+- [تحديث]: تشديد التشابه الهندسي للكتفين (سعرياً وزمنياً).
 - [تحديث]: إعدادات ZigZag دقيقة (Depth=7, Backstep=4, Min_Candles=4).
-- [تحديث]: إضافة نظام الإعدادات المخصصة لكل زوج (SYMBOL_OVERRIDES)
-- [تحديث]: التريلينغ الذكي (يبدأ عند 100% ويسمح بالامتداد)
+- [تحديث]: الاحتفاظ بشرط الاختراق الحقيقي (True Breakout).
 """
 import pandas as pd
 import numpy as np
@@ -16,23 +15,26 @@ import numpy as np
 # 🌍 الإعدادات الافتراضية
 # ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    "ZIGZAG_DEPTH": 7,                     # تم التعديل بناءً على طلبك
-    "ZIGZAG_BACKSTEP": 4,                  # تم التعديل بناءً على طلبك
-    "MIN_WAVE_CANDLES": 4,                 # تم التعديل بناءً على طلبك
+    "ZIGZAG_DEPTH": 7,                     
+    "ZIGZAG_BACKSTEP": 4,                  
+    "MIN_WAVE_CANDLES": 4,                 
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🆕 شروط التشابه الهندسي الصارم للكتفين
+    # ═══════════════════════════════════════════════════════════════════════
+    "SHOULDER_DIFF_MAX_RATIO": 0.15,       # الفرق السعري بين الكتفين لا يتجاوز 15% من حجم الرأس (صارم جداً)
+    "SHOULDER_TIME_SYMMETRY_RATIO": 0.4,   # الزمن المستغرق للكتف الأيمن يجب أن يكون بين 60% و 140% من زمن الكتف الأيسر
     
     "NECKLINE_DIFF_MAX_RATIO": 0.25,
-    "SHOULDER_DIFF_MAX_RATIO": 0.35,
     "MIN_WAVE_HEIGHT_PCT": 0.015,
     "MIN_WAVE_ATR_MULTIPLE": 2.0,
-    "MIN_PATTERN_DURATION_CANDLES": 15,    # خفضناها قليلاً لتتناسب مع Depth=7
+    "MIN_PATTERN_DURATION_CANDLES": 15,    
     "HEAD_PROMINENCE_MIN_RATIO": 0.15,
     "LIVE_MAX_BREAKOUT_CANDLES": 15,
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🆕 فلتر الاختراق الحقيقي (Jabin Dhab Ah / True Breakout)
-    # ═══════════════════════════════════════════════════════════════════════
-    "REQUIRE_TRUE_BREAKOUT": True,         # تفعيل شرط الاختراق الحقيقي
-    "TRUE_BREAKOUT_MIN_PCT": 0.0005,       # يجب أن يتجاوز السعر خط العنق بنسبة 0.05% على الأقل
+    # 🆕 فلتر الاختراق الحقيقي
+    "REQUIRE_TRUE_BREAKOUT": True,         
+    "TRUE_BREAKOUT_MIN_PCT": 0.0005,       
     "BREAKOUT_MIN_PCT": 0.0001,
     "VOLUME_MA_PERIOD": 20,
     "REQUIRE_BREAKOUT_STRENGTH": True,
@@ -41,13 +43,17 @@ CONFIG = {
     "VOLUME_BREAKOUT_FACTOR": 1.2,
     "REQUIRE_TREND_FILTER": False,
     "TREND_EMA_PERIOD": 200,
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 💰 إدارة الصفقة (بدون بريك إيفن)
+    # ═══════════════════════════════════════════════════════════════════════
     "TP_REACH_FACTOR": 2.0,
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
+    # 🆕 تم إزالة (1.00, 0.00) - التريلينغ يبدأ فقط عند تأمين أرباح حقيقية
     "TRAILING_LEVELS_HEAD": [
-        (1.00, 0.00),
-        (1.50, 0.50),
-        (2.00, 1.00),
+        (1.50, 0.50),   # عند 150% ربح → تأمين 50% من الرأس
+        (2.00, 1.00),   # عند 200% ربح → تأمين 100% من الرأس
     ],
     "MEASURE_FULL_EXTENSION": True,
     "ENABLE_REVERSAL": True,
@@ -64,10 +70,9 @@ SYMBOL_OVERRIDES = {
         "MIN_WAVE_ATR_MULTIPLE": 2.5,
         "BREAKOUT_ATR_MULTIPLIER": 1.5,
         "VOLUME_BREAKOUT_FACTOR": 1.5,
-        "TRUE_BREAKOUT_MIN_PCT": 0.001,    # الكريبتو يحتاج اختراقاً أقوى (0.1%)
+        "TRUE_BREAKOUT_MIN_PCT": 0.001,    
         "REQUIRE_TREND_FILTER": False,
         "TRAILING_LEVELS_HEAD": [
-            (1.00, 0.00),
             (1.50, 0.50),
             (2.00, 1.00),
             (3.00, 2.00),
@@ -78,7 +83,6 @@ SYMBOL_OVERRIDES = {
         "REQUIRE_TREND_FILTER": True,
         "BREAKOUT_ATR_MULTIPLIER": 1.5,
         "TRAILING_LEVELS_HEAD": [
-            (0.80, 0.00),
             (1.20, 0.50),
             (1.50, 1.00),
         ],
@@ -87,6 +91,10 @@ SYMBOL_OVERRIDES = {
         "TP_REACH_FACTOR": 1.5,
         "REQUIRE_TREND_FILTER": True,
         "BREAKOUT_ATR_MULTIPLIER": 1.3,
+        "TRAILING_LEVELS_HEAD": [
+            (1.20, 0.50),
+            (1.50, 1.00),
+        ],
     },
 }
 
@@ -276,7 +284,7 @@ def simulate_trade_outcome(pattern, df, cfg):
 
     TRAILING = cfg["TRAILING_LEVELS_HEAD"]
 
-    breakeven_activated = False
+    # تم إلغاء متغير البريك إيفن
     trailing_stage = 0
     stats = {
         "Result": "OPEN", "Head Result": "OPEN",
@@ -330,21 +338,20 @@ def simulate_trade_outcome(pattern, df, cfg):
         if exited:
             continue
 
+        # 🆕 منطق التريلينغ بدون بريك إيفن
         for stage_idx, (th, ph) in enumerate(TRAILING):
             if stage_idx < trailing_stage: continue
             if progress_head < th: break
-            if ph == 0.0:
-                new_sl = entry
-            else:
-                new_sl = entry - ph * head_size if bias == "Bearish" else entry + ph * head_size
+            
+            # التريلينغ يقوم فقط بتأمين أرباح (لا يوجد ph=0)
+            new_sl = entry - ph * head_size if bias == "Bearish" else entry + ph * head_size
+            
             if bias == "Bearish":
                 if new_sl < sl:
                     sl = new_sl; trailing_stage = stage_idx + 1
-                    if ph == 0.0: breakeven_activated = True; stats["Breakeven Activated"] = True
             else:
                 if new_sl > sl:
                     sl = new_sl; trailing_stage = stage_idx + 1
-                    if ph == 0.0: breakeven_activated = True; stats["Breakeven Activated"] = True
 
         stats["Trailing Stage"] = trailing_stage; stats["Final SL"] = sl
 
@@ -354,14 +361,13 @@ def simulate_trade_outcome(pattern, df, cfg):
             hit_sl = low <= sl; hit_tp = high >= tp
 
         if hit_sl and not hit_tp:
+            # إذا ضرب الوقف، هل هو ربح أم خسارة؟
             if bias == "Bearish":
-                is_profit = sl < entry - 1e-9; is_be = abs(sl - entry) < 1e-9
+                is_profit = sl < entry - 1e-9
             else:
-                is_profit = sl > entry + 1e-9; is_be = abs(sl - entry) < 1e-9
-            if is_be:
-                stats["Result"] = "BREAKEVEN"; stats["Head Result"] = "BREAKEVEN"
-                stats["Breakeven Exit"] = True; stats["Loss Category"] = "breakeven"
-            elif is_profit:
+                is_profit = sl > entry + 1e-9
+                
+            if is_profit:
                 stats["Result"] = "WIN"; stats["Head Result"] = "WIN"
                 stats["Loss Category"] = "trailing_win"
             else:
@@ -399,7 +405,7 @@ def simulate_trade_outcome(pattern, df, cfg):
 
     if stats["Result"] == "WIN":
         stats["progress_ratio"] = 100.0
-    elif stats["Result"] in ["LOSS", "BREAKEVEN"]:
+    elif stats["Result"] == "LOSS":
         stats["progress_ratio"] = 0.0
     return stats
 
@@ -413,14 +419,11 @@ class PatternValidatorPipeline:
         idx_h3 = p[-1]["idx"]
         post = self.df.loc[idx_h3:]
         
-        # 🆕 تطبيق شرط الاختراق الحقيقي (True Breakout)
         if self.cfg.get("REQUIRE_TRUE_BREAKOUT", False):
             min_pct = self.cfg.get("TRUE_BREAKOUT_MIN_PCT", 0.0005)
             if is_bearish:
-                # يجب أن يغلق السعر أسفل خط العنق بمسافة الأمان
                 br = post[post["Close"] < neckline * (1 - min_pct)]
             else:
-                # يجب أن يغلق السعر أعلى خط العنق بمسافة الأمان
                 br = post[post["Close"] > neckline * (1 + min_pct)]
         else:
             if is_bearish:
@@ -490,10 +493,22 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
             atr_at_head = float(df.loc[p[3]["idx"], "ATR"])
             if head_height < (atr_at_head * cfg["MIN_WAVE_ATR_MULTIPLE"]): continue
         except Exception: pass
+        
         max_shoulder = max(h1, h3)
         if (h2 - max_shoulder) < (head_height * cfg["HEAD_PROMINENCE_MIN_RATIO"]): continue
-        if abs(l1 - l2) > (head_height * cfg["NECKLINE_DIFF_MAX_RATIO"]): continue
+        
+        # 🆕 فلتر التشابه السعري الصارم للكتفين
         if abs(h1 - h3) > (head_height * cfg["SHOULDER_DIFF_MAX_RATIO"]): continue
+        
+        # 🆕 فلتر التشابه الزمني للكتفين
+        left_dur = p[3]["pos"] - p[1]["pos"]
+        right_dur = p[5]["pos"] - p[3]["pos"]
+        if left_dur > 0:
+            time_ratio = right_dur / left_dur
+            sym_ratio = cfg.get("SHOULDER_TIME_SYMMETRY_RATIO", 0.4)
+            if not (1 - sym_ratio <= time_ratio <= 1 + sym_ratio): continue
+
+        if abs(l1 - l2) > (head_height * cfg["NECKLINE_DIFF_MAX_RATIO"]): continue
 
         neckline = (l1 + l2) / 2.0
         br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
@@ -525,7 +540,7 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
             "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"], "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)), "Pattern": f"Head and Shoulders (Reversal)",
-            "Entry Conditions": "True Breakout + Geometry",
+            "Entry Conditions": "True Breakout + Strict Symmetry",
         }
         pattern.update(simulate_trade_outcome(pattern, df, cfg))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
@@ -559,10 +574,22 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
             atr_at_head = float(df.loc[p[3]["idx"], "ATR"])
             if head_depth < (atr_at_head * cfg["MIN_WAVE_ATR_MULTIPLE"]): continue
         except Exception: pass
+        
         min_shoulder = min(l1, l3)
         if (min_shoulder - l2) < (head_depth * cfg["HEAD_PROMINENCE_MIN_RATIO"]): continue
-        if abs(h1 - h2) > (head_depth * cfg["NECKLINE_DIFF_MAX_RATIO"]): continue
+        
+        # 🆕 فلتر التشابه السعري الصارم للكتفين
         if abs(l1 - l3) > (head_depth * cfg["SHOULDER_DIFF_MAX_RATIO"]): continue
+        
+        # 🆕 فلتر التشابه الزمني للكتفين
+        left_dur = p[3]["pos"] - p[1]["pos"]
+        right_dur = p[5]["pos"] - p[3]["pos"]
+        if left_dur > 0:
+            time_ratio = right_dur / left_dur
+            sym_ratio = cfg.get("SHOULDER_TIME_SYMMETRY_RATIO", 0.4)
+            if not (1 - sym_ratio <= time_ratio <= 1 + sym_ratio): continue
+
+        if abs(h1 - h2) > (head_depth * cfg["NECKLINE_DIFF_MAX_RATIO"]): continue
 
         neckline = (h1 + h2) / 2.0
         br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
@@ -594,7 +621,7 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
             "target_nodes": [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))],
             "end_pos": p[5]["pos"], "SL": float(round(final_sl, 5)), "TP": float(round(tp, 5)),
             "Entry": float(round(entry, 5)), "Pattern": f"Inverse Head and Shoulders (Reversal)",
-            "Entry Conditions": "True Breakout + Geometry",
+            "Entry Conditions": "True Breakout + Strict Symmetry",
         }
         pattern.update(simulate_trade_outcome(pattern, df, cfg))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
@@ -737,7 +764,7 @@ def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
     stats = {
         "total_pivots": len(pivots), "raw_candidates": 0,
         "rejected_pattern_structure": 0, "rejected_duration": 0, "rejected_size": 0, "rejected_atr": 0,
-        "rejected_head_prom": 0, "rejected_neckline_shoulder": 0,
+        "rejected_head_prom": 0, "rejected_shoulder_symmetry": 0, "rejected_neckline_shoulder": 0,
         "rejected_no_breakout": 0, "rejected_breakout_confirm": 0, "rejected_trend": 0, "passed": 0
     }
 
@@ -780,7 +807,20 @@ def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
             if (h2 - max_shoulder) < (head_height * cfg["HEAD_PROMINENCE_MIN_RATIO"]):
                 stats["rejected_head_prom"] += 1; continue
             
-            if abs(l1 - l2) > (head_height * cfg["NECKLINE_DIFF_MAX_RATIO"]) or abs(h1 - h3) > (head_height * cfg["SHOULDER_DIFF_MAX_RATIO"]):
+            # فحص التشابه السعري
+            if abs(h1 - h3) > (head_height * cfg["SHOULDER_DIFF_MAX_RATIO"]):
+                stats["rejected_shoulder_symmetry"] += 1; continue
+                
+            # فحص التشابه الزمني
+            left_dur = p[3]["pos"] - p[1]["pos"]
+            right_dur = p[5]["pos"] - p[3]["pos"]
+            if left_dur > 0:
+                time_ratio = right_dur / left_dur
+                sym_ratio = cfg.get("SHOULDER_TIME_SYMMETRY_RATIO", 0.4)
+                if not (1 - sym_ratio <= time_ratio <= 1 + sym_ratio):
+                    stats["rejected_shoulder_symmetry"] += 1; continue
+            
+            if abs(l1 - l2) > (head_height * cfg["NECKLINE_DIFF_MAX_RATIO"]):
                 stats["rejected_neckline_shoulder"] += 1; continue
             
             neckline = (l1 + l2) / 2.0
@@ -827,7 +867,20 @@ def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
             if (min_shoulder - l2) < (head_depth * cfg["HEAD_PROMINENCE_MIN_RATIO"]):
                 stats["rejected_head_prom"] += 1; continue
             
-            if abs(h1 - h2) > (head_depth * cfg["NECKLINE_DIFF_MAX_RATIO"]) or abs(l1 - l3) > (head_depth * cfg["SHOULDER_DIFF_MAX_RATIO"]):
+            # فحص التشابه السعري
+            if abs(l1 - l3) > (head_depth * cfg["SHOULDER_DIFF_MAX_RATIO"]):
+                stats["rejected_shoulder_symmetry"] += 1; continue
+                
+            # فحص التشابه الزمني
+            left_dur = p[3]["pos"] - p[1]["pos"]
+            right_dur = p[5]["pos"] - p[3]["pos"]
+            if left_dur > 0:
+                time_ratio = right_dur / left_dur
+                sym_ratio = cfg.get("SHOULDER_TIME_SYMMETRY_RATIO", 0.4)
+                if not (1 - sym_ratio <= time_ratio <= 1 + sym_ratio):
+                    stats["rejected_shoulder_symmetry"] += 1; continue
+            
+            if abs(h1 - h2) > (head_depth * cfg["NECKLINE_DIFF_MAX_RATIO"]):
                 stats["rejected_neckline_shoulder"] += 1; continue
             
             neckline = (h1 + h2) / 2.0
@@ -851,4 +904,4 @@ def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
 
 
 if __name__ == "__main__":
-    print("ENGINE.PY — H&S Detector (True Breakout + ZigZag 7,4,4)")
+    print("ENGINE.PY — H&S Detector (Strict Symmetry + No Breakeven)")
