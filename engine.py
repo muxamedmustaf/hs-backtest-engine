@@ -1,62 +1,107 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — H&S Detector (Smart Noise Filtering + Geometric Logic)
+ENGINE.PY — H&S Detector (Multi-Symbol Custom Configuration)
 ===================================================
 - كشف H&S الانعكاسي والاستمراري
-- [تحديث]: إضافة فلاتر هندسية صارمة لضمان أن النماذج هي "موجات رئيسية" وليست ضوضاء:
-    1. فلتر حجم الموجة (MIN_WAVE_HEIGHT_PCT)
-    2. فلتر التقلب (MIN_WAVE_ATR_MULTIPLE)
-    3. فلتر المدة الزمنية (MIN_PATTERN_DURATION_CANDLES)
-    4. فلتر بروز الرأس (HEAD_PROMINENCE_MIN_RATIO)
+- [تحديث]: إضافة نظام الإعدادات المخصصة لكل زوج (SYMBOL_OVERRIDES)
+- [تحديث]: إضافة فلاتر هندسية صارمة لضمان أن النماذج هي "موجات رئيسية" وليست ضوضاء
 - [تحديث]: إضافة فلاتر الاختراق (قوة الشمعة + الحجم)
-- [تحديث]: التريلينغ الذكي (يبدأ عند 100% ويسمح بالامتداد حتى 2× الرأس)
+- [تحديث]: التريلينغ الذكي (يبدأ عند 100% ويسمح بالامتداد)
 """
 import pandas as pd
 import numpy as np
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌍 الإعدادات الافتراضية (تُطبق على أي زوج لم يتم إدراجه في القائمة أدناه)
+# ══════════════════════════════════════════════════════════════════════════════
 CONFIG = {
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🎯 شروط "الموجات الرئيسية" (للفلترة من الضوضاء)
-    # ═══════════════════════════════════════════════════════════════════════
-    "MIN_WAVE_HEIGHT_PCT": 0.015,          # حجم النموذج يجب أن يكون 1.5% من السعر على الأقل
-    "MIN_WAVE_ATR_MULTIPLE": 2.0,          # حجم النموذج يجب أن يكون ضعف الـ ATR على الأقل
-    "MIN_PATTERN_DURATION_CANDLES": 20,    # النموذج يجب أن يستغرق 20 شمعة على الأقل
-    "HEAD_PROMINENCE_MIN_RATIO": 0.15,     # الرأس يجب أن يكون أطول من الكتفين بنسبة 15% من حجم النموذج
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🎯 إعدادات كشف النموذج الأساسية
-    # ═══════════════════════════════════════════════════════════════════════
-    "ZIGZAG_DEPTH": 12,
+    "ZIGZAG_DEPTH": 10,
     "ZIGZAG_BACKSTEP": 4,
-    "NECKLINE_DIFF_MAX_RATIO": 0.25,       # خط العنق يجب أن يكون مستوياً
-    "SHOULDER_DIFF_MAX_RATIO": 0.35,       # الكتفين يجب أن يكونا متقاربين
+    "MIN_WAVE_CANDLES": 4,
+    "NECKLINE_DIFF_MAX_RATIO": 0.25,
+    "SHOULDER_DIFF_MAX_RATIO": 0.35,
+    "MIN_WAVE_HEIGHT_PCT": 0.015,
+    "MIN_WAVE_ATR_MULTIPLE": 2.0,
+    "MIN_PATTERN_DURATION_CANDLES": 20,
+    "HEAD_PROMINENCE_MIN_RATIO": 0.15,
     "LIVE_MAX_BREAKOUT_CANDLES": 15,
     "BREAKOUT_MIN_PCT": 0.0001,
     "VOLUME_MA_PERIOD": 20,
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🆕 فلاتر الاختراق الوهمي (Fakeouts)
-    # ═══════════════════════════════════════════════════════════════════════
-    "REQUIRE_BREAKOUT_STRENGTH": True,     # فلتر قوة جسم الشمعة
-    "BREAKOUT_ATR_MULTIPLIER": 1.2,        # جسم الشمعة > 1.2× ATR
-    "REQUIRE_VOLUME_BREAKOUT": True,       # فلتر الحجم
-    "VOLUME_BREAKOUT_FACTOR": 1.2,         # الحجم > 1.2× متوسط الحجم
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # 💰 إدارة الصفقة
-    # ═══════════════════════════════════════════════════════════════════════
-    "TP_REACH_FACTOR": 2.0,                # الهدف = 2× الرأس
+    "REQUIRE_BREAKOUT_STRENGTH": True,
+    "BREAKOUT_ATR_MULTIPLIER": 1.2,
+    "REQUIRE_VOLUME_BREAKOUT": True,
+    "VOLUME_BREAKOUT_FACTOR": 1.2,
+    "REQUIRE_TREND_FILTER": False,
+    "TREND_EMA_PERIOD": 200,
+    "TP_REACH_FACTOR": 2.0,
     "USE_SAFE_SL": True,
     "SAFE_SL_MARGIN": 0.15,
     "TRAILING_LEVELS_HEAD": [
-        (1.00, 0.00),   # عند 100% → نقل SL إلى التعادل
-        (1.50, 0.50),   # عند 150% → تأمين 50% من الرأس
-        (2.00, 1.00),   # عند 200% → تأمين 100% من الرأس
+        (1.00, 0.00),
+        (1.50, 0.50),
+        (2.00, 1.00),
     ],
     "MEASURE_FULL_EXTENSION": True,
     "ENABLE_REVERSAL": True,
     "ENABLE_CONTINUATION": True,
 }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎯 الإعدادات المخصصة لكل زوج (Overrides)
+# ══════════════════════════════════════════════════════════════════════════════
+# أي زوج تضعه هنا، سيتم دمج إعداداته مع الإعدادات الافتراضية أعلاه.
+SYMBOL_OVERRIDES = {
+    # 🪙 الكريبتو: يحتاج أهداف بعيدة وتريلينغ واسع لتركه يركض
+    "BTC-USD": {
+        "TP_REACH_FACTOR": 3.0,               # الهدف 3× الرأس
+        "MIN_WAVE_HEIGHT_PCT": 0.020,         # حركة أكبر
+        "MIN_WAVE_ATR_MULTIPLE": 2.5,
+        "BREAKOUT_ATR_MULTIPLIER": 1.5,       # تأكيد اختراق أقوى
+        "VOLUME_BREAKOUT_FACTOR": 1.5,
+        "REQUIRE_TREND_FILTER": False,        # لا نريد تقييد الكريبتو باتجاه
+        "TRAILING_LEVELS_HEAD": [
+            (1.00, 0.00),
+            (1.50, 0.50),
+            (2.00, 1.00),
+            (3.00, 2.00),                     # تأمين ربح ضخم عند 300%
+        ],
+    },
+    
+    # 💵 الفوركس (الجنيه): يحتاج فلتر اتجاه صارم وأهداف أقرب
+    "GBPUSD=X": {
+        "TP_REACH_FACTOR": 1.5,               # الهدف 1.5× الرأس فقط
+        "REQUIRE_TREND_FILTER": True,         # ضروري جداً لتجنب التذبذب
+        "BREAKOUT_ATR_MULTIPLIER": 1.5,       # صرامة عالية ضد الاختراقات الوهمية
+        "TRAILING_LEVELS_HEAD": [
+            (0.80, 0.00),                     # نقل للتعادل عند 80% (لأن الهدف قريب)
+            (1.20, 0.50),
+            (1.50, 1.00),
+        ],
+    },
+
+    # 💶 اليورو: مشابه للجنيه ولكن قد يحتاج ضبطاً مختلفاً قليلاً
+    "EURUSD=X": {
+        "TP_REACH_FACTOR": 1.5,
+        "REQUIRE_TREND_FILTER": True,
+        "BREAKOUT_ATR_MULTIPLIER": 1.3,
+    },
+}
+
+def get_symbol_config(symbol):
+    """دالة ذكية تدمج الإعدادات الافتراضية مع إعدادات الزوج المخصصة"""
+    base = CONFIG.copy()
+    if not symbol:
+        return base
+    
+    # البحث عن الزوج في القائمة (نتجاهل حالة الأحرف)
+    sym_upper = str(symbol).upper()
+    for key, overrides in SYMBOL_OVERRIDES.items():
+        # نتحقق مما إذا كان اسم الزوج يحتوي على الكلمة المفتاحية (مثلاً BTC-USD أو BTCUSDT)
+        if key.upper() in sym_upper or sym_upper in key.upper():
+            base.update(overrides)
+            break
+    return base
+
 
 TIMEOUT_STATISTICAL_FLOOR = 200
 TIMEOUT_DURATION_MULTIPLIER = 3
@@ -73,31 +118,35 @@ REASON_MAP = {
     "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
+
 def _get_max_gap(interval):
     return {"1m": 120, "5m": 50, "15m": 30, "30m": 25, "1h": 20,
             "4h": 15, "1d": 10, "1wk": 5}.get(interval, 50)
+
 
 def _get_max_pattern_duration(interval):
     return {"1m": 800, "5m": 300, "15m": 200, "30m": 180, "1h": 150,
             "4h": 120, "1d": 90, "1wk": 60}.get(interval, 250)
 
-def compute_safe_sl_and_tp(bias, entry, structural_sl, head_size):
+
+def compute_safe_sl_and_tp(bias, entry, structural_sl, head_size, cfg):
     structural_risk = abs(entry - structural_sl)
     if bias == "Bullish":
-        safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
+        safe_sl = structural_sl - (structural_risk * cfg["SAFE_SL_MARGIN"])
     else:
-        safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
-    final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
-    target = head_size * CONFIG["TP_REACH_FACTOR"]
+        safe_sl = structural_sl + (structural_risk * cfg["SAFE_SL_MARGIN"])
+    final_sl = safe_sl if cfg["USE_SAFE_SL"] else structural_sl
+    target = head_size * cfg["TP_REACH_FACTOR"]
     tp = entry + target if bias == "Bullish" else entry - target
     return final_sl, tp, safe_sl, structural_sl
 
-def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size, pattern_name):
+
+def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size, pattern_name, cfg):
     risk = abs(entry - sl)
     reward = abs(tp - entry)
     rr = round(reward / risk, 2) if risk > 0 else 0.0
-    factor = CONFIG["TP_REACH_FACTOR"]
-    margin = round(CONFIG["SAFE_SL_MARGIN"] * 100, 0)
+    factor = cfg["TP_REACH_FACTOR"]
+    margin = round(cfg["SAFE_SL_MARGIN"] * 100, 0)
     if bias == "Bullish":
         return (
             f"🟢 {pattern_name}:\n"
@@ -115,7 +164,8 @@ def generate_trade_recommendation(bias, entry, sl, tp, structural_sl, head_size,
             f"- R:R = 1 : {rr}."
         )
 
-def calculate_indicators(df):
+
+def calculate_indicators(df, cfg):
     df = df.copy()
     hl = df["High"] - df["Low"]
     hc = np.abs(df["High"] - df["Close"].shift())
@@ -128,13 +178,17 @@ def calculate_indicators(df):
     if "Volume" in df.columns:
         v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
         df["Volume"] = v
-        vol_period = CONFIG.get("VOLUME_MA_PERIOD", 20)
+        vol_period = cfg.get("VOLUME_MA_PERIOD", 20)
         df["Volume_MA"] = v.rolling(vol_period).mean().fillna(0.0)
     else:
         df["Volume"] = 0.0
         df["Volume_MA"] = 0.0
     
+    ema_period = cfg.get("TREND_EMA_PERIOD", 200)
+    df["EMA_Trend"] = df["Close"].ewm(span=ema_period, adjust=False).mean()
+    
     return df
+
 
 def calculate_zigzag(df, depth=10, backstep=4):
     df = df.copy()
@@ -156,6 +210,7 @@ def calculate_zigzag(df, depth=10, backstep=4):
         elif is_l and not is_h:
             df.iloc[i, df.columns.get_loc("Pivot_L")] = cl
     return df
+
 
 def get_chronological_pivots(df):
     raw = []
@@ -196,7 +251,8 @@ def get_chronological_pivots(df):
                 elif p["type"] == "L" and p["val"] < final[-1]["val"]: final[-1] = p
     return final
 
-def simulate_trade_outcome(pattern, df):
+
+def simulate_trade_outcome(pattern, df, cfg):
     bias = pattern["bias"]
     entry = float(pattern["entry"])
     initial_sl = float(pattern["sl"])
@@ -204,7 +260,7 @@ def simulate_trade_outcome(pattern, df):
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
 
-    head_size = abs(tp - entry) / CONFIG["TP_REACH_FACTOR"]
+    head_size = abs(tp - entry) / cfg["TP_REACH_FACTOR"]
     head_pct = (head_size / entry * 100) if entry > 0 else 0
     MIN_HEAD_PCT = 0.10
     MAX_HEAD_PCT = 10.00
@@ -234,7 +290,7 @@ def simulate_trade_outcome(pattern, df):
         pattern_duration = 50
 
     TIMEOUT_CANDLES = max(TIMEOUT_STATISTICAL_FLOOR, pattern_duration * TIMEOUT_DURATION_MULTIPLIER)
-    TRAILING = CONFIG["TRAILING_LEVELS_HEAD"]
+    TRAILING = cfg["TRAILING_LEVELS_HEAD"]
 
     breakeven_activated = False
     trailing_stage = 0
@@ -280,7 +336,7 @@ def simulate_trade_outcome(pattern, df):
         progress = (favorable / total_tp_dist) if total_tp_dist > 0 else 0.0
         progress_head = (favorable / head_size) if head_size > 0 else 0.0
 
-        if CONFIG.get("MEASURE_FULL_EXTENSION", True) and total_tp_dist > 0:
+        if cfg.get("MEASURE_FULL_EXTENSION", True) and total_tp_dist > 0:
             if progress * 100 > full_window_max:
                 full_window_max = progress * 100; max_ext_candle = candle_count
 
@@ -374,9 +430,11 @@ def simulate_trade_outcome(pattern, df):
         stats["progress_ratio"] = 0.0
     return stats
 
+
 class PatternValidatorPipeline:
-    def __init__(self, df):
+    def __init__(self, df, cfg):
         self.df = df
+        self.cfg = cfg
 
     def breakout_filter(self, p, is_bearish, neckline):
         idx_h3 = p[-1]["idx"]
@@ -389,29 +447,43 @@ class PatternValidatorPipeline:
         return br.index[0], float(br["Close"].iloc[0])
 
     def breakout_strength_filter(self, breakout_idx):
-        if not CONFIG.get("REQUIRE_BREAKOUT_STRENGTH", False): return True
+        if not self.cfg.get("REQUIRE_BREAKOUT_STRENGTH", False): return True
         try:
             row = self.df.loc[breakout_idx]
             body = abs(float(row["Close"]) - float(row["Open"]))
             atr = float(row.get("ATR", 0))
             if atr <= 0: return True
-            return body >= (atr * CONFIG.get("BREAKOUT_ATR_MULTIPLIER", 1.2))
+            return body >= (atr * self.cfg.get("BREAKOUT_ATR_MULTIPLIER", 1.2))
         except Exception: return True
     
     def volume_breakout_filter(self, breakout_idx):
-        if not CONFIG.get("REQUIRE_VOLUME_BREAKOUT", False): return True
+        if not self.cfg.get("REQUIRE_VOLUME_BREAKOUT", False): return True
         try:
             row = self.df.loc[breakout_idx]
             vol = float(row.get("Volume", 0))
             vol_ma = float(row.get("Volume_MA", 0))
             if vol_ma <= 0 or vol <= 0: return True
-            return vol >= (vol_ma * CONFIG.get("VOLUME_BREAKOUT_FACTOR", 1.2))
+            return vol >= (vol_ma * self.cfg.get("VOLUME_BREAKOUT_FACTOR", 1.2))
+        except Exception: return True
+    
+    def trend_filter(self, breakout_idx, is_bearish):
+        if not self.cfg.get("REQUIRE_TREND_FILTER", False): return True
+        try:
+            row = self.df.loc[breakout_idx]
+            price = float(row["Close"])
+            ema = float(row.get("EMA_Trend", price))
+            if is_bearish:
+                return price < ema
+            else:
+                return price > ema
         except Exception: return True
 
-def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200):
+
+def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200, cfg=None):
     patterns = []
+    if cfg is None: cfg = CONFIG
     if len(pivots) < 6: return patterns
-    validator = PatternValidatorPipeline(df)
+    validator = PatternValidatorPipeline(df, cfg)
     total_candles = len(df)
 
     for i in range(len(pivots) - 5):
@@ -420,7 +492,6 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
         
         l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
         
-        # 1. البنية المنطقية الأساسية
         if h1 <= l0 or l1 <= l0: continue
         if h2 <= h1 or h2 <= h3: continue
         
@@ -428,27 +499,17 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
         head_height = h2 - neckline_min
         if head_height <= 0: continue
 
-        # 2. فلتر المدة الزمنية (يجب أن يكون النموذج رئيسياً)
-        if (p[5]["pos"] - p[0]["pos"]) < CONFIG["MIN_PATTERN_DURATION_CANDLES"]: continue
-
-        # 3. فلتر حجم الموجة (نسبة من السعر)
-        if (head_height / h2) < CONFIG["MIN_WAVE_HEIGHT_PCT"]: continue
-
-        # 4. فلتر التقلب (ATR) - يجب أن يكون النموذج أكبر من الضوضاء
+        if (p[5]["pos"] - p[0]["pos"]) < cfg["MIN_PATTERN_DURATION_CANDLES"]: continue
+        if (head_height / h2) < cfg["MIN_WAVE_HEIGHT_PCT"]: continue
         try:
             atr_at_head = float(df.loc[p[3]["idx"], "ATR"])
-            if head_height < (atr_at_head * CONFIG["MIN_WAVE_ATR_MULTIPLE"]): continue
+            if head_height < (atr_at_head * cfg["MIN_WAVE_ATR_MULTIPLE"]): continue
         except Exception: pass
-
-        # 5. فلتر بروز الرأس (يجب أن يكون الرأس أطول من الكتفين بوضوح)
         max_shoulder = max(h1, h3)
-        if (h2 - max_shoulder) < (head_height * CONFIG["HEAD_PROMINENCE_MIN_RATIO"]): continue
+        if (h2 - max_shoulder) < (head_height * cfg["HEAD_PROMINENCE_MIN_RATIO"]): continue
+        if abs(l1 - l2) > (head_height * cfg["NECKLINE_DIFF_MAX_RATIO"]): continue
+        if abs(h1 - h3) > (head_height * cfg["SHOULDER_DIFF_MAX_RATIO"]): continue
 
-        # 6. شروط خط العنق والكتفين
-        if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]): continue
-        if abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
-
-        # 7. فلتر الاختراق
         neckline = (l1 + l2) / 2.0
         br = validator.breakout_filter(p, is_bearish=True, neckline=neckline)
         if br is None: continue
@@ -456,18 +517,16 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
         if end_idx not in df.index: continue
         end_pos = df.index.get_loc(end_idx)
 
-        if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]: continue
-
-        # 8. فلاتر التأكيد (قوة الشمعة + الحجم)
+        if not is_backtest and (total_candles - end_pos) > cfg["LIVE_MAX_BREAKOUT_CANDLES"]: continue
         if not validator.breakout_strength_filter(end_idx): continue
         if not validator.volume_breakout_filter(end_idx): continue
+        if not validator.trend_filter(end_idx, is_bearish=True): continue
 
-        # بناء النموذج النهائي
         l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = h2 - neckline
         entry = neckline
         structural_sl = h2
-        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bearish", entry, structural_sl, actual_head)
+        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bearish", entry, structural_sl, actual_head, cfg)
 
         nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, float(end_val))]
         pattern = {
@@ -483,16 +542,18 @@ def detect_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern
             "Entry": float(round(entry, 5)), "Pattern": f"Head and Shoulders (Reversal)",
             "Entry Conditions": "Major Wave + Geometry + Breakout",
         }
-        pattern.update(simulate_trade_outcome(pattern, df))
+        pattern.update(simulate_trade_outcome(pattern, df, cfg))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bearish", entry, final_sl, tp, structural_sl, actual_head, f"H&S Reversal")
+            "Bearish", entry, final_sl, tp, structural_sl, actual_head, f"H&S Reversal", cfg)
         patterns.append(pattern)
     return patterns
 
-def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200):
+
+def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200, cfg=None):
     patterns = []
+    if cfg is None: cfg = CONFIG
     if len(pivots) < 6: return patterns
-    validator = PatternValidatorPipeline(df)
+    validator = PatternValidatorPipeline(df, cfg)
     total_candles = len(df)
 
     for i in range(len(pivots) - 5):
@@ -501,34 +562,23 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
         
         h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
         
-        # 1. البنية المنطقية الأساسية
         if l2 >= l1 or l2 >= l3: continue
         
         neckline_max = max(h1, h2)
         head_depth = neckline_max - l2
         if head_depth <= 0: continue
 
-        # 2. فلتر المدة الزمنية
-        if (p[5]["pos"] - p[0]["pos"]) < CONFIG["MIN_PATTERN_DURATION_CANDLES"]: continue
-
-        # 3. فلتر حجم الموجة
-        if (head_depth / l2) < CONFIG["MIN_WAVE_HEIGHT_PCT"]: continue
-
-        # 4. فلتر التقلب (ATR)
+        if (p[5]["pos"] - p[0]["pos"]) < cfg["MIN_PATTERN_DURATION_CANDLES"]: continue
+        if (head_depth / l2) < cfg["MIN_WAVE_HEIGHT_PCT"]: continue
         try:
             atr_at_head = float(df.loc[p[3]["idx"], "ATR"])
-            if head_depth < (atr_at_head * CONFIG["MIN_WAVE_ATR_MULTIPLE"]): continue
+            if head_depth < (atr_at_head * cfg["MIN_WAVE_ATR_MULTIPLE"]): continue
         except Exception: pass
-
-        # 5. فلتر بروز الرأس
         min_shoulder = min(l1, l3)
-        if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROMINENCE_MIN_RATIO"]): continue
+        if (min_shoulder - l2) < (head_depth * cfg["HEAD_PROMINENCE_MIN_RATIO"]): continue
+        if abs(h1 - h2) > (head_depth * cfg["NECKLINE_DIFF_MAX_RATIO"]): continue
+        if abs(l1 - l3) > (head_depth * cfg["SHOULDER_DIFF_MAX_RATIO"]): continue
 
-        # 6. شروط خط العنق والكتفين
-        if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]): continue
-        if abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]): continue
-
-        # 7. فلتر الاختراق
         neckline = (h1 + h2) / 2.0
         br = validator.breakout_filter(p, is_bearish=False, neckline=neckline)
         if br is None: continue
@@ -536,18 +586,16 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
         if end_idx not in df.index: continue
         end_pos = df.index.get_loc(end_idx)
 
-        if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]: continue
-
-        # 8. فلاتر التأكيد
+        if not is_backtest and (total_candles - end_pos) > cfg["LIVE_MAX_BREAKOUT_CANDLES"]: continue
         if not validator.breakout_strength_filter(end_idx): continue
         if not validator.volume_breakout_filter(end_idx): continue
+        if not validator.trend_filter(end_idx, is_bearish=False): continue
 
-        # بناء النموذج النهائي
         h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
         actual_head = neckline - l2
         entry = neckline
         structural_sl = l2
-        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bullish", entry, structural_sl, actual_head)
+        final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bullish", entry, structural_sl, actual_head, cfg)
 
         nodes = [(x["idx"], x["val"]) for x in p] + [(end_idx, end_val)]
         pattern = {
@@ -563,20 +611,23 @@ def detect_inverse_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max
             "Entry": float(round(entry, 5)), "Pattern": f"Inverse Head and Shoulders (Reversal)",
             "Entry Conditions": "Major Wave + Geometry + Breakout",
         }
-        pattern.update(simulate_trade_outcome(pattern, df))
+        pattern.update(simulate_trade_outcome(pattern, df, cfg))
         pattern["Trade Recommendation"] = generate_trade_recommendation(
-            "Bullish", entry, final_sl, tp, structural_sl, actual_head, f"نموذج معكوس Reversal")
+            "Bullish", entry, final_sl, tp, structural_sl, actual_head, f"نموذج معكوس Reversal", cfg)
         patterns.append(pattern)
     return patterns
 
-def detect_all_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200):
-    a = detect_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration)
-    b = detect_inverse_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration)
+
+def detect_all_head_shoulders(pivots, df, is_backtest=False, max_gap=50, max_pattern_duration=200, cfg=None):
+    a = detect_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration, cfg)
+    b = detect_inverse_head_shoulders(pivots, df, is_backtest, max_gap, max_pattern_duration, cfg)
     all_p = a + b
     all_p.sort(key=lambda x: x.get("end_pos", -1))
     return all_p
 
+
 def run_full_analysis(df, interval="1h", symbol=None):
+    cfg = get_symbol_config(symbol)
     default_empty = {
         "df": df, "symbol": symbol or "N/A", "signal": "WAITING", "pattern": "NO PATTERN DETECTED",
         "bias": "Neutral", "entry": None, "sl": None, "tp": None,
@@ -594,12 +645,12 @@ def run_full_analysis(df, interval="1h", symbol=None):
         default_empty["error"] = f"Insufficient data: {len(df)}"; return default_empty
 
     df_active = df.tail(200).copy()
-    df_active = calculate_indicators(df_active)
-    df_active = calculate_zigzag(df_active, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    df_active = calculate_indicators(df_active, cfg)
+    df_active = calculate_zigzag(df_active, cfg["ZIGZAG_DEPTH"], cfg["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df_active)
     max_gap = _get_max_gap(interval)
     max_pattern_dur = _get_max_pattern_duration(interval)
-    all_patterns = detect_all_head_shoulders(pivots, df_active, is_backtest=False, max_gap=max_gap, max_pattern_duration=max_pattern_dur)
+    all_patterns = detect_all_head_shoulders(pivots, df_active, is_backtest=False, max_gap=max_gap, max_pattern_duration=max_pattern_dur, cfg=cfg)
     if not all_patterns:
         default_empty["df"] = df_active; return default_empty
 
@@ -618,7 +669,9 @@ def run_full_analysis(df, interval="1h", symbol=None):
         "Max Reach %": latest.get("Max Reach %", 0), "error": None,
     }
 
+
 def backtest_strategy(df, interval="1h", symbol=None):
+    cfg = get_symbol_config(symbol)
     if df is None or df.empty or len(df) < 30: return []
     df = df.copy()
     for col in ["Open", "High", "Low", "Close"]:
@@ -627,12 +680,12 @@ def backtest_strategy(df, interval="1h", symbol=None):
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
     if len(df) < 30: return []
 
-    df = calculate_indicators(df)
-    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    df = calculate_indicators(df, cfg)
+    df = calculate_zigzag(df, cfg["ZIGZAG_DEPTH"], cfg["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df)
     patterns = detect_all_head_shoulders(
         pivots, df, is_backtest=True,
-        max_gap=_get_max_gap(interval), max_pattern_duration=_get_max_pattern_duration(interval))
+        max_gap=_get_max_gap(interval), max_pattern_duration=_get_max_pattern_duration(interval), cfg=cfg)
 
     trades = []
     for p in patterns:
@@ -646,7 +699,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
             "SL": p["sl"], "Stop Loss": p["sl"],
             "TP": p["tp"], "Take Profit": p["tp"],
             "Structural SL": p.get("structural_sl"), "Safe SL": p.get("safe_sl"),
-            "TP Factor Used": CONFIG["TP_REACH_FACTOR"],
+            "TP Factor Used": cfg["TP_REACH_FACTOR"],
             "Entry Date": p.get("Entry Date"), "Exit Date": p.get("Exit Date"),
             "Exit Price": p.get("exit_price"), "time": p.get("Entry Date"), "close_time": p.get("Exit Date"),
             "Max Reach %": p.get("Max Reach %", 0.0), "Max Extension %": p.get("Max Extension %", 0.0),
@@ -663,8 +716,9 @@ def backtest_strategy(df, interval="1h", symbol=None):
         })
     return trades
 
+
 def diagnose_filters(df, interval="1h", symbol=None):
-    # (نفس الكود السابق بدون تغيير جوهري، يعتمد على backtest_strategy)
+    cfg = get_symbol_config(symbol)
     result = {"error": None, "total_raw_candidates": 0, "final_count": 0, "smart_diagnosis": {}, "recommendations": [], "trade_analysis": [], "by_pattern_type": {}, "tp_distribution": {}, "extension_analysis": {}}
     if df is None or df.empty or len(df) < 30: return {"error": "بيانات غير كافية"}
     
@@ -680,7 +734,9 @@ def diagnose_filters(df, interval="1h", symbol=None):
     result["smart_diagnosis"] = {"verdict": verdict, "win_breakdown": {}, "loss_breakdown": {}, "action_plan": []}
     return result
 
-def diagnose_no_signals(df, interval="1h", is_backtest=True):
+
+def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True):
+    cfg = get_symbol_config(symbol)
     if df is None or df.empty or len(df) < 30: return {"error": "بيانات غير كافية"}
     
     df = df.copy()
@@ -689,19 +745,19 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
 
-    df = calculate_indicators(df)
-    df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+    df = calculate_indicators(df, cfg)
+    df = calculate_zigzag(df, cfg["ZIGZAG_DEPTH"], cfg["ZIGZAG_BACKSTEP"])
     pivots = get_chronological_pivots(df)
 
     stats = {
         "total_pivots": len(pivots), "raw_candidates": 0,
         "rejected_pattern_structure": 0, "rejected_duration": 0, "rejected_size": 0, "rejected_atr": 0,
         "rejected_head_prom": 0, "rejected_neckline_shoulder": 0,
-        "rejected_no_breakout": 0, "rejected_breakout_confirm": 0, "passed": 0
+        "rejected_no_breakout": 0, "rejected_breakout_confirm": 0, "rejected_trend": 0, "passed": 0
     }
 
     if len(pivots) < 6: return stats
-    validator = PatternValidatorPipeline(df)
+    validator = PatternValidatorPipeline(df, cfg)
     total_candles = len(df)
 
     for i in range(len(pivots) - 5):
@@ -723,23 +779,23 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             if head_height <= 0:
                 stats["rejected_pattern_structure"] += 1; continue
             
-            if (p[5]["pos"] - p[0]["pos"]) < CONFIG["MIN_PATTERN_DURATION_CANDLES"]:
+            if (p[5]["pos"] - p[0]["pos"]) < cfg["MIN_PATTERN_DURATION_CANDLES"]:
                 stats["rejected_duration"] += 1; continue
             
-            if (head_height / h2) < CONFIG["MIN_WAVE_HEIGHT_PCT"]:
+            if (head_height / h2) < cfg["MIN_WAVE_HEIGHT_PCT"]:
                 stats["rejected_size"] += 1; continue
             
             try:
                 atr_at_head = float(df.loc[p[3]["idx"], "ATR"])
-                if head_height < (atr_at_head * CONFIG["MIN_WAVE_ATR_MULTIPLE"]):
+                if head_height < (atr_at_head * cfg["MIN_WAVE_ATR_MULTIPLE"]):
                     stats["rejected_atr"] += 1; continue
             except Exception: pass
             
             max_shoulder = max(h1, h3)
-            if (h2 - max_shoulder) < (head_height * CONFIG["HEAD_PROMINENCE_MIN_RATIO"]):
+            if (h2 - max_shoulder) < (head_height * cfg["HEAD_PROMINENCE_MIN_RATIO"]):
                 stats["rejected_head_prom"] += 1; continue
             
-            if abs(l1 - l2) > (head_height * CONFIG["NECKLINE_DIFF_MAX_RATIO"]) or abs(h1 - h3) > (head_height * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
+            if abs(l1 - l2) > (head_height * cfg["NECKLINE_DIFF_MAX_RATIO"]) or abs(h1 - h3) > (head_height * cfg["SHOULDER_DIFF_MAX_RATIO"]):
                 stats["rejected_neckline_shoulder"] += 1; continue
             
             neckline = (l1 + l2) / 2.0
@@ -751,10 +807,12 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             if end_idx not in df.index: continue
             end_pos = df.index.get_loc(end_idx)
             
-            if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
+            if not is_backtest and (total_candles - end_pos) > cfg["LIVE_MAX_BREAKOUT_CANDLES"]:
                 stats["rejected_no_breakout"] += 1; continue
             if not validator.breakout_strength_filter(end_idx) or not validator.volume_breakout_filter(end_idx):
                 stats["rejected_breakout_confirm"] += 1; continue
+            if not validator.trend_filter(end_idx, is_bearish=True):
+                stats["rejected_trend"] += 1; continue
             
             stats["passed"] += 1
 
@@ -768,23 +826,23 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             if head_depth <= 0:
                 stats["rejected_pattern_structure"] += 1; continue
             
-            if (p[5]["pos"] - p[0]["pos"]) < CONFIG["MIN_PATTERN_DURATION_CANDLES"]:
+            if (p[5]["pos"] - p[0]["pos"]) < cfg["MIN_PATTERN_DURATION_CANDLES"]:
                 stats["rejected_duration"] += 1; continue
             
-            if (head_depth / l2) < CONFIG["MIN_WAVE_HEIGHT_PCT"]:
+            if (head_depth / l2) < cfg["MIN_WAVE_HEIGHT_PCT"]:
                 stats["rejected_size"] += 1; continue
             
             try:
                 atr_at_head = float(df.loc[p[3]["idx"], "ATR"])
-                if head_depth < (atr_at_head * CONFIG["MIN_WAVE_ATR_MULTIPLE"]):
+                if head_depth < (atr_at_head * cfg["MIN_WAVE_ATR_MULTIPLE"]):
                     stats["rejected_atr"] += 1; continue
             except Exception: pass
             
             min_shoulder = min(l1, l3)
-            if (min_shoulder - l2) < (head_depth * CONFIG["HEAD_PROMINENCE_MIN_RATIO"]):
+            if (min_shoulder - l2) < (head_depth * cfg["HEAD_PROMINENCE_MIN_RATIO"]):
                 stats["rejected_head_prom"] += 1; continue
             
-            if abs(h1 - h2) > (head_depth * CONFIG["NECKLINE_DIFF_MAX_RATIO"]) or abs(l1 - l3) > (head_depth * CONFIG["SHOULDER_DIFF_MAX_RATIO"]):
+            if abs(h1 - h2) > (head_depth * cfg["NECKLINE_DIFF_MAX_RATIO"]) or abs(l1 - l3) > (head_depth * cfg["SHOULDER_DIFF_MAX_RATIO"]):
                 stats["rejected_neckline_shoulder"] += 1; continue
             
             neckline = (h1 + h2) / 2.0
@@ -796,13 +854,16 @@ def diagnose_no_signals(df, interval="1h", is_backtest=True):
             if end_idx not in df.index: continue
             end_pos = df.index.get_loc(end_idx)
             
-            if not is_backtest and (total_candles - end_pos) > CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
+            if not is_backtest and (total_candles - end_pos) > cfg["LIVE_MAX_BREAKOUT_CANDLES"]:
                 stats["rejected_no_breakout"] += 1; continue
             if not validator.breakout_strength_filter(end_idx) or not validator.volume_breakout_filter(end_idx):
                 stats["rejected_breakout_confirm"] += 1; continue
+            if not validator.trend_filter(end_idx, is_bearish=False):
+                stats["rejected_trend"] += 1; continue
             
             stats["passed"] += 1
     return stats
 
+
 if __name__ == "__main__":
-    print("ENGINE.PY — H&S Detector with Smart Noise Filtering")
+    print("ENGINE.PY — H&S Detector with Multi-Symbol Custom Configuration")
