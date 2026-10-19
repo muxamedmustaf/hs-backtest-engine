@@ -1,22 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Box Hunter Pro (Pure Price Action - Measured Move)
+ENGINE.PY — Box Hunter Pro (Pure Price Action + Live Filter)
 ===================================================
-- استراتيجية برايس أكشن 100% (بدون أي مؤشرات).
-- المرحلة 1: تحديد الموجة الحافزة بدقة (من أقرب قاع/قمة هيكلية).
-- المرحلة 2: صندوق التجميع يشمل جميع التذبذبات بعد الموجة.
-- المرحلة 3: كسر حقيقي + إعادة اختبار (Retest).
-- إدارة الصفقة: الهدف = طول الموجة الحافزة (Measured Move).
+- برايس أكشن خالص (بدون مؤشرات).
+- الهدف = طول الموجة الحافزة (Measured Move).
+- إصلاح الماسح الحي (تجاهل الإشارات التاريخية القديمة).
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
     # إعدادات الموجة الحافزة
-    "IMPULSE_MIN_PCT": 0.03,       # الموجة يجب أن تتحرك 3% على الأقل
-    "IMPULSE_MAX_LOOKBACK": 40,    # نبحث عن بداية الموجة في آخر 40 شمعة (لتجنب التذبذبات القديمة)
+    "IMPULSE_MIN_PCT": 0.03,       
+    "IMPULSE_MAX_LOOKBACK": 40,    
     
-    # إعدادات الصندوق (التجميع الكامل)
+    # إعدادات الصندوق (التجميع)
     "BOX_MIN_CANDLES": 10,         
     "BOX_MAX_HEIGHT_PCT": 0.05,    
     "MAX_RETRACEMENT_PCT": 0.50,   
@@ -30,30 +28,47 @@ CONFIG = {
     "RETEST_TOLERANCE": 0.003,     
     "RETEST_STRONG_CLOSE_RATIO": 0.6, 
     
+    # 🆕 إعدادات الماسح الحي
+    "LIVE_MAX_BREAKOUT_CANDLES": 10, # الإشارة يجب أن تكون في آخر 10 شموع فقط
+    
     # إدارة الصفقة
-    "TP_MEASURED_MOVE_FACTOR": 1.0, # 🆕 الهدف = 1.0 × طول الموجة الحافزة
+    "TP_MEASURED_MOVE_FACTOR": 1.0, 
     "TRAILING_LEVELS_HEAD": [(1.00, 0.30), (1.50, 0.80), (2.00, 1.20)],
     "SAFE_SL_MARGIN": 0.05,        
     "USE_SAFE_SL": True,
+    
+    # للرسم فقط
+    "VOLUME_MA_PERIOD": 20,
+    "TREND_EMA_PERIOD": 200
 }
 
 REASON_MAP = {
-    "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا."},
-    "early_reversal": {"reason": "انعكاس مبكر قبل 30%."},
-    "mid_reversal": {"reason": "انعكاس متوسط."},
-    "late_reversal": {"reason": "وصل 70%+ ثم عاد."},
-    "breakeven": {"reason": "تعادل."},
-    "success": {"reason": "وصل الهدف."},
-    "trailing_win": {"reason": "خرج بـ Trailing."},
-    "open": {"reason": "مفتوحة."},
+    "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا.", "action": "انتظر.", "prevention": "لا تدخل بأول لمسة."},
+    "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
+    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي.", "prevention": "TP جزئي."},
+    "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing.", "prevention": "راقب الأخبار."},
+    "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
+    "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
+    "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
+    "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
 def get_symbol_config(symbol):
     return CONFIG.copy()
 
 def calculate_indicators(df, cfg=None):
-    # برايس أكشن خالص.
-    return df.copy()
+    df = df.copy()
+    if "Volume" in df.columns:
+        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df["Volume"] = v
+        df["Volume_MA"] = v.rolling(CONFIG.get("VOLUME_MA_PERIOD", 20)).mean().fillna(0.0)
+    else:
+        df["Volume"] = 0.0
+        df["Volume_MA"] = 0.0
+    
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=CONFIG["TREND_EMA_PERIOD"], adjust=False).mean()
+    return df
 
 def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     structural_risk = abs(entry - structural_sl)
@@ -63,7 +78,6 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
         safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
     final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
     
-    # 🆕 الهدف يعتمد على طول الموجة الحافزة (Measured Move)
     target = wave_height * CONFIG["TP_MEASURED_MOVE_FACTOR"]
     tp = entry + target if bias == "Bullish" else entry - target
     return final_sl, tp, safe_sl, structural_sl
@@ -139,14 +153,12 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
     highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
     
     for i in range(60, n):
-        # 1. فحص قوة شمعة الكسر
         candle_body = abs(closes[i] - opens[i])
         if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
         
         is_bull_breakout = closes[i] > opens[i]
         is_bear_breakout = closes[i] < opens[i]
 
-        # 2. تحديد بداية الموجة (آخر قمة/قاع هيكلي)
         lookback_start = max(0, i - CONFIG["IMPULSE_MAX_LOOKBACK"])
         
         if is_bull_breakout:
@@ -160,7 +172,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             impulse_move = impulse_start_price - closes[i]
             if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
 
-        # 3. تحديد نهاية الموجة وبداية الصندوق
         if is_bull_breakout:
             box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
         else:
@@ -168,7 +179,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
         if box_start_idx >= i or (i - box_start_idx) < CONFIG["BOX_MIN_CANDLES"]: continue
 
-        # 4. حساب أبعاد الصندوق
         box_highs = highs[box_start_idx:i]
         box_lows = lows[box_start_idx:i]
         box_top = np.max(box_highs)
@@ -179,7 +189,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
         if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
 
-        # 5. فحص الاختبار (Retest)
         actual_entry_idx = i
         actual_entry_price = closes[i]
         retest_low = lows[i]
@@ -200,7 +209,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                             retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; retest_high = highs[j]; break
             if not retest_found: continue
 
-        # 6. رسم النموذج وإدارة الصفقة
         box_nodes = [
             (df.index[box_start_idx], box_top), (df.index[actual_entry_idx], box_top),
             (df.index[box_start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)
@@ -214,7 +222,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
         if is_bull_breakout and actual_entry_price > box_top:
             structural_sl = min(retest_low, box_bottom) 
-            # 🆕 تمرير طول الموجة الحافزة (impulse_move) لحساب الهدف
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, impulse_move)
             pattern = {
                 "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
@@ -231,7 +238,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
         elif is_bear_breakout and actual_entry_price < box_bottom:
             structural_sl = max(retest_high, box_top) 
-            # 🆕 تمرير طول الموجة الحافزة (impulse_move) لحساب الهدف
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, impulse_move)
             pattern = {
                 "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
@@ -248,12 +254,27 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
     return patterns
 
-# دوال التوافق
 def run_full_analysis(df, interval="1h", symbol=None):
     df = calculate_indicators(df)
     patterns = detect_box_breakouts(df, symbol, is_backtest=False)
     if not patterns: return {"signal": "WAITING", "pattern": "NO PATTERN", "bias": "Neutral", "df": df}
-    latest = patterns[-1]
+    
+    # 🎯 فلترة الإشارات التاريخية: لا نأخذ إلا الإشارة التي حدثت في آخر N شموع
+    recent_patterns = []
+    last_idx_pos = len(df) - 1
+    
+    for p in patterns:
+        try:
+            p_pos = df.index.get_loc(p["neckline_end_idx"])
+            if (last_idx_pos - p_pos) <= CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
+                recent_patterns.append(p)
+        except KeyError:
+            continue
+
+    if not recent_patterns:
+        return {"signal": "WAITING", "pattern": "NO RECENT PATTERN", "bias": "Neutral", "df": df}
+
+    latest = recent_patterns[-1]
     return {
         "df": df, "signal": "STRONG BUY" if latest["bias"]=="Bullish" else "STRONG SELL", 
         "pattern": latest["pattern"], "bias": latest["bias"], "entry": latest["entry"], 
@@ -271,7 +292,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
     return trades
 
 def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): 
-    return {}
+    return {"total_pivots": 0, "raw_candidates": 0, "rejected_trend": 0, "rejected_box_height": 0, "rejected_touches": 0, "rejected_breakout_strength": 0, "rejected_volume": 0, "passed": 0}
 
 def diagnose_filters(df, interval="1h", symbol=None): 
     trades = backtest_strategy(df, interval, symbol)
