@@ -1,370 +1,314 @@
 # -*- coding: utf-8 -*-
-import calendar, datetime
-import streamlit as st
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+"""
+ENGINE.PY — Box Hunter Pro (Pure Price Action + Tight SL)
+===================================================
+- برايس أكشن خالص (بدون مؤشرات).
+- الهدف = طول الموجة الحافزة (Measured Move).
+- وقف خسارة هيكلي ضيق (تحت شمعة الاختبار/الاختراق مباشرة).
+"""
 import pandas as pd
 import numpy as np
-from data_provider import fetch_data
 
-try:
-    from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals, diagnose_filters
-except ImportError as e:
-    st.error(f"❌ فشل الاستيراد: {e}"); st.stop()
-
-try:
-    from ffff import get_symbols_from_sheet
-except ImportError:
-    def get_symbols_from_sheet(*args, **kwargs): return [["EURUSD=X", "BTC-USD"]]
-
-st.set_page_config(page_title="Box Hunter", page_icon="📦", layout="wide")
-
-st.markdown("""
-<head><meta charset="UTF-8"></head>
-<style>
-    .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
-    div[data-testid='stPlotlyChart'] { width: 100% !important; }
-    html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
-    h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
-    label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; font-weight: 500; }
-    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; font-size: 14px; }
-    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; font-size: 20px; }
-    .stButton > button { direction: rtl; text-align: center; border-radius: 8px; }
-    .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; border-radius: 8px; }
-    .stDataFrame { direction: ltr; }
-    * { transition: none !important; animation: none !important; }
-    section.main > div { contain: layout style !important; }
-    .stDataFrame, .stPlotlyChart { contain: content !important; }
-    .stExpander, .stMetric, .stDataFrame { box-shadow: none !important; }
-    details { padding: 0.3rem !important; }
-    div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
-    .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { touch-action: none !important; } 
-</style>
-""", unsafe_allow_html=True)
-
-SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
-ALL_GLOBAL_INTERVALS = ["15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1wk"]
-
-IC_MARKETS_SPECS = {
-    "BTC-USD":  {"contract": 1, "min_lot": 0.01, "step": 0.01, "pip": 1.0, "cat": "🪙 Crypto"},
-    "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-    "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+CONFIG = {
+    # إعدادات الموجة الحافزة
+    "IMPULSE_MIN_PCT": 0.025,      # تخفيف الشرط: 2.5% بدلاً من 3% لزيادة الفرص
+    "IMPULSE_MAX_LOOKBACK": 40,    
+    
+    # إعدادات الصندوق (التجميع)
+    "BOX_MIN_CANDLES": 10,         
+    "BOX_MAX_HEIGHT_PCT": 0.05,    
+    "MAX_RETRACEMENT_PCT": 0.50,   
+    
+    # إعدادات الكسر (Breakout)
+    "BREAKOUT_MIN_BODY_PCT": 0.004, # تخفيف قوة الشمعة قليلاً
+    
+    # إعدادات الاختبار (Retest)
+    "REQUIRE_RETEST": True,        
+    "RETEST_MAX_CANDLES": 8,       
+    "RETEST_TOLERANCE": 0.003,     
+    "RETEST_STRONG_CLOSE_RATIO": 0.5, # إغلاق فوق المنتصف يكفي (كان 0.6)
+    
+    # إعدادات الماسح الحي
+    "LIVE_MAX_BREAKOUT_CANDLES": 10, 
+    
+    # إدارة الصفقة
+    "TP_MEASURED_MOVE_FACTOR": 1.0, 
+    "TRAILING_LEVELS_HEAD": [(1.00, 0.30), (1.50, 0.80), (2.00, 1.20)],
+    "SAFE_SL_MARGIN": 0.05,        
+    "USE_SAFE_SL": True,
+    
+    "VOLUME_MA_PERIOD": 20,
+    "TREND_EMA_PERIOD": 200
 }
 
-PLOTLY_CONFIG = {
-    'responsive': True, 'scrollZoom': True, 'displaylogo': False, 'displayModeBar': True, 
-    'modeBarButtonsToRemove': ['sendDataToCloud', 'lasso2d', 'select2d', 'toggleSpikelines'],
-    'dragmode': 'pan', 'doubleClick': 'reset+autosize'
+REASON_MAP = {
+    "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا.", "action": "انتظر.", "prevention": "لا تدخل بأول لمسة."},
+    "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
+    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي.", "prevention": "TP جزئي."},
+    "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing.", "prevention": "راقب الأخبار."},
+    "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
+    "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
+    "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
+    "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
-def fix_symbol(sym):
-    sym = str(sym).strip().upper()
-    if sym in ("XAUUSD", "GOLD"): return "GC=F"
-    if len(sym) == 6 and sym.isalpha(): return f"{sym}=X"
-    return sym
+def get_symbol_config(symbol):
+    return CONFIG.copy()
 
-def pip_size_for(symbol):
-    s = str(symbol).upper()
-    for key, spec in IC_MARKETS_SPECS.items():
-        if key.upper() == s: return spec["pip"]
-    return 0.0001
-
-def get_available_symbols():
-    s = set(IC_MARKETS_SPECS.keys())
-    try:
-        for x in get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")[0]: s.add(str(x).strip())
-    except Exception: pass
-    return sorted(s)
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cached_fetch(symbol, interval, start_date=None, end_date=None, period=None):
-    try:
-        if start_date and end_date: return fetch_data(symbol, interval=interval, start_date=start_date, end_date=end_date, cache_hours=1)
-        return fetch_data(symbol, interval=interval, period=period, cache_hours=1)
-    except Exception: return None
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cached_backtest(symbol, interval, start_date, end_date):
-    df = _cached_fetch(symbol, interval, start_date, end_date, None)
-    if df is None or df.empty: return None, None
-    try: trades = backtest_strategy(df, interval=interval, symbol=symbol)
-    except Exception: return df, None
-    return df, trades
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def _cached_live(symbol, interval, period):
-    df = _cached_fetch(symbol, interval, None, None, period)
-    if df is None or df.empty: return None, None
-    try: res = run_full_analysis(df, interval=interval, symbol=symbol)
-    except Exception: return df, None
-    return df, res
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _prepare_chart_data(symbol, interval, start_date, end_date):
-    df = _cached_fetch(symbol, interval, start_date, end_date, None)
-    if df is None or df.empty: return None
+def calculate_indicators(df, cfg=None):
     df = df.copy()
-    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-    return df
-
-def compute_pips(df):
-    if df is None or df.empty: return df
-    df = df.copy()
-    def _f(v): return float(v) if pd.notna(v) else None
-    pips_l = []
-    for _, row in df.iterrows():
-        pip = pip_size_for(row.get("symbol") or row.get("Symbol") or "")
-        e, x = _f(row.get("Entry Price")), _f(row.get("Exit Price"))
-        bias = str(row.get("bias") or "").upper()
-        is_sell = "BEAR" in bias
-        p = (e - x) / pip if (e and x and is_sell) else (x - e) / pip if (e and x) else None
-        pips_l.append(round(p, 1) if p is not None else None)
-    df["Pips"] = pips_l
-    return df
-
-def compute_dollar_pnl(df, lot=0.01):
-    if df is None or df.empty: return df
-    df = df.copy()
-    usd = []
-    for _, row in df.iterrows():
-        sym = str(row.get("symbol") or "").upper()
-        try: e, x = float(row.get("Entry Price")), float(row.get("Exit Price"))
-        except: usd.append(None); continue
-        move = (x - e) if "BEAR" not in str(row.get("bias")).upper() else (e - x)
-        if "BTC" in sym: pnl = move * lot
-        elif "XAU" in sym: pnl = move * lot * 100
-        elif sym.endswith("USD"): pnl = move * lot * 100000
-        else: pnl = move * lot * 100000 / x if x else None
-        usd.append(round(pnl, 2) if pnl is not None else None)
-    df["PnL_USD"] = usd
-    return df
-
-def draw_box_pattern(fig, source):
-    if source is None: return
-    nodes = source.get("nodes", [])
-    box_nodes = source.get("neckline_nodes", [])
-    if len(nodes) < 3 or len(box_nodes) < 4: return
-
-    fig.add_trace(go.Scatter(x=[nodes[0][0], nodes[1][0]], y=[nodes[0][1], nodes[1][1]], mode="lines", name="Trend", line=dict(color="#FF9800", width=2, dash="dot")), row=1, col=1)
-    top_x, top_y = [box_nodes[0][0], box_nodes[1][0]], [box_nodes[0][1], box_nodes[1][1]]
-    bot_x, bot_y = [box_nodes[2][0], box_nodes[3][0]], [box_nodes[2][1], box_nodes[3][1]]
-    
-    fig.add_trace(go.Scatter(x=top_x, y=top_y, mode="lines", name="Resistance", line=dict(color="#2196F3", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=bot_x, y=bot_y, mode="lines", name="Support", line=dict(color="#2196F3", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[top_x[0], bot_x[0]], y=[top_y[0], bot_y[0]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[top_x[1], bot_x[1]], y=[top_y[1], bot_y[1]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[nodes[2][0]], y=[nodes[2][1]], mode="markers+text", name="Breakout", marker=dict(size=14, color="#E91E63", symbol="star"), text=["كسر"], textposition="top center"), row=1, col=1)
-
-    entry, sl, tp, entry_x = source.get("entry"), source.get("sl"), source.get("tp"), nodes[2][0]
-    if entry and sl: fig.add_annotation(x=entry_x, y=sl, text="SL", showarrow=True, arrowhead=1, ax=20, ay=20, font=dict(color="red"), row=1, col=1)
-    if entry and tp: fig.add_annotation(x=entry_x, y=tp, text="TP", showarrow=True, arrowhead=1, ax=20, ay=-20, font=dict(color="green"), row=1, col=1)
-
-def render_chart_fast(sym, cur, df_chart_full):
-    if df_chart_full is None or df_chart_full.empty: return
-    nodes = cur.get("nodes", [])
-    if not nodes: return
-    pattern_start, pattern_end = nodes[0][0], nodes[-1][0]
-    span = pattern_end - pattern_start
-    
-    x_min, x_max = pattern_start - span * 2.5, pattern_end + span * 2.5
-    
-    try:
-        idx_min = max(0, df_chart_full.index.searchsorted(x_min))
-        idx_max = min(len(df_chart_full), df_chart_full.index.searchsorted(x_max))
-        df_window = df_chart_full.iloc[idx_min:idx_max]
-    except: df_window = df_chart_full
-    
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
-    
-    fig.add_trace(go.Candlestick(x=df_window.index, open=df_window["Open"], high=df_window["High"], low=df_window["Low"], close=df_window["Close"], name="Price"), row=1, col=1)
-    
-    if "EMA50" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"], line=dict(color="orange", width=1), name="EMA 50"), row=1, col=1)
-    if "EMA200" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA200"], line=dict(color="blue", width=1), name="EMA 200"), row=1, col=1)
-    
-    draw_box_pattern(fig, cur)
-    
-    if "Volume" in df_window.columns:
-        fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
-    
-    fig.update_layout(
-        template="plotly_white", height=750, autosize=True, xaxis_rangeslider_visible=False, 
-        dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=30, b=30), 
-        yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
-        yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True),
-        xaxis=dict(showgrid=True, gridcolor="#F5F5F5", range=[x_min, x_max], fixedrange=False),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
-    )
-    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
-
-def render_financial_report(df, lot_size, symbol, period):
-    st.markdown("### 📊 التقرير المالي الكامل")
-    if df is None or df.empty: st.info("ℹ️ لا توجد صفقات"); return
-
-    df = compute_pips(df); df = compute_dollar_pnl(df, lot=lot_size)
-    rc = next((c for c in ["Result", "Head Result"] if c in df.columns), None)
-    if rc is None: st.warning("⚠️ لا عمود نتيجة"); return
-
-    s = df[rc].astype(str).str.upper()
-    w_df, l_df = df[s.str.contains("WIN")], df[s.str.contains("LOSS")]
-    o_df, b_df = df[s.str.contains("OPEN")], df[s.str.contains("BREAKEVEN")]
-
-    w, l, o, b = len(w_df), len(l_df), len(o_df), len(b_df)
-    total = len(df); closed = w + l
-    wr = round(w / closed * 100, 1) if closed else 0
-
-    wp = w_df["Pips"].dropna().sum() if not w_df.empty else 0
-    lp = l_df["Pips"].dropna().sum() if not l_df.empty else 0
-    wu = w_df["PnL_USD"].dropna().sum() if not w_df.empty else 0
-    lu = l_df["PnL_USD"].dropna().sum() if not l_df.empty else 0
-    net_p = wp + lp; net_u = wu + lu
-    pf = round(abs(wu / lu), 2) if lu != 0 else float("inf")
-
-    st.markdown(f"#### 📍 {symbol} · {period}")
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("📊 الصفقات", total); k2.metric("✅ ناجحة", w, delta=f"{wr}%")
-    k3.metric("❌ خاسرة", l); k4.metric("⏳ مفتوحة", o)
-
-    k5, k6, k7, k8 = st.columns(4)
-    k5.metric("📏 النقاط", f"{net_p:+.1f}"); k6.metric("💰 صافي الربح", f"${net_u:+.2f}")
-    k7.metric("⚖️ Profit Factor", f"{pf:.2f}" if pf != float("inf") else "∞"); k8.metric("⚖️ تعادل", b)
-
-    if wr >= 60 and pf >= 1.5: st.success("🌟 استراتيجية ممتازة")
-    elif wr >= 50 and pf >= 1.2: st.success("✅ استراتيجية جيدة")
-    elif wr >= 40 and pf >= 1.0: st.warning("🟡 استراتيجية مقبولة")
-    else: st.error("🔴 استراتيجية ضعيفة")
-
-    st.markdown("---")
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 تنزيل بيانات الدورة (CSV)", csv, f"backtest_{symbol}_{period}.csv", "text/csv", use_container_width=True, type="primary")
-
-def render_advanced_risk_calculator(unique_id="main"):
-    st.markdown("### 💰 حاسبة المخاطرة المتقدمة")
-    c1, c2, c3 = st.columns(3)
-    with c1: capital = st.number_input("💵 رأس المال ($):", 10.0, 10000000.0, 1000.0, 100.0, "%.2f", key=f"{unique_id}_cap")
-    with c2: risk_pct = st.selectbox("📊 المخاطرة (%):", [1,2,3,4,5,6,7,8,9,10], index=4, key=f"{unique_id}_rp")
-    mx = capital * (risk_pct / 100)
-    with c3: st.metric("🛑 الحد الأقصى", f"${mx:,.2f}")
-
-    avail = get_available_symbols()
-    search = st.text_input("🔍 ابحث:", placeholder="EUR, GBP, BTC...", key=f"{unique_id}_s")
-    if search: avail = [s for s in avail if search.upper() in s.upper()]
-    if not avail: st.warning("⚠️ لا توجد عملات"); return
-
-    act = st.session_state.get("active_signal_symbol")
-    di = avail.index(act) if act and act in avail else 0
-    c_s, c_l = st.columns([2, 1])
-    with c_s: sel = st.selectbox("🔽 العملة:", avail, index=di, key=f"{unique_id}_sym")
-    with c_l: lot = st.number_input("💰 اللوت:", 0.0001, 100.0, 0.01, 0.01, "%.2f", key=f"{unique_id}_lot_{sel}")
-
-    if act == sel and st.session_state.get("active_signal_entry"):
-        de = float(st.session_state["active_signal_entry"])
-        ds = float(st.session_state.get("active_signal_sl") or de * 1.01)
-        dt = float(st.session_state.get("active_signal_tp") or de * 0.98)
-        st.info("🔗 مُحمّل من الإشارة النشطة")
+    if "Volume" in df.columns:
+        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df["Volume"] = v
+        df["Volume_MA"] = v.rolling(CONFIG.get("VOLUME_MA_PERIOD", 20)).mean().fillna(0.0)
     else:
-        de, ds, dt = 1.0, 1.01, 0.98
-
-    ce, cs, ct = st.columns(3)
-    with ce: entry = st.number_input("📈 الدخول:", value=float(de), format="%.5f", key=f"{unique_id}_e_{sel}")
-    with cs: sl_p  = st.number_input("🛑 SL:", value=float(ds), format="%.5f", key=f"{unique_id}_sl_{sel}")
-    with ct: tp_p  = st.number_input("🏆 TP:", value=float(dt), format="%.5f", key=f"{unique_id}_tp_{sel}")
-
-    try:
-        pip = pip_size_for(sel)
-        net_points = abs(float(tp_p) - float(entry)) / pip
-        st.metric("🎯 النقاط الصافية للهدف (TP)", f"{net_points:.1f} نقطة")
-    except: pass
-
-    try: rd = abs(float(entry) - float(sl_p)); rw = abs(float(tp_p) - float(entry)); rr = round(rw / rd, 2) if rd > 0 else "—"
-    except: rr = "—"
-
-    m1, m2, m3 = st.columns(3)
-    m1.metric("💸 المخاطرة", "—"); m2.metric("📊 النسبة", "—"); m3.metric("⚖️ R:R", f"1:{rr}" if rr != "—" else "—")
-
-app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"], horizontal=True)
-st.markdown("---")
-
-if app_mode == "🧪 مختبر الاختبار الرجعي":
-    st.markdown("### 🧪 مختبر الصناديق")
-    bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True)
-    bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")] if bt_mode == "سهم فردي" else st.multiselect("اختر:", ["BTC-USD", "GBPUSD=X", "ETH-USD"], default=["BTC-USD"])
-
-    now = datetime.datetime.now()
-    c1, c2, c3 = st.columns(3)
-    sd = c1.date_input("من:", value=datetime.date(now.year-1, 1, 1)).strftime("%Y-%m-%d")
-    ed = c2.date_input("إلى:", value=datetime.date.today()).strftime("%Y-%m-%d")
-    interval = c3.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
+        df["Volume"] = 0.0
+        df["Volume_MA"] = 0.0
     
-    if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols:
-        results, dfs = [], {}
-        bar = st.progress(0)
-        for i, sym in enumerate(bt_symbols):
-            bar.progress((i+1)/len(bt_symbols))
-            df, trades = _cached_backtest(fix_symbol(sym), interval, sd, ed)
-            if df is not None:
-                dfs[sym] = df
-                if trades:
-                    tdf = pd.DataFrame(trades)
-                    results.append({"symbol": sym, "trades_df": tdf, "total": len(tdf)})
-                else:
-                    results.append({"symbol": sym, "trades_df": pd.DataFrame(), "total": 0})
-        st.session_state["bt_results"] = results
-        st.session_state["bt_dfs"] = dfs
-        st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_int"] = sd, ed, interval
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=CONFIG["TREND_EMA_PERIOD"], adjust=False).mean()
+    return df
 
-    if "bt_results" in st.session_state and st.session_state["bt_results"]:
-        rl = st.session_state["bt_results"]
-        all_dfs = [r["trades_df"] for r in rl if not r["trades_df"].empty]
+def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
+    structural_risk = abs(entry - structural_sl)
+    if bias == "Bullish":
+        safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
+    else:
+        safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
+    final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
+    
+    target = wave_height * CONFIG["TP_MEASURED_MOVE_FACTOR"]
+    tp = entry + target if bias == "Bullish" else entry - target
+    return final_sl, tp, safe_sl, structural_sl
+
+def simulate_trade(pattern, df, cfg=None):
+    bias = pattern["bias"]
+    entry = float(pattern["entry"])
+    sl = float(pattern["sl"])
+    tp = float(pattern["tp"])
+    end_idx = pattern["neckline_end_idx"]
+    
+    if end_idx not in df.index: return {"Result": "OPEN"}
+    post_df = df.loc[end_idx:]
+    if len(post_df) <= 1: return {"Result": "OPEN"}
+
+    stats = {
+        "Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, 
+        "Entry Date": str(end_idx), "Exit Date": None, "candles_to_exit": 0, 
+        "Trailing Stage": 0, "Initial SL": sl, "Final SL": sl, "Loss Category": None, "exit_price": None
+    }
+    
+    total_tp_dist = abs(tp - entry)
+    head_size = total_tp_dist
+    max_fav, max_adv = 0.0, 0.0
+    exited = False
+
+    for c, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
+        h, l = float(row["High"]), float(row["Low"])
+        fav = max(0.0, entry - l) if bias == "Bearish" else max(0.0, h - entry)
+        adv = max(0.0, h - entry) if bias == "Bearish" else max(0.0, entry - l)
         
-        if all_dfs:
-            comb = pd.concat(all_dfs, ignore_index=True)
-            tab1, tab2, tab3 = st.tabs(["📊 التقرير المالي", "📉 الرسوم البيانية والصفقات", "🧠 التشخيص"])
-            
-            with tab1: render_financial_report(comb, 0.01, "الكل", "مخصص")
-            with tab2:
-                opts = [f"{r['symbol']} ({r['total']})" for r in rl]
-                ai = rl[opts.index(st.selectbox("اختر الأصل:", opts))]
-                sym, tdf = ai["symbol"], ai["trades_df"]
-                if not tdf.empty:
-                    if len(tdf) > 1: si = st.slider("الصفقة:", 0, len(tdf)-1, len(tdf)-1)
-                    else: si = 0
-                    cur = tdf.iloc[si]
-                    st.write(cur.get("Trade Recommendation", ""))
-                    df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
-                    render_chart_fast(sym, cur, df_chart)
-            with tab3:
-                st.info("التشخيص قيد التطوير لهذا المحرك.")
+        prog = (fav / total_tp_dist) if total_tp_dist > 0 else 0.0
+        prog_h = (fav / head_size) if head_size > 0 else 0.0
 
-else:
-    st.markdown("### 🚀 الماسح الحي")
-    symbols = st.multiselect("اختر العملات:", ["BTC-USD", "GBPUSD=X", "ETH-USD"], default=["BTC-USD"])
-    interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
-    period = st.selectbox("النطاق:", ["1mo", "3mo", "6mo", "1y"], index=2)
+        if not exited:
+            max_fav = max(max_fav, prog * 100)
+            max_adv = max(max_adv, (adv / abs(entry - stats["Initial SL"]) * 100) if abs(entry - stats["Initial SL"]) > 0 else 0.0)
+        if exited: continue
+
+        for st_idx, (th, ph) in enumerate(CONFIG["TRAILING_LEVELS_HEAD"]):
+            if prog_h < th: break
+            new_sl = entry - ph * head_size if bias == "Bearish" else entry + ph * head_size
+            if bias == "Bearish" and new_sl < sl: sl = new_sl; stats["Trailing Stage"] = st_idx + 1
+            elif bias == "Bullish" and new_sl > sl: sl = new_sl; stats["Trailing Stage"] = st_idx + 1
+        stats["Final SL"] = sl
+
+        hit_sl = (h >= sl) if bias == "Bearish" else (l <= sl)
+        hit_tp = (l <= tp) if bias == "Bearish" else (h >= tp)
+
+        if hit_sl and not hit_tp:
+            is_prof = (sl < entry) if bias == "Bearish" else (sl > entry)
+            if is_prof: stats["Result"] = "WIN"; stats["Loss Category"] = "trailing_win"
+            else:
+                stats["Result"] = "LOSS"
+                if max_fav < 30: stats["Loss Category"] = "early_reversal"
+                elif max_fav < 70: stats["Loss Category"] = "mid_reversal"
+                else: stats["Loss Category"] = "late_reversal"
+            stats["exit_price"] = sl; stats["candles_to_exit"] = c; stats["Exit Date"] = str(idx); exited = True; continue
+
+        elif hit_tp:
+            stats["Result"] = "WIN"; stats["Loss Category"] = "success"
+            stats["exit_price"] = tp; stats["candles_to_exit"] = c; stats["Exit Date"] = str(idx); exited = True; continue
+
+    stats["Max Reach %"] = round(max_fav, 1)
+    stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
+    return stats
+
+def detect_box_breakouts(df, symbol=None, is_backtest=True):
+    patterns = []
+    n = len(df)
+    if n < 100: return patterns
+
+    highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
     
-    if st.button("🚀 بدء المسح", use_container_width=True):
-        valid = []
-        for sym in symbols:
-            df, res = _cached_live(fix_symbol(sym), interval, period)
-            if res and res.get("signal") in ("STRONG BUY", "STRONG SELL"):
-                valid.append({"symbol": sym, "result": res})
-        if valid:
-            st.success(f"تم العثور على {len(valid)} إشارة")
-            if len(valid) > 1: si = st.slider("الإشارة:", 0, len(valid)-1, 0)
-            else: si = 0
-            ar, sym = valid[si]["result"], valid[si]["symbol"]
-            st.write(f"**{sym}** - {ar['signal']}")
-            
-            st.session_state["active_signal_symbol"] = sym
-            st.session_state["active_signal_entry"] = ar.get("entry")
-            st.session_state["active_signal_sl"] = ar.get("sl")
-            st.session_state["active_signal_tp"] = ar.get("tp")
-            
-            df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
-            if df_chart is not None: render_chart_fast(sym, ar, df_chart)
+    for i in range(60, n):
+        candle_body = abs(closes[i] - opens[i])
+        if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
+        
+        is_bull_breakout = closes[i] > opens[i]
+        is_bear_breakout = closes[i] < opens[i]
 
-st.markdown("---")
-with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
-    render_advanced_risk_calculator(unique_id="end")
+        lookback_start = max(0, i - CONFIG["IMPULSE_MAX_LOOKBACK"])
+        
+        if is_bull_breakout:
+            impulse_start_idx = lookback_start + np.argmin(lows[lookback_start:i])
+            impulse_start_price = lows[impulse_start_idx]
+            impulse_move = closes[i] - impulse_start_price
+            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
+        else:
+            impulse_start_idx = lookback_start + np.argmax(highs[lookback_start:i])
+            impulse_start_price = highs[impulse_start_idx]
+            impulse_move = impulse_start_price - closes[i]
+            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
+
+        if is_bull_breakout:
+            box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
+        else:
+            box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
+
+        if box_start_idx >= i or (i - box_start_idx) < CONFIG["BOX_MIN_CANDLES"]: continue
+
+        box_highs = highs[box_start_idx:i]
+        box_lows = lows[box_start_idx:i]
+        box_top = np.max(box_highs)
+        box_bottom = np.min(box_lows)
+        box_height = box_top - box_bottom
+        box_mid = (box_top + box_bottom) / 2
+        
+        if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
+        if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
+
+        actual_entry_idx = i
+        actual_entry_price = closes[i]
+        
+        # 🎯 التعديل: وقف الخسارة الهيكلي يعتمد على شمعة الاختبار أو الاختراق
+        structural_sl = lows[i] if is_bull_breakout else highs[i]
+
+        if CONFIG.get("REQUIRE_RETEST", False):
+            retest_found = False
+            for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
+                if is_bull_breakout:
+                    if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]) and closes[j] > box_top:
+                        candle_range = highs[j] - lows[j]
+                        if candle_range > 0 and (closes[j] - lows[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
+                            retest_found = True
+                            actual_entry_idx = j
+                            actual_entry_price = closes[j]
+                            # 🎯 وضع SL تحت قاع شمعة الاختبار
+                            structural_sl = lows[j] 
+                            break
+                elif is_bear_breakout:
+                    if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]) and closes[j] < box_bottom:
+                        candle_range = highs[j] - lows[j]
+                        if candle_range > 0 and (highs[j] - closes[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
+                            retest_found = True
+                            actual_entry_idx = j
+                            actual_entry_price = closes[j]
+                            # 🎯 وضع SL فوق قمة شمعة الاختبار
+                            structural_sl = highs[j] 
+                            break
+            if not retest_found: continue
+
+        box_nodes = [
+            (df.index[box_start_idx], box_top), (df.index[actual_entry_idx], box_top),
+            (df.index[box_start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)
+        ]
+        
+        trend_nodes = [
+            (df.index[impulse_start_idx], impulse_start_price), 
+            (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), 
+            (df.index[actual_entry_idx], actual_entry_price)
+        ]
+
+        if is_bull_breakout and actual_entry_price > box_top:
+            # 🎯 تمرير وقف الخسارة الهيكلي الضيق
+            final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, impulse_move)
+            pattern = {
+                "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
+                "bias": "Bullish", "match": 100.0, "nodes": trend_nodes,
+                "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
+                "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
+                "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
+                "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"
+            }
+            pattern.update(simulate_trade(pattern, df))
+            pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
+            patterns.append(pattern)
+            break
+
+        elif is_bear_breakout and actual_entry_price < box_bottom:
+            # 🎯 تمرير وقف الخسارة الهيكلي الضيق
+            final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, impulse_move)
+            pattern = {
+                "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
+                "bias": "Bearish", "match": 100.0, "nodes": trend_nodes,
+                "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
+                "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
+                "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
+                "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"
+            }
+            pattern.update(simulate_trade(pattern, df))
+            pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
+            patterns.append(pattern)
+            break
+
+    return patterns
+
+# دوال التوافق
+def run_full_analysis(df, interval="1h", symbol=None):
+    df = calculate_indicators(df)
+    patterns = detect_box_breakouts(df, symbol, is_backtest=False)
+    if not patterns: return {"signal": "WAITING", "pattern": "NO PATTERN", "bias": "Neutral", "df": df}
+    
+    recent_patterns = []
+    last_idx_pos = len(df) - 1
+    
+    for p in patterns:
+        try:
+            p_pos = df.index.get_loc(p["neckline_end_idx"])
+            if (last_idx_pos - p_pos) <= CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
+                recent_patterns.append(p)
+        except KeyError:
+            continue
+
+    if not recent_patterns:
+        return {"signal": "WAITING", "pattern": "NO RECENT PATTERN", "bias": "Neutral", "df": df}
+
+    latest = recent_patterns[-1]
+    return {
+        "df": df, "signal": "STRONG BUY" if latest["bias"]=="Bullish" else "STRONG SELL", 
+        "pattern": latest["pattern"], "bias": latest["bias"], "entry": latest["entry"], 
+        "sl": latest["sl"], "tp": latest["tp"], "nodes": latest["nodes"], 
+        "neckline_nodes": latest["neckline_nodes"], "Trade Recommendation": latest["Trade Recommendation"]
+    }
+
+def backtest_strategy(df, interval="1h", symbol=None):
+    df = calculate_indicators(df)
+    patterns = detect_box_breakouts(df, symbol, is_backtest=True)
+    trades = []
+    for p in patterns:
+        p["Symbol"] = symbol; p["Entry Price"] = p["entry"]; p["Stop Loss"] = p["sl"]; p["Take Profit"] = p["tp"]
+        trades.append(p)
+    return trades
+
+def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): 
+    return {}
+
+def diagnose_filters(df, interval="1h", symbol=None): 
+    trades = backtest_strategy(df, interval, symbol)
+    wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
+    losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
+    total = len(wins) + len(losses)
+    wr = round(len(wins)/total*100, 1) if total > 0 else 0
+    verdict = "لا توجد صفقات كافية" if total == 0 else f"معدل الربح: {wr}%"
+    return {"smart_diagnosis": {"verdict": verdict, "win_breakdown": {}, "loss_breakdown": {}, "action_plan": []}}
