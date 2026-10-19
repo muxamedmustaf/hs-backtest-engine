@@ -19,6 +19,7 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter Pro", page_icon="📦", layout="wide")
 
+# 🎯 CSS السحري للتمرير بالإصبع والواجهة
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -92,8 +93,12 @@ def pip_size_for(symbol):
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
     try:
-        for x in get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")[0]: s.add(str(x).strip())
-    except Exception: pass
+        sheet_symbols = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
+        if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
+            for x in sheet_symbols[0]: 
+                s.add(str(x).strip().upper())
+    except Exception as e: 
+        pass
     return sorted(s)
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -374,7 +379,16 @@ st.markdown("---")
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
     bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True)
-    bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")] if bt_mode == "سهم فردي" else st.multiselect("اختر:", ["BTC-USD", "GBPUSD=X", "ETH-USD", "EURUSD=X", "USDJPY=X"], default=["BTC-USD"])
+    
+    if bt_mode == "سهم فردي":
+        bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")]
+    else:
+        av = get_available_symbols()
+        dp = [s for s in st.session_state.get("bt_picked_symbols", []) if s in av]
+        picked = st.multiselect("اختر الرموز (من الشيت):", av, default=dp, key="bt_multi")
+        st.session_state["bt_picked_symbols"] = picked
+        bt_symbols = picked
+        if not bt_symbols: st.warning("⚠️ اختر عملة")
 
     now = datetime.datetime.now()
     c1, c2, c3 = st.columns(3)
@@ -429,7 +443,13 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
 
 else:
     st.markdown("### 🚀 الماسح الحي")
-    symbols = st.multiselect("اختر العملات:", ["BTC-USD", "GBPUSD=X", "ETH-USD", "EURUSD=X", "USDJPY=X"], default=["BTC-USD"])
+    av = get_available_symbols()
+    dp = [s for s in st.session_state.get("live_picked_symbols", []) if s in av]
+    picked = st.multiselect("اختر العملات (من الشيت):", av, default=dp, key="live_multi")
+    st.session_state["live_picked_symbols"] = picked
+    symbols = picked
+    if not symbols: st.warning("⚠️ اختر عملة")
+
     interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
     period = st.selectbox("النطاق:", ["1mo", "3mo", "6mo", "1y"], index=2)
     
