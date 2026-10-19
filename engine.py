@@ -33,8 +33,7 @@ REASON_MAP = {
     "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
 }
 
-def get_symbol_config(symbol):
-    return CONFIG.copy()
+def get_symbol_config(symbol): return CONFIG.copy()
 
 def calculate_indicators(df, cfg=None):
     df = df.copy()
@@ -51,43 +50,28 @@ def calculate_indicators(df, cfg=None):
 
 def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     structural_risk = abs(entry - structural_sl)
-    if bias == "Bullish":
-        safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
-    else:
-        safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
+    if bias == "Bullish": safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
+    else: safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
     final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
-    
     target = wave_height * CONFIG["TP_MEASURED_MOVE_FACTOR"]
     tp = entry + target if bias == "Bullish" else entry - target
     return final_sl, tp, safe_sl, structural_sl
 
 def simulate_trade(pattern, df, cfg=None):
-    bias = pattern["bias"]
-    entry = float(pattern["entry"])
-    sl = float(pattern["sl"])
-    tp = float(pattern["tp"])
+    bias = pattern["bias"]; entry = float(pattern["entry"]); sl = float(pattern["sl"]); tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
-    
     if end_idx not in df.index: return {"Result": "OPEN"}
     post_df = df.loc[end_idx:]
     if len(post_df) <= 1: return {"Result": "OPEN"}
 
-    stats = {
-        "Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, 
-        "Entry Date": str(end_idx), "Exit Date": None, "candles_to_exit": 0, 
-        "Trailing Stage": 0, "Initial SL": sl, "Final SL": sl, "Loss Category": None, "exit_price": None
-    }
-    
-    total_tp_dist = abs(tp - entry)
-    head_size = total_tp_dist
-    max_fav, max_adv = 0.0, 0.0
-    exited = False
+    stats = {"Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, "Entry Date": str(end_idx), "Exit Date": None, "candles_to_exit": 0, "Trailing Stage": 0, "Initial SL": sl, "Final SL": sl, "Loss Category": None, "exit_price": None}
+    total_tp_dist = abs(tp - entry); head_size = total_tp_dist
+    max_fav, max_adv = 0.0, 0.0; exited = False
 
     for c, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
         h, l = float(row["High"]), float(row["Low"])
         fav = max(0.0, entry - l) if bias == "Bearish" else max(0.0, h - entry)
         adv = max(0.0, h - entry) if bias == "Bearish" else max(0.0, entry - l)
-        
         prog = (fav / total_tp_dist) if total_tp_dist > 0 else 0.0
         prog_h = (fav / head_size) if head_size > 0 else 0.0
 
@@ -115,20 +99,17 @@ def simulate_trade(pattern, df, cfg=None):
                 elif max_fav < 70: stats["Loss Category"] = "mid_reversal"
                 else: stats["Loss Category"] = "late_reversal"
             stats["exit_price"] = sl; stats["candles_to_exit"] = c; stats["Exit Date"] = str(idx); exited = True; continue
-
         elif hit_tp:
             stats["Result"] = "WIN"; stats["Loss Category"] = "success"
             stats["exit_price"] = tp; stats["candles_to_exit"] = c; stats["Exit Date"] = str(idx); exited = True; continue
 
-    stats["Max Reach %"] = round(max_fav, 1)
-    stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
+    stats["Max Reach %"] = round(max_fav, 1); stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
     return stats
 
 def detect_box_breakouts(df, symbol=None, is_backtest=True):
     patterns = []
     n = len(df)
     if n < 100: return patterns
-
     highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
     
     for i in range(60, n):
@@ -137,7 +118,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         
         is_bull_breakout = closes[i] > opens[i]
         is_bear_breakout = closes[i] < opens[i]
-
         lookback_start = max(0, i - CONFIG["IMPULSE_MAX_LOOKBACK"])
         
         if is_bull_breakout:
@@ -151,25 +131,19 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             impulse_move = impulse_start_price - closes[i]
             if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
 
-        if is_bull_breakout:
-            box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
-        else:
-            box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
+        if is_bull_breakout: box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
+        else: box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
 
         if box_start_idx >= i or (i - box_start_idx) < CONFIG["BOX_MIN_CANDLES"]: continue
 
-        box_highs = highs[box_start_idx:i]
-        box_lows = lows[box_start_idx:i]
-        box_top = np.max(box_highs)
-        box_bottom = np.min(box_lows)
-        box_height = box_top - box_bottom
-        box_mid = (box_top + box_bottom) / 2
+        box_highs = highs[box_start_idx:i]; box_lows = lows[box_start_idx:i]
+        box_top = np.max(box_highs); box_bottom = np.min(box_lows)
+        box_height = box_top - box_bottom; box_mid = (box_top + box_bottom) / 2
         
         if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
         if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
 
-        actual_entry_idx = i
-        actual_entry_price = closes[i]
+        actual_entry_idx = i; actual_entry_price = closes[i]
         structural_sl = lows[i] if is_bull_breakout else highs[i]
 
         if CONFIG.get("REQUIRE_RETEST", False):
@@ -187,47 +161,21 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                             retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; structural_sl = highs[j]; break
             if not retest_found: continue
 
-        box_nodes = [
-            (df.index[box_start_idx], box_top), (df.index[actual_entry_idx], box_top),
-            (df.index[box_start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)
-        ]
-        
-        trend_nodes = [
-            (df.index[impulse_start_idx], impulse_start_price), 
-            (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), 
-            (df.index[actual_entry_idx], actual_entry_price)
-        ]
+        box_nodes = [(df.index[box_start_idx], box_top), (df.index[actual_entry_idx], box_top), (df.index[box_start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)]
+        trend_nodes = [(df.index[impulse_start_idx], impulse_start_price), (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), (df.index[actual_entry_idx], actual_entry_price)]
 
         if is_bull_breakout and actual_entry_price > box_top:
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, impulse_move)
-            pattern = {
-                "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
-                "bias": "Bullish", "match": 100.0, "nodes": trend_nodes,
-                "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
-                "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
-                "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"
-            }
+            pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bullish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"}
             pattern.update(simulate_trade(pattern, df))
             pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
-            patterns.append(pattern)
-            break
-
+            patterns.append(pattern); break
         elif is_bear_breakout and actual_entry_price < box_bottom:
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, impulse_move)
-            pattern = {
-                "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
-                "bias": "Bearish", "match": 100.0, "nodes": trend_nodes,
-                "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
-                "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
-                "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"
-            }
+            pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bearish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"}
             pattern.update(simulate_trade(pattern, df))
             pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
-            patterns.append(pattern)
-            break
-
+            patterns.append(pattern); break
     return patterns
 
 def run_full_analysis(df, interval="1h", symbol=None):
@@ -237,25 +185,16 @@ def run_full_analysis(df, interval="1h", symbol=None):
     
     recent_patterns = []
     last_idx_pos = len(df) - 1
-    
     for p in patterns:
         try:
             p_pos = df.index.get_loc(p["neckline_end_idx"])
-            if (last_idx_pos - p_pos) <= CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]:
-                recent_patterns.append(p)
-        except KeyError:
-            continue
+            if (last_idx_pos - p_pos) <= CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]: recent_patterns.append(p)
+        except KeyError: continue
 
-    if not recent_patterns:
-        return {"signal": "WAITING", "pattern": "NO RECENT PATTERN", "bias": "Neutral", "df": df}
+    if not recent_patterns: return {"signal": "WAITING", "pattern": "NO RECENT PATTERN", "bias": "Neutral", "df": df}
 
     latest = recent_patterns[-1]
-    return {
-        "df": df, "signal": "STRONG BUY" if latest["bias"]=="Bullish" else "STRONG SELL", 
-        "pattern": latest["pattern"], "bias": latest["bias"], "entry": latest["entry"], 
-        "sl": latest["sl"], "tp": latest["tp"], "nodes": latest["nodes"], 
-        "neckline_nodes": latest["neckline_nodes"], "Trade Recommendation": latest["Trade Recommendation"]
-    }
+    return {"df": df, "signal": "STRONG BUY" if latest["bias"]=="Bullish" else "STRONG SELL", "pattern": latest["pattern"], "bias": latest["bias"], "entry": latest["entry"], "sl": latest["sl"], "tp": latest["tp"], "nodes": latest["nodes"], "neckline_nodes": latest["neckline_nodes"], "Trade Recommendation": latest["Trade Recommendation"]}
 
 def backtest_strategy(df, interval="1h", symbol=None):
     df = calculate_indicators(df)
@@ -266,10 +205,8 @@ def backtest_strategy(df, interval="1h", symbol=None):
         trades.append(p)
     return trades
 
-def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): 
-    return {}
-
-def diagnose_filters(df, interval="1h", symbol=None): 
+def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): return {}
+def diagnose_filters(df, interval="1h", symbol=None):
     trades = backtest_strategy(df, interval, symbol)
     wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
     losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
