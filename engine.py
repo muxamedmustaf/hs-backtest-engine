@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Box Breakout Hunter
+ENGINE.PY — Box Breakout Hunter (Pro Version)
 ===================================================
-- يبحث عن حركة دافعة (Trend).
-- يبحث عن تجميع (Box) بقمم وقيعان متساوية (لمستان على الأقل).
-- كسر حقيقي بإغلاق شمعة خارج الصندوق.
-- الهدف = القمة أو القاع السابق (Prior Swing High/Low).
+- تقليص وقف الخسارة إلى منتصف الصندوق أو قاع الاختراق.
+- إدارة هدف أكثر ذكاءً (1.5x الصندوق) مع تريلينغ ستوب قوي.
+- إمكانية تفعيل شرط "إعادة الاختبار" (Retest).
+- مؤشرات الحجم والاتجاه.
 """
 import pandas as pd
 import numpy as np
@@ -17,9 +17,16 @@ CONFIG = {
     "REQUIRE_TRUE_BREAKOUT": True, "TRUE_BREAKOUT_MIN_PCT": 0.0005,       
     "BREAKOUT_ATR_MULTIPLIER": 1.2, "REQUIRE_VOLUME_BREAKOUT": True,
     "VOLUME_BREAKOUT_FACTOR": 1.2, "VOLUME_MA_PERIOD": 20,
-    "LIVE_MAX_BREAKOUT_CANDLES": 15,
-    "TP_REACH_FACTOR": 1.0, "USE_SAFE_SL": True, "SAFE_SL_MARGIN": 0.15,
-    "TRAILING_LEVELS_HEAD": [(1.00, 0.50), (1.50, 1.00), (2.00, 1.50)],
+    
+    # 🆕 إعدادات إعادة الاختبار (Retest)
+    "REQUIRE_RETEST": False,               # إذا كان True، ينتظر الكود عودة السعر لاختبار الصندوق قبل الدخول
+    "RETEST_MAX_CANDLES": 5,               # أقصى عدد شموع للانتظار لإعادة الاختبار
+    
+    # 🆕 إدارة الصفقة (أكثر أماناً)
+    "TP_REACH_FACTOR": 1.5,                # الهدف = 1.5 × ارتفاع الصندوق
+    "USE_SAFE_SL": True, 
+    "SAFE_SL_MARGIN": 0.10,                # هامش أمان أقل (10%) لأننا سنقترب من منتصف الصندوق
+    "TRAILING_LEVELS_HEAD": [(1.00, 0.30), (1.50, 0.80), (2.00, 1.20)],
     "MEASURE_FULL_EXTENSION": True,
 }
 
@@ -190,22 +197,34 @@ def detect_box_breakouts(df, is_backtest=False, cfg=None):
             is_uptrend = trend_move_up > (atr[start_idx] * cfg["TREND_MIN_ATR_MULTIPLIER"])
             is_downtrend = trend_move_down > (atr[start_idx] * cfg["TREND_MIN_ATR_MULTIPLIER"])
 
-            # [يسار-علوي, يمين-علوي, يسار-سفلي, يمين-سفلي]
             box_nodes = [
                 (df.index[start_idx], box_top), (df.index[i], box_top),
                 (df.index[start_idx], box_bottom), (df.index[i], box_bottom)
             ]
 
+            # 🟢 Bullish Breakout
             if breakout_close > box_top * (1 + cfg["TRUE_BREAKOUT_MIN_PCT"]) and is_uptrend:
+                # 🆕 فحص إعادة الاختبار إذا كان مفعلاً
+                if cfg.get("REQUIRE_RETEST", False):
+                    retest_found = False
+                    for j in range(i + 1, min(n, i + 1 + cfg["RETEST_MAX_CANDLES"])):
+                        if lows[j] <= box_top and closes[j] > box_top:
+                            retest_found = True
+                            i = j # الدخول عند شمعة إعادة الاختبار
+                            breakout_close = closes[j]
+                            break
+                    if not retest_found: continue
+
                 entry = breakout_close
-                prior_high = np.max(highs[trend_idx:start_idx])
-                target_price = prior_high if prior_high > entry else None
-                final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bullish", entry, box_bottom, target_price, box_height, cfg)
+                # 🆕 وقف الخسارة: منتصف الصندوق (أكثر أماناً)
+                structural_sl = box_mid 
+                final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bullish", entry, structural_sl, None, box_height, cfg)
+                
                 pattern = {
                     "name": "Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
                     "bias": "Bullish", "match": 100.0, "nodes": [(df.index[trend_idx], closes[trend_idx]), (df.index[start_idx], box_bottom), (df.index[i], entry)],
                     "entry": float(round(entry, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                    "structural_sl": float(round(box_bottom, 5)), "safe_sl": float(round(safe_sl, 5)),
+                    "structural_sl": float(round(structural_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
                     "neckline_nodes": box_nodes, "target_nodes": [(df.index[i], float(round(entry, 5))), (df.index[i], float(round(tp, 5)))],
                     "end_pos": i, "neckline_end_idx": df.index[i], "Entry": float(round(entry, 5)), "Pattern": "Box Breakout (Bullish)",
                 }
@@ -214,16 +233,28 @@ def detect_box_breakouts(df, is_backtest=False, cfg=None):
                 patterns.append(pattern)
                 break
 
+            # 🔴 Bearish Breakout
             elif breakout_close < box_bottom * (1 - cfg["TRUE_BREAKOUT_MIN_PCT"]) and is_downtrend:
+                if cfg.get("REQUIRE_RETEST", False):
+                    retest_found = False
+                    for j in range(i + 1, min(n, i + 1 + cfg["RETEST_MAX_CANDLES"])):
+                        if highs[j] >= box_bottom and closes[j] < box_bottom:
+                            retest_found = True
+                            i = j
+                            breakout_close = closes[j]
+                            break
+                    if not retest_found: continue
+
                 entry = breakout_close
-                prior_low = np.min(lows[trend_idx:start_idx])
-                target_price = prior_low if prior_low < entry else None
-                final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bearish", entry, box_top, target_price, box_height, cfg)
+                # 🆕 وقف الخسارة: منتصف الصندوق
+                structural_sl = box_mid 
+                final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bearish", entry, structural_sl, None, box_height, cfg)
+                
                 pattern = {
                     "name": "Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
                     "bias": "Bearish", "match": 100.0, "nodes": [(df.index[trend_idx], closes[trend_idx]), (df.index[start_idx], box_top), (df.index[i], entry)],
                     "entry": float(round(entry, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                    "structural_sl": float(round(box_top, 5)), "safe_sl": float(round(safe_sl, 5)),
+                    "structural_sl": float(round(structural_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
                     "neckline_nodes": box_nodes, "target_nodes": [(df.index[i], float(round(entry, 5))), (df.index[i], float(round(tp, 5)))],
                     "end_pos": i, "neckline_end_idx": df.index[i], "Entry": float(round(entry, 5)), "Pattern": "Box Breakout (Bearish)",
                 }
