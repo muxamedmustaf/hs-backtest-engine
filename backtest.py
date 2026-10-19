@@ -18,13 +18,12 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter", page_icon="📦", layout="wide")
 
-# 🎯 CSS السحري للتمرير بالإصبع والواجهة
+# 🎯 CSS السحري: إجبار المتصفح على ترك الشارت يتحكم في اللمس
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
     .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
     div[data-testid='stPlotlyChart'] { width: 100% !important; }
-    iframe { width: 100% !important; }
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
     label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; font-weight: 500; }
@@ -41,8 +40,11 @@ st.markdown("""
     div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
-    /* السماح بالتكبير والتصغير عبر اللمس */
-    .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { touch-action: pan-x pan-y !important; } 
+    
+    /* 🎯 السماح للشارت بالتكبير والتصغير بإصبعين (Pinch to Zoom) */
+    .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { 
+        touch-action: none !important; 
+    } 
 </style>
 """, unsafe_allow_html=True)
 
@@ -57,11 +59,11 @@ IC_MARKETS_SPECS = {
 
 PLOTLY_CONFIG = {
     'responsive': True, 
-    'scrollZoom': True,  # تفعيل التكبير بعجلة الماوس أو إصبعين
+    'scrollZoom': True,       # تفعيل التكبير بعجلة الماوس أو إصبعين
     'displaylogo': False, 
-    'displayModeBar': True, # إظهار أزرار التكبير والتصغير (+ و -)
+    'displayModeBar': True,   # إظهار أزرار التحكم
     'modeBarButtonsToRemove': ['sendDataToCloud', 'lasso2d', 'select2d', 'toggleSpikelines'],
-    'dragmode': 'pan', 
+    'dragmode': 'pan',        # السحب للتحريك
     'doubleClick': 'reset+autosize'
 }
 
@@ -185,13 +187,31 @@ def render_chart_fast(sym, cur, df_chart_full):
     fig = go.Figure(data=[go.Candlestick(x=df_window.index, open=df_window["Open"], high=df_window["High"], low=df_window["Low"], close=df_window["Close"], name="Price")])
     if "EMA50" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"], line=dict(color="orange", width=1), name="EMA 50"))
     if "EMA200" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA200"], line=dict(color="blue", width=1), name="EMA 200"))
+    
     draw_box_pattern(fig, cur)
     
+    # 🎯 تعديلات المحور والهامش لسهولة السحب والتكبير الجانبي
     fig.update_layout(
-        template="plotly_white", height=700, autosize=True, xaxis_rangeslider_visible=False, 
-        dragmode="pan", hovermode="x unified", 
-        yaxis=dict(side="left", showgrid=True, gridcolor="#EEEEEE", fixedrange=False),
-        xaxis=dict(showgrid=True, gridcolor="#F5F5F5", range=[x_min, x_max], fixedrange=False),
+        template="plotly_white", 
+        height=700, 
+        autosize=True, 
+        xaxis_rangeslider_visible=False, 
+        dragmode="pan", 
+        hovermode="x unified", 
+        margin=dict(l=10, r=60, t=30, b=30), # زيادة الهامش الأيمن للسحب
+        yaxis=dict(
+            side="right",          # محور السعر على اليمين مثل TradingView
+            showgrid=True, 
+            gridcolor="#EEEEEE", 
+            fixedrange=False,      # السماح بالسحب الجانبي للتكبير/التصغير
+            automargin=True        # منع اختفاء الأرقام
+        ),
+        xaxis=dict(
+            showgrid=True, 
+            gridcolor="#F5F5F5", 
+            range=[x_min, x_max], 
+            fixedrange=False       # السماح بالسحب الأفقي
+        ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
