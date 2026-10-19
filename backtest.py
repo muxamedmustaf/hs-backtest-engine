@@ -12,12 +12,9 @@ try:
 except ImportError as e:
     st.error(f"❌ فشل الاستيراد من engine: {e}"); st.stop()
 
-# محاولة استيراد دالة الشيت
 try:
     from ffff import get_symbols_from_sheet
-    HAS_SHEET = True
 except ImportError:
-    HAS_SHEET = False
     def get_symbols_from_sheet(*args, **kwargs): return [["EURUSD=X", "BTC-USD"]]
 
 st.set_page_config(page_title="Box Hunter Pro", page_icon="📦", layout="wide")
@@ -26,26 +23,39 @@ st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
     .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
+    div[data-testid='stPlotlyChart'] { width: 100% !important; }
+    iframe { width: 100% !important; }
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
-    label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; }
+    label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; font-weight: 500; }
+    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; font-size: 14px; }
+    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; font-size: 20px; }
+    .stButton > button { direction: rtl; text-align: center; border-radius: 8px; }
+    .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; border-radius: 8px; }
+    .stDataFrame { direction: ltr; }
+    * { transition: none !important; animation: none !important; }
+    section.main > div { contain: layout style !important; }
+    .stDataFrame, .stPlotlyChart { contain: content !important; }
+    .stExpander, .stMetric, .stDataFrame { box-shadow: none !important; }
+    details { padding: 0.3rem !important; }
+    div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
     .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { touch-action: none !important; } 
 </style>
 """, unsafe_allow_html=True)
 
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
-ALL_GLOBAL_INTERVALS = ["15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1wk"]
 
-IC_MARKETS_SPECS = {
-    "BTC-USD":  {"contract": 1, "min_lot": 0.01, "step": 0.01, "pip": 1.0, "cat": "🪙 Crypto"},
-    "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-    "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-}
+# 🎯 استعادة جميع الأطر الزمنية
+ALL_GLOBAL_INTERVALS = ["1m", "2m", "3m", "4m", "5m", "10m", "15m", "30m", "45m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "2d", "3d", "1wk", "1mo", "3mo", "6mo", "1y"]
 
-PLOTLY_CONFIG = {
-    'responsive': True, 'scrollZoom': True, 'displaylogo': False, 'displayModeBar': True, 
-    'dragmode': 'pan', 'doubleClick': 'reset+autosize'
-}
+# 🎯 استعادة جميع الفترات الزمنية
+ALL_PERIODS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
+
+IC_MARKETS_SPECS = {"BTC-USD": {"pip": 1.0}, "EURUSD": {"pip": 0.0001}, "GBPUSD": {"pip": 0.0001}}
+
+PLOTLY_CONFIG = {'responsive': True, 'scrollZoom': True, 'displaylogo': False, 'displayModeBar': True, 'dragmode': 'pan', 'doubleClick': 'reset+autosize'}
 
 def fix_symbol(sym):
     sym = str(sym).strip().upper()
@@ -59,51 +69,13 @@ def pip_size_for(symbol):
         if key.upper() == s: return spec["pip"]
     return 0.0001
 
-# 🎯 الدالة الاحترافية الجديدة لجلب الرموز (تكشف الأخطاء ولا تخفيها)
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
-    
-    if not HAS_SHEET:
-        st.warning("⚠️ **تنبيه:** لم يتم العثور على ملف `ffff.py`، يتم عرض الرموز الافتراضية فقط.")
-        return sorted(s)
-
     try:
-        # استدعاء الدالة
-        raw_data = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
-        
-        fetched_symbols = []
-        
-        # 1. إذا كانت النتيجة Pandas DataFrame
-        if isinstance(raw_data, pd.DataFrame):
-            if not raw_data.empty:
-                # نفترض أن العمود الأول يحتوي على الرموز
-                fetched_symbols = raw_data.iloc[:, 0].dropna().astype(str).tolist()
-                
-        # 2. إذا كانت النتيجة List of Lists (القوائم المتداخلة)
-        elif isinstance(raw_data, (list, tuple)) and len(raw_data) > 0:
-            first_item = raw_data[0]
-            if isinstance(first_item, (list, tuple)):
-                fetched_symbols = [str(x) for x in first_item if pd.notna(x)]
-            elif isinstance(first_item, str):
-                # إذا كانت قائمة مسطحة
-                fetched_symbols = [str(x) for x in raw_data if pd.notna(x)]
-
-        # إضافة الرموز التي تم جلبها
-        for sym in fetched_symbols:
-            sym_clean = sym.strip().upper()
-            if sym_clean: 
-                s.add(sym_clean)
-
-        if len(fetched_symbols) > 0:
-            st.sidebar.success(f"✅ تم جلب {len(fetched_symbols)} رمز من الشيت.")
-        else:
-            st.sidebar.warning("⚠️ تم الاتصال بالشيت ولكنه رجع فارغاً أو بصيغة غير معروفة.")
-
-    except Exception as e:
-        # هنا نطبع الخطأ للمستخدم بدلاً من تجاهله
-        st.error(f"🚨 **خطأ أثناء قراءة الشيت:** {str(e)}")
-        st.info("يتم استخدام القائمة الافتراضية كاحتياطي.")
-        
+        sheet_symbols = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
+        if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
+            for x in sheet_symbols[0]: s.add(str(x).strip().upper())
+    except Exception: pass
     return sorted(s)
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -207,23 +179,29 @@ def draw_box_pattern(fig, source):
     if entry and sl: fig.add_annotation(x=entry_x, y=sl, text="SL", showarrow=True, arrowhead=1, ax=20, ay=20, font=dict(color="red"), row=1, col=1)
     if entry and tp: fig.add_annotation(x=entry_x, y=tp, text="TP", showarrow=True, arrowhead=1, ax=20, ay=-20, font=dict(color="green"), row=1, col=1)
 
-def render_chart_fast(sym, cur, df_chart_full):
+def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     if df_chart_full is None or df_chart_full.empty: return
     nodes = cur.get("nodes", [])
     if not nodes: return
+    
     pattern_start, pattern_end = nodes[0][0], nodes[-1][0]
     span = pattern_end - pattern_start
     
-    x_min, x_max = pattern_start - span * 2.5, pattern_end + span * 2.5
-    
-    try:
-        idx_min = max(0, df_chart_full.index.searchsorted(x_min))
-        idx_max = min(len(df_chart_full), df_chart_full.index.searchsorted(x_max))
-        df_window = df_chart_full.iloc[idx_min:idx_max]
-    except: df_window = df_chart_full
-    
+    if chart_mode == "fast":
+        # 🎯 رسم سريع: نأخذ فقط 40 شمعة قبل الموجة و 40 شمعة بعد الكسر
+        x_min, x_max = pattern_start - span * 1.0, pattern_end + span * 1.0
+        try:
+            idx_min = max(0, df_chart_full.index.searchsorted(x_min))
+            idx_max = min(len(df_chart_full), df_chart_full.index.searchsorted(x_max))
+            df_window = df_chart_full.iloc[idx_min:idx_max].copy()
+        except: df_window = df_chart_full.tail(100).copy()
+    else:
+        # 🎯 رسم الفترة المحددة كاملة (قد يكون أبطأ قليلاً)
+        df_window = df_chart_full.copy()
+        x_min = df_window.index[0] if not df_window.empty else pattern_start
+        x_max = df_window.index[-1] if not df_window.empty else pattern_end
+
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
-    
     fig.add_trace(go.Candlestick(x=df_window.index, open=df_window["Open"], high=df_window["High"], low=df_window["Low"], close=df_window["Close"], name="Price"), row=1, col=1)
     
     if "EMA50" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"], line=dict(color="orange", width=1), name="EMA 50"), row=1, col=1)
@@ -235,7 +213,7 @@ def render_chart_fast(sym, cur, df_chart_full):
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
     fig.update_layout(
-        template="plotly_white", height=750, autosize=True, xaxis_rangeslider_visible=False, 
+        template="plotly_white", height=700, autosize=True, xaxis_rangeslider_visible=False, 
         dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=30, b=30), 
         yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
         yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True),
@@ -381,6 +359,9 @@ def render_advanced_risk_calculator(unique_id="main"):
 app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"], horizontal=True)
 st.markdown("---")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ================= BACKTEST MODE =================
+# ══════════════════════════════════════════════════════════════════════════════
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
     bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True)
@@ -399,7 +380,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
     c1, c2, c3 = st.columns(3)
     sd = c1.date_input("من:", value=datetime.date(now.year-1, 1, 1)).strftime("%Y-%m-%d")
     ed = c2.date_input("إلى:", value=datetime.date.today()).strftime("%Y-%m-%d")
-    interval = c3.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
+    interval = c3.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=9) # 1h هو index 9
     lot = st.number_input("حجم اللوت:", 0.01, 100.0, 0.01, 0.01, "%.2f", key="bt_lot")
     
     if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols:
@@ -433,12 +414,32 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 ai = rl[opts.index(st.selectbox("اختر الأصل:", opts))]
                 sym, tdf = ai["symbol"], ai["trades_df"]
                 if not tdf.empty:
-                    if len(tdf) > 1: si = st.slider("الصفقة:", 0, len(tdf)-1, len(tdf)-1)
-                    else: si = 0
+                    # 🎯 خيار سرعة الرسم
+                    chart_mode = st.radio("نطاق الرسم:", ["حول النموذج (سريع جداً)", "كامل الفترة المحددة"], horizontal=True)
+                    mode_val = "fast" if "سريع" in chart_mode else "full"
+                    
+                    # 🎯 التنقل السهل بين الإشارات
+                    si = st.session_state.get(f"signal_index_{sym}", len(tdf)-1)
+                    if si >= len(tdf): si = len(tdf)-1
+                    if si < 0: si = 0
+                    
+                    n1, n2, n3 = st.columns([1, 2, 1])
+                    with n1:
+                        if st.button("⬅️ السابق", use_container_width=True):
+                            st.session_state[f"signal_index_{sym}"] = max(0, si - 1)
+                            st.rerun()
+                    with n2:
+                        st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(tdf)}</div>", unsafe_allow_html=True)
+                    with n3:
+                        if st.button("التالي ➡️", use_container_width=True):
+                            st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1)
+                            st.rerun()
+                            
                     cur = tdf.iloc[si]
                     st.write(cur.get("Trade Recommendation", ""))
+                    
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
-                    render_chart_fast(sym, cur, df_chart)
+                    render_chart_fast(sym, cur, df_chart, mode_val)
                     
                     with st.expander("📋 التفاصيل", expanded=False):
                         for col in ["Entry Date", "Exit Date", "Bias", "Result", "Entry Price", "Stop Loss", "Take Profit", "Max Reach %", "SL Safety %", "Loss Category"]:
@@ -446,19 +447,27 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
             with tab3:
                 st.info("التشخيص قيد التطوير لهذا المحرك.")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ================= LIVE SCAN MODE =================
+# ══════════════════════════════════════════════════════════════════════════════
 else:
     st.markdown("### 🚀 الماسح الحي")
-    av = get_available_symbols()
-    dp = [s for s in st.session_state.get("live_picked_symbols", []) if s in av]
-    picked = st.multiselect("اختر العملات (من الشيت):", av, default=dp, key="live_multi")
-    st.session_state["live_picked_symbols"] = picked
-    symbols = picked
-    if not symbols: st.warning("⚠️ اختر عملة")
-
-    interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
-    period = st.selectbox("النطاق:", ["1mo", "3mo", "6mo", "1y"], index=2)
+    live_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True, key="live_mode_radio")
     
-    if st.button("🚀 بدء المسح", use_container_width=True):
+    if live_mode == "سهم فردي":
+        symbols = [st.text_input("رمز:", value="BTC-USD", key="live_sym_input")]
+    else:
+        av = get_available_symbols()
+        dp = [s for s in st.session_state.get("live_picked_symbols", []) if s in av]
+        picked = st.multiselect("اختر العملات (من الشيت):", av, default=dp, key="live_multi")
+        st.session_state["live_picked_symbols"] = picked
+        symbols = picked
+        if not symbols: st.warning("⚠️ اختر عملة")
+
+    interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=9)
+    period = st.selectbox("النطاق:", ALL_PERIODS, index=2)
+    
+    if st.button("🚀 بدء المسح", use_container_width=True) and symbols:
         valid = []
         for sym in symbols:
             df, res = _cached_live(fix_symbol(sym), interval, period)
@@ -466,8 +475,22 @@ else:
                 valid.append({"symbol": sym, "result": res})
         if valid:
             st.success(f"تم العثور على {len(valid)} إشارة")
-            if len(valid) > 1: si = st.slider("الإشارة:", 0, len(valid)-1, 0)
-            else: si = 0
+            
+            si = st.session_state.get("live_signal_index", 0)
+            if si >= len(valid): si = len(valid)-1
+            
+            n1, n2, n3 = st.columns([1, 2, 1])
+            with n1:
+                if st.button("⬅️ السابق", use_container_width=True):
+                    st.session_state["live_signal_index"] = max(0, si - 1)
+                    st.rerun()
+            with n2:
+                st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(valid)}</div>", unsafe_allow_html=True)
+            with n3:
+                if st.button("التالي ➡️", use_container_width=True):
+                    st.session_state["live_signal_index"] = min(len(valid)-1, si + 1)
+                    st.rerun()
+
             ar, sym = valid[si]["result"], valid[si]["symbol"]
             st.write(f"**{sym}** - {ar['signal']}")
             
@@ -477,7 +500,7 @@ else:
             st.session_state["active_signal_tp"] = ar.get("tp")
             
             df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
-            if df_chart is not None: render_chart_fast(sym, ar, df_chart)
+            if df_chart is not None: render_chart_fast(sym, ar, df_chart, "fast")
 
 st.markdown("---")
 with st.expander("💰 حاسبة المخاطرة المتقدمة + 🧮 حاسبة حسابية", expanded=False):
