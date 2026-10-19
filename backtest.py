@@ -2,6 +2,7 @@
 import calendar, datetime
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 from data_provider import fetch_data
@@ -18,7 +19,6 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter", page_icon="📦", layout="wide")
 
-# 🎯 CSS السحري: إجبار المتصفح على ترك الشارت يتحكم في اللمس
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -40,11 +40,8 @@ st.markdown("""
     div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
-    
-    /* 🎯 السماح للشارت بالتكبير والتصغير بإصبعين (Pinch to Zoom) */
-    .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { 
-        touch-action: none !important; 
-    } 
+    /* السماح بالتكبير والتصغير عبر اللمس */
+    .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { touch-action: none !important; } 
 </style>
 """, unsafe_allow_html=True)
 
@@ -59,11 +56,11 @@ IC_MARKETS_SPECS = {
 
 PLOTLY_CONFIG = {
     'responsive': True, 
-    'scrollZoom': True,       # تفعيل التكبير بعجلة الماوس أو إصبعين
+    'scrollZoom': True,  
     'displaylogo': False, 
-    'displayModeBar': True,   # إظهار أزرار التحكم
+    'displayModeBar': True, 
     'modeBarButtonsToRemove': ['sendDataToCloud', 'lasso2d', 'select2d', 'toggleSpikelines'],
-    'dragmode': 'pan',        # السحب للتحريك
+    'dragmode': 'pan', 
     'doubleClick': 'reset+autosize'
 }
 
@@ -184,34 +181,31 @@ def render_chart_fast(sym, cur, df_chart_full):
         df_window = df_chart_full.iloc[idx_min:idx_max]
     except: df_window = df_chart_full
     
-    fig = go.Figure(data=[go.Candlestick(x=df_window.index, open=df_window["Open"], high=df_window["High"], low=df_window["Low"], close=df_window["Close"], name="Price")])
-    if "EMA50" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"], line=dict(color="orange", width=1), name="EMA 50"))
-    if "EMA200" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA200"], line=dict(color="blue", width=1), name="EMA 200"))
+    # 🆕 إنشاء الشارت مع مؤشر الحجم (Volume) في الأسفل
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
+    
+    fig.add_trace(go.Candlestick(x=df_window.index, open=df_window["Open"], high=df_window["High"], low=df_window["Low"], close=df_window["Close"], name="Price"), row=1, col=1)
+    
+    if "EMA50" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"], line=dict(color="orange", width=1), name="EMA 50"), row=1, col=1)
+    if "EMA200" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA200"], line=dict(color="blue", width=1), name="EMA 200"), row=1, col=1)
     
     draw_box_pattern(fig, cur)
     
-    # 🎯 تعديلات المحور والهامش لسهولة السحب والتكبير الجانبي
+    # 🆕 إضافة الحجم
+    if "Volume" in df_window.columns:
+        fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
+    
     fig.update_layout(
         template="plotly_white", 
-        height=700, 
+        height=750, 
         autosize=True, 
         xaxis_rangeslider_visible=False, 
         dragmode="pan", 
         hovermode="x unified", 
-        margin=dict(l=10, r=60, t=30, b=30), # زيادة الهامش الأيمن للسحب
-        yaxis=dict(
-            side="right",          # محور السعر على اليمين مثل TradingView
-            showgrid=True, 
-            gridcolor="#EEEEEE", 
-            fixedrange=False,      # السماح بالسحب الجانبي للتكبير/التصغير
-            automargin=True        # منع اختفاء الأرقام
-        ),
-        xaxis=dict(
-            showgrid=True, 
-            gridcolor="#F5F5F5", 
-            range=[x_min, x_max], 
-            fixedrange=False       # السماح بالسحب الأفقي
-        ),
+        margin=dict(l=10, r=60, t=30, b=30), 
+        yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
+        yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True), # محور الحجم
+        xaxis=dict(showgrid=True, gridcolor="#F5F5F5", range=[x_min, x_max], fixedrange=False),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
