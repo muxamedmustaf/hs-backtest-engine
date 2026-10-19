@@ -20,6 +20,7 @@ CONFIG = {
     "TOUCH_TOLERANCE": 0.003,      # نسبة التسامح لاعتبار اللمسة "متساوية" (0.3%)
     
     "BREAKOUT_MIN_BODY_ATR": 1.2,  # شرط 3: جسم شمعة الكسر يجب أن يكون قوياً (1.2x ATR)
+    "VOLUME_MA_PERIOD": 20,
     
     "TP_REACH_FACTOR": 1.5,        # الهدف 1.5x ارتفاع الصندوق
     "TRAILING_LEVELS_HEAD": [(1.00, 0.30), (1.50, 0.80), (2.00, 1.20)],
@@ -27,16 +28,38 @@ CONFIG = {
     "USE_SAFE_SL": True,
 }
 
-def calculate_indicators(df):
+# 🆕 إعادة المتغير المفقود الذي يطلبه ملف الواجهة
+REASON_MAP = {
+    "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا.", "action": "انتظر.", "prevention": "لا تدخل بأول لمسة."},
+    "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
+    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي.", "prevention": "TP جزئي."},
+    "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing.", "prevention": "راقب الأخبار."},
+    "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
+    "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
+    "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
+    "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
+}
+
+def get_symbol_config(symbol):
+    return CONFIG.copy()
+
+def calculate_indicators(df, cfg=None):
     df = df.copy()
     hl = df["High"] - df["Low"]
     hc = np.abs(df["High"] - df["Close"].shift())
     lc = np.abs(df["Low"] - df["Close"].shift())
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(14).mean()
+    if "Volume" in df.columns:
+        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df["Volume"] = v
+        df["Volume_MA"] = v.rolling(CONFIG.get("VOLUME_MA_PERIOD", 20)).mean().fillna(0.0)
+    else:
+        df["Volume"] = 0.0
+        df["Volume_MA"] = 0.0
     return df
 
-def compute_safe_sl_and_tp(bias, entry, structural_sl, box_height):
+def compute_safe_sl_and_tp(bias, entry, structural_sl, box_height, cfg=None):
     structural_risk = abs(entry - structural_sl)
     if bias == "Bullish":
         safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
@@ -46,9 +69,9 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, box_height):
     
     target = box_height * CONFIG["TP_REACH_FACTOR"]
     tp = entry + target if bias == "Bullish" else entry - target
-    return final_sl, tp
+    return final_sl, tp, safe_sl, structural_sl
 
-def simulate_trade(pattern, df):
+def simulate_trade(pattern, df, cfg=None):
     bias = pattern["bias"]
     entry = float(pattern["entry"])
     sl = float(pattern["sl"])
@@ -113,7 +136,7 @@ def simulate_trade(pattern, df):
     if stats["Result"] == "WIN": stats["progress_ratio"] = 100.0
     return stats
 
-def detect_box_breakouts(df, symbol=None):
+def detect_box_breakouts(df, symbol=None, is_backtest=True):
     patterns = []
     n = len(df)
     if n < 100: return patterns
@@ -140,7 +163,7 @@ def detect_box_breakouts(df, symbol=None):
             
             if impulse_move < (atr[trend_idx] * CONFIG["IMPULSE_MIN_ATR"]): continue
             
-            # التأكد من اتجاه الموجة (صاعدة للكسر الصاعد، هابطة للكسر الهابط)
+            # التأكد من اتجاه الموجة
             if is_bull_breakout and closes[start_idx] <= closes[trend_idx]: continue
             if is_bear_breakout and closes[start_idx] >= closes[trend_idx]: continue
 
@@ -152,78 +175,84 @@ def detect_box_breakouts(df, symbol=None):
             box_height = box_top - box_bottom
             box_mid = (box_top + box_bottom) / 2
             
-            # شرط العرض: الصندوق يجب أن يكون أفقياً وضيقاً
             if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
 
-            # شرط اللمسات المتساوية:
             tol = box_mid * CONFIG["TOUCH_TOLERANCE"]
-            
-            # كم مرة لمس السعر القمة؟
             touches_top = sum(1 for h in box_highs if h >= box_top - tol)
-            # كم مرة لمس السعر القاع؟
             touches_bottom = sum(1 for l in box_lows if l <= box_bottom + tol)
 
             if touches_top < CONFIG["MIN_TOUCHES"] or touches_bottom < CONFIG["MIN_TOUCHES"]: continue
 
-            # إذا وصلنا هنا، فهذا صندوق مثالي متوافق مع كل شروطك
             box_nodes = [
                 (df.index[start_idx], box_top), (df.index[i], box_top),
                 (df.index[start_idx], box_bottom), (df.index[i], box_bottom)
             ]
             trend_nodes = [(df.index[trend_idx], closes[trend_idx]), (df.index[start_idx], box_bottom if is_bull_breakout else box_top), (df.index[i], closes[i])]
 
-            # كسر صاعد
             if is_bull_breakout and closes[i] > box_top:
-                final_sl, tp = compute_safe_sl_and_tp("Bullish", closes[i], box_mid, box_height)
+                final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", closes[i], box_mid, box_height)
                 pattern = {
                     "name": "Impulse + Box", "pattern": "Box Breakout", "pattern_type": "Continuation",
                     "bias": "Bullish", "match": 100.0, "nodes": trend_nodes,
                     "entry": float(round(closes[i], 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                    "neckline_nodes": box_nodes, "end_pos": i, "neckline_end_idx": df.index[i]
+                    "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
+                    "neckline_nodes": box_nodes, "end_pos": i, "neckline_end_idx": df.index[i],
+                    "Entry": float(round(closes[i], 5)), "Pattern": "Box Breakout (Bullish)"
                 }
                 pattern.update(simulate_trade(pattern, df))
+                pattern["Trade Recommendation"] = f"🟢 Box Breakout:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
                 patterns.append(pattern)
-                break # وجدنا الصندوق الأكبر المثالي، ننتقل لشمعة الكسر التالية
+                break
 
-            # كسر هابط
             elif is_bear_breakout and closes[i] < box_bottom:
-                final_sl, tp = compute_safe_sl_and_tp("Bearish", closes[i], box_mid, box_height)
+                final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", closes[i], box_mid, box_height)
                 pattern = {
                     "name": "Impulse + Box", "pattern": "Box Breakout", "pattern_type": "Continuation",
                     "bias": "Bearish", "match": 100.0, "nodes": trend_nodes,
                     "entry": float(round(closes[i], 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                    "neckline_nodes": box_nodes, "end_pos": i, "neckline_end_idx": df.index[i]
+                    "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
+                    "neckline_nodes": box_nodes, "end_pos": i, "neckline_end_idx": df.index[i],
+                    "Entry": float(round(closes[i], 5)), "Pattern": "Box Breakout (Bearish)"
                 }
                 pattern.update(simulate_trade(pattern, df))
+                pattern["Trade Recommendation"] = f"🔴 Box Breakout:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
                 patterns.append(pattern)
                 break
 
     return patterns
 
 # دوال التوافق مع الواجهة
-def calculate_indicators_for_df(df, cfg=None): return calculate_indicators(df)
-def get_symbol_config(symbol): return CONFIG
-
 def run_full_analysis(df, interval="1h", symbol=None):
-    df = calculate_indicators(df)
-    patterns = detect_box_breakouts(df, symbol)
+    cfg = get_symbol_config(symbol)
+    df = calculate_indicators(df, cfg)
+    patterns = detect_box_breakouts(df, symbol, is_backtest=False)
     if not patterns: return {"signal": "WAITING", "pattern": "NO PATTERN", "bias": "Neutral", "df": df}
     latest = patterns[-1]
     return {
         "df": df, "signal": "STRONG BUY" if latest["bias"]=="Bullish" else "STRONG SELL", 
         "pattern": latest["pattern"], "bias": latest["bias"], "entry": latest["entry"], 
         "sl": latest["sl"], "tp": latest["tp"], "nodes": latest["nodes"], 
-        "neckline_nodes": latest["neckline_nodes"], "Trade Recommendation": f"إشارة {latest['bias']} من صندوق تجميع قوي."
+        "neckline_nodes": latest["neckline_nodes"], "Trade Recommendation": latest["Trade Recommendation"]
     }
 
 def backtest_strategy(df, interval="1h", symbol=None):
-    df = calculate_indicators(df)
-    patterns = detect_box_breakouts(df, symbol)
+    cfg = get_symbol_config(symbol)
+    df = calculate_indicators(df, cfg)
+    patterns = detect_box_breakouts(df, symbol, is_backtest=True)
     trades = []
     for p in patterns:
         p["Symbol"] = symbol; p["Entry Price"] = p["entry"]; p["Stop Loss"] = p["sl"]; p["Take Profit"] = p["tp"]
         trades.append(p)
     return trades
 
-def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): return {}
-def diagnose_filters(df, interval="1h", symbol=None): return {"smart_diagnosis": {"verdict": "نظام الصندوق الثلاثي"}}
+def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): 
+    return {"total_pivots": 0, "raw_candidates": 0, "rejected_trend": 0, "rejected_box_height": 0, "rejected_touches": 0, "rejected_breakout_strength": 0, "rejected_volume": 0, "passed": 0}
+
+def diagnose_filters(df, interval="1h", symbol=None): 
+    trades = backtest_strategy(df, interval, symbol)
+    wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
+    losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
+    total = len(wins) + len(losses)
+    wr = round(len(wins)/total*100, 1) if total > 0 else 0
+    verdict = "لا توجد صفقات كافية" if total == 0 else f"معدل الربح: {wr}%"
+    return {"smart_diagnosis": {"verdict": verdict, "win_breakdown": {}, "loss_breakdown": {}, "action_plan": []}}
