@@ -1,25 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Box Hunter Pro (3-Phase Logic)
+ENGINE.PY — Box Hunter Pro (3-Phase Logic - Corrected)
 ===================================================
-المرحلة 1: موجة حافزة قوية (Impulse) تسبق التجميع.
-المرحلة 2: منطقة متعرجة أفقية (Box) بقمم متساوية وقيعان متساوية (لمستان على الأقل لكل منهما).
+المرحلة 1: تحديد بداية الموجة الحافزة بدقة (أدنى قاع/أعلى قمة).
+المرحلة 2: منطقة متعرجة أفقية (Box) بقمم متساوية وقيعان متساوية.
 المرحلة 3: كسر حقيقي وقوي بإغلاق شمعة خارج الصندوق.
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
-    "IMPULSE_MIN_ATR": 3.0,        # شرط 1: الموجة يجب أن تكون 3 أضعاف التقلب (ATR)
-    "IMPULSE_LOOKBACK": 20,        # نبحث عن الموجة في آخر 20 شمعة قبل الصندوق
+    "IMPULSE_MIN_ATR": 3.0,        # الموجة يجب أن تتحرك 3 أضعاف التقلب
+    "IMPULSE_MAX_LOOKBACK": 60,    # نبحث عن بداية الموجة في آخر 60 شمعة قبل الصندوق
+    "MAX_RETRACEMENT_PCT": 0.50,   # الصندوق (التصحيح) يجب ألا يتجاوز 50% من طول الموجة
     
-    "BOX_MIN_CANDLES": 15,         # شرط 2: الصندوق لا يقل عن 15 شمعة
+    "BOX_MIN_CANDLES": 15,         # الصندوق لا يقل عن 15 شمعة
     "BOX_MAX_CANDLES": 80,         # الصندوق لا يزيد عن 80 شمعة
-    "BOX_MAX_HEIGHT_PCT": 0.05,    # ارتفاع الصندوق لا يتجاوز 5% من السعر (تجميع أفقي)
-    "MIN_TOUCHES": 2,              # يجب لمس القمة مرتين والقاع مرتين
-    "TOUCH_TOLERANCE": 0.003,      # نسبة التسامح لاعتبار اللمسة "متساوية" (0.3%)
+    "BOX_MAX_HEIGHT_PCT": 0.05,    # ارتفاع الصندوق لا يتجاوز 5% من السعر
+    "MIN_TOUCHES": 2,              # لمسة للقمة ولمسة للقاع على الأقل (بالإضافة لشمعة الكسر)
+    "TOUCH_TOLERANCE": 0.003,      # تسامح 0.3% لاعتبار اللمسات متساوية
     
-    "BREAKOUT_MIN_BODY_ATR": 1.2,  # شرط 3: جسم شمعة الكسر يجب أن يكون قوياً (1.2x ATR)
+    "BREAKOUT_MIN_BODY_ATR": 1.2,  # جسم شمعة الكسر قوي (1.2x ATR)
     "VOLUME_MA_PERIOD": 20,
     
     "TP_REACH_FACTOR": 1.5,        # الهدف 1.5x ارتفاع الصندوق
@@ -28,7 +29,6 @@ CONFIG = {
     "USE_SAFE_SL": True,
 }
 
-# 🆕 إعادة المتغير المفقود الذي يطلبه ملف الواجهة
 REASON_MAP = {
     "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا.", "action": "انتظر.", "prevention": "لا تدخل بأول لمسة."},
     "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
@@ -155,18 +155,8 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         # نبحث عن الصندوق بالبحث العكسي (من الأكبر للأصغر)
         for box_len in range(CONFIG["BOX_MAX_CANDLES"], CONFIG["BOX_MIN_CANDLES"] - 1, -1):
             start_idx = i - box_len
-            if start_idx < CONFIG["IMPULSE_LOOKBACK"]: continue
+            if start_idx < CONFIG["IMPULSE_MAX_LOOKBACK"]: continue
             
-            # 🎯 المرحلة 1: فحص الموجة الحافزة (Impulse)
-            trend_idx = start_idx - CONFIG["IMPULSE_LOOKBACK"]
-            impulse_move = abs(closes[start_idx] - closes[trend_idx])
-            
-            if impulse_move < (atr[trend_idx] * CONFIG["IMPULSE_MIN_ATR"]): continue
-            
-            # التأكد من اتجاه الموجة
-            if is_bull_breakout and closes[start_idx] <= closes[trend_idx]: continue
-            if is_bear_breakout and closes[start_idx] >= closes[trend_idx]: continue
-
             # 🎯 المرحلة 2: فحص التجميع (Consolidation Box)
             box_highs = highs[start_idx:i]
             box_lows = lows[start_idx:i]
@@ -183,11 +173,34 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
             if touches_top < CONFIG["MIN_TOUCHES"] or touches_bottom < CONFIG["MIN_TOUCHES"]: continue
 
+            # 🎯 المرحلة 1: تحديد الموجة الحافزة الحقيقية (True Impulse)
+            lookback_start = max(0, start_idx - CONFIG["IMPULSE_MAX_LOOKBACK"])
+            
+            if is_bull_breakout:
+                # نبحث عن أدنى قاع مطلق قبل الصندوق
+                trend_idx = lookback_start + np.argmin(lows[lookback_start:start_idx])
+                impulse_move = box_top - lows[trend_idx]
+            else:
+                # نبحث عن أعلى قمة مطلقة قبل الصندوق
+                trend_idx = lookback_start + np.argmax(highs[lookback_start:start_idx])
+                impulse_move = highs[trend_idx] - box_bottom
+
+            # شرط قوة الموجة
+            if impulse_move < (atr[start_idx] * CONFIG["IMPULSE_MIN_ATR"]): continue
+            
+            # شرط الارتداد: الصندوق يجب ألا يمحو أكثر من 50% من الموجة
+            if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
+
+            # رسم الخط البرتقالي من القاع/القمة الحقيقية
+            trend_nodes = [
+                (df.index[trend_idx], lows[trend_idx] if is_bull_breakout else highs[trend_idx]), 
+                (df.index[start_idx], box_bottom if is_bull_breakout else box_top), 
+                (df.index[i], closes[i])
+            ]
             box_nodes = [
                 (df.index[start_idx], box_top), (df.index[i], box_top),
                 (df.index[start_idx], box_bottom), (df.index[i], box_bottom)
             ]
-            trend_nodes = [(df.index[trend_idx], closes[trend_idx]), (df.index[start_idx], box_bottom if is_bull_breakout else box_top), (df.index[i], closes[i])]
 
             if is_bull_breakout and closes[i] > box_top:
                 final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", closes[i], box_mid, box_height)
