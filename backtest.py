@@ -19,7 +19,6 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter", page_icon="📦", layout="wide")
 
-# 🎯 CSS السحري للتمرير بالإصبع والواجهة
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -41,7 +40,6 @@ st.markdown("""
     div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
-    /* السماح بالتكبير والتصغير عبر اللمس */
     .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { touch-action: none !important; } 
 </style>
 """, unsafe_allow_html=True)
@@ -56,13 +54,9 @@ IC_MARKETS_SPECS = {
 }
 
 PLOTLY_CONFIG = {
-    'responsive': True, 
-    'scrollZoom': True,  
-    'displaylogo': False, 
-    'displayModeBar': True, 
+    'responsive': True, 'scrollZoom': True, 'displaylogo': False, 'displayModeBar': True, 
     'modeBarButtonsToRemove': ['sendDataToCloud', 'lasso2d', 'select2d', 'toggleSpikelines'],
-    'dragmode': 'pan', 
-    'doubleClick': 'reset+autosize'
+    'dragmode': 'pan', 'doubleClick': 'reset+autosize'
 }
 
 def fix_symbol(sym):
@@ -175,7 +169,6 @@ def render_chart_fast(sym, cur, df_chart_full):
     pattern_start, pattern_end = nodes[0][0], nodes[-1][0]
     span = pattern_end - pattern_start
     
-    # 🎯 توسيع الرؤية (Zoom Out) لرؤية التجمع الكبير
     x_min, x_max = pattern_start - span * 2.5, pattern_end + span * 2.5
     
     try:
@@ -184,7 +177,6 @@ def render_chart_fast(sym, cur, df_chart_full):
         df_window = df_chart_full.iloc[idx_min:idx_max]
     except: df_window = df_chart_full
     
-    # 🎯 إنشاء الشارت مع مؤشر الحجم (Volume) في الأسفل
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
     
     fig.add_trace(go.Candlestick(x=df_window.index, open=df_window["Open"], high=df_window["High"], low=df_window["Low"], close=df_window["Close"], name="Price"), row=1, col=1)
@@ -194,19 +186,12 @@ def render_chart_fast(sym, cur, df_chart_full):
     
     draw_box_pattern(fig, cur)
     
-    # 🎯 إضافة الحجم
     if "Volume" in df_window.columns:
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
-    # 🎯 تعديلات المحور والهامش لسهولة السحب والتكبير الجانبي
     fig.update_layout(
-        template="plotly_white", 
-        height=750, 
-        autosize=True, 
-        xaxis_rangeslider_visible=False, 
-        dragmode="pan", 
-        hovermode="x unified", 
-        margin=dict(l=10, r=60, t=30, b=30), 
+        template="plotly_white", height=750, autosize=True, xaxis_rangeslider_visible=False, 
+        dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=30, b=30), 
         yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
         yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True),
         xaxis=dict(showgrid=True, gridcolor="#F5F5F5", range=[x_min, x_max], fixedrange=False),
