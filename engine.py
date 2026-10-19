@@ -1,29 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Box Hunter Pro (Pure Price Action)
+ENGINE.PY — Box Hunter Pro (Pure Price Action - Macro Box)
 ===================================================
 - استراتيجية برايس أكشن 100% (بدون أي مؤشرات).
-- المرحلة 1: موجة حافزة قوية (نسبة مئوية من السعر).
-- المرحلة 2: تجميع (Box) بقمم وقيعان متساوية.
-- المرحلة 3: كسر حقيقي (إغلاق شمعة قوية خارج الصندوق).
-- المرحلة 4: إعادة اختبار (Retest) قوية ثم الدخول.
-- إدارة مخاطر: وقف خسارة هيكلي (تحت شمعة الاختبار).
+- المرحلة 1: تحديد الموجة الحافزة بدقة من (آخر قمة/قاع مطلق).
+- المرحلة 2: صندوق التجميع يشمل جميع التذبذبات بعد الموجة الحافزة.
+- المرحلة 3: كسر حقيقي + إعادة اختبار (Retest).
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
-    # إعدادات الموجة الحافزة (بدون مؤشرات - نسبة مئوية فقط)
-    "IMPULSE_MIN_PCT": 0.04,       # الموجة يجب أن تتحرك 4% على الأقل (للكريبتو والفوركس)
+    # إعدادات الموجة الحافزة
+    "IMPULSE_MIN_PCT": 0.04,       # الموجة يجب أن تتحرك 4% على الأقل
     "IMPULSE_MAX_LOOKBACK": 60,    # نبحث عن بداية الموجة في آخر 60 شمعة
-    "MAX_RETRACEMENT_PCT": 0.38,   # التصحيح (الصندوق) لا يتجاوز 38.2% من الموجة
     
-    # إعدادات الصندوق (تجميع)
-    "BOX_MIN_CANDLES": 15,         
-    "BOX_MAX_CANDLES": 80,         
-    "BOX_MAX_HEIGHT_PCT": 0.03,    # ارتفاع الصندوق لا يتجاوز 3% من السعر (تجميع ضيق)
-    "MIN_TOUCHES": 2,              # لمسة للقمة ولمسة للقاع على الأقل
-    "TOUCH_TOLERANCE": 0.002,      # تسامح 0.2% لاعتبار اللمسات متساوية
+    # إعدادات الصندوق (التجميع الكامل)
+    "BOX_MIN_CANDLES": 10,         # الصندوق لا يقل عن 10 شموع
+    "BOX_MAX_HEIGHT_PCT": 0.05,    # ارتفاع الصندوق لا يتجاوز 5% من السعر (يسمح بتذبذبات أوسع)
+    "MAX_RETRACEMENT_PCT": 0.50,   # التصحيح (الصندوق) لا يتجاوز 50% من الموجة
     
     # إعدادات الكسر (Breakout)
     "BREAKOUT_MIN_BODY_PCT": 0.005, # جسم شمعة الكسر يجب أن يكون 0.5% من السعر (قوة)
@@ -31,32 +26,32 @@ CONFIG = {
     # إعدادات الاختبار (Retest)
     "REQUIRE_RETEST": True,        
     "RETEST_MAX_CANDLES": 8,       
-    "RETEST_TOLERANCE": 0.002,     
-    "RETEST_STRONG_CLOSE_RATIO": 0.6, # الإغلاق في الـ 60% العلوية (شراء) أو السفلية (بيع)
+    "RETEST_TOLERANCE": 0.003,     
+    "RETEST_STRONG_CLOSE_RATIO": 0.6, 
     
     # إدارة الصفقة
-    "TP_REACH_FACTOR": 1.5,        # الهدف 1.5x ارتفاع الصندوق
+    "TP_REACH_FACTOR": 1.5,        
     "TRAILING_LEVELS_HEAD": [(1.00, 0.30), (1.50, 0.80), (2.00, 1.20)],
-    "SAFE_SL_MARGIN": 0.05,        # هامش أمان صغير جداً لأن SL هيكلي
+    "SAFE_SL_MARGIN": 0.05,        
     "USE_SAFE_SL": True,
 }
 
 REASON_MAP = {
-    "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا.", "action": "انتظر.", "prevention": "لا تدخل بأول لمسة."},
-    "early_reversal": {"reason": "انعكاس مبكر قبل 30%.", "action": "نقل SL للتعادل.", "prevention": "Trailing مبكر."},
-    "mid_reversal": {"reason": "انعكاس متوسط.", "action": "خروج جزئي.", "prevention": "TP جزئي."},
-    "late_reversal": {"reason": "وصل 70%+ ثم عاد.", "action": "Trailing.", "prevention": "راقب الأخبار."},
-    "breakeven": {"reason": "تعادل — حماية رأس المال.", "action": "لا شيء.", "prevention": "استمر."},
-    "success": {"reason": "وصل الهدف.", "action": "كرر الإعداد.", "prevention": "—"},
-    "trailing_win": {"reason": "خرج بـ Trailing.", "action": "لا شيء.", "prevention": "—"},
-    "open": {"reason": "ما زالت مفتوحة.", "action": "راقب.", "prevention": "—"},
+    "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا."},
+    "early_reversal": {"reason": "انعكاس مبكر قبل 30%."},
+    "mid_reversal": {"reason": "انعكاس متوسط."},
+    "late_reversal": {"reason": "وصل 70%+ ثم عاد."},
+    "breakeven": {"reason": "تعادل."},
+    "success": {"reason": "وصل الهدف."},
+    "trailing_win": {"reason": "خرج بـ Trailing."},
+    "open": {"reason": "مفتوحة."},
 }
 
 def get_symbol_config(symbol):
     return CONFIG.copy()
 
 def calculate_indicators(df, cfg=None):
-    # 🚀 تم إلغاء جميع المؤشرات. نرجع الداتا كما هي (برايس أكشن خالص)
+    # برايس أكشن خالص. لا توجد مؤشرات.
     return df.copy()
 
 def compute_safe_sl_and_tp(bias, entry, structural_sl, box_height, cfg=None):
@@ -83,9 +78,8 @@ def simulate_trade(pattern, df, cfg=None):
     if len(post_df) <= 1: return {"Result": "OPEN"}
 
     stats = {
-        "Result": "OPEN", "Head Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, 
-        "Max Extension %": 0.0, "TP Hit At Candle": None, "Entry Date": str(end_idx), 
-        "Exit Date": None, "candles_to_exit": 0, "progress_ratio": 0.0, 
+        "Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, 
+        "Entry Date": str(end_idx), "Exit Date": None, "candles_to_exit": 0, 
         "Trailing Stage": 0, "Initial SL": sl, "Final SL": sl, "Loss Category": None, "exit_price": None
     }
     
@@ -133,7 +127,6 @@ def simulate_trade(pattern, df, cfg=None):
 
     stats["Max Reach %"] = round(max_fav, 1)
     stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
-    if stats["Result"] == "WIN": stats["progress_ratio"] = 100.0
     return stats
 
 def detect_box_breakouts(df, symbol=None, is_backtest=True):
@@ -141,132 +134,131 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
     n = len(df)
     if n < 100: return patterns
 
-    # برايس أكشن خالص: فقط السعر
     highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
     
+    # نمر على كل شمعة لنعتبرها نقطة كسر محتملة
     for i in range(60, n):
-        # 1. فحص شمعة الكسر (قوة الجسم بنسبة مئوية من السعر)
+        # 1. فحص قوة شمعة الكسر
         candle_body = abs(closes[i] - opens[i])
         if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
         
         is_bull_breakout = closes[i] > opens[i]
         is_bear_breakout = closes[i] < opens[i]
 
-        for box_len in range(CONFIG["BOX_MAX_CANDLES"], CONFIG["BOX_MIN_CANDLES"] - 1, -1):
-            start_idx = i - box_len
-            if start_idx < CONFIG["IMPULSE_MAX_LOOKBACK"]: continue
+        # 2. تحديد بداية الموجة (آخر قمة/قاع مطلق)
+        lookback_start = max(0, i - CONFIG["IMPULSE_MAX_LOOKBACK"])
+        
+        if is_bull_breakout:
+            # البحث عن أدنى قاع في الشموع السابقة
+            impulse_start_idx = lookback_start + np.argmin(lows[lookback_start:i])
+            impulse_start_price = lows[impulse_start_idx]
+            impulse_move = closes[i] - impulse_start_price
             
-            box_highs = highs[start_idx:i]
-            box_lows = lows[start_idx:i]
-            box_top = np.max(box_highs)
-            box_bottom = np.min(box_lows)
-            box_height = box_top - box_bottom
-            box_mid = (box_top + box_bottom) / 2
+            # يجب أن يكون هناك تحرك كافٍ من القاع
+            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
+        else:
+            # البحث عن أعلى قمة في الشموع السابقة
+            impulse_start_idx = lookback_start + np.argmax(highs[lookback_start:i])
+            impulse_start_price = highs[impulse_start_idx]
+            impulse_move = impulse_start_price - closes[i]
             
-            # الصندوق يجب أن يكون ضيقاً (نسبة من السعر)
-            if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
+            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
 
-            tol = box_mid * CONFIG["TOUCH_TOLERANCE"]
-            touches_top = sum(1 for h in box_highs if h >= box_top - tol)
-            touches_bottom = sum(1 for l in box_lows if l <= box_bottom + tol)
+        # 3. تحديد نهاية الموجة وبداية الصندوق (أقصى نقطة وصلها السعر بعد بداية الموجة)
+        if is_bull_breakout:
+            box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
+        else:
+            box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
 
-            if touches_top < CONFIG["MIN_TOUCHES"] or touches_bottom < CONFIG["MIN_TOUCHES"]: continue
+        if box_start_idx >= i: continue
+        if (i - box_start_idx) < CONFIG["BOX_MIN_CANDLES"]: continue
 
-            # 2. فحص الموجة الحافزة (نسبة مئوية)
-            lookback_start = max(0, start_idx - CONFIG["IMPULSE_MAX_LOOKBACK"])
-            if is_bull_breakout:
-                trend_idx = lookback_start + np.argmin(lows[lookback_start:start_idx])
-                impulse_move_pct = (box_top - lows[trend_idx]) / lows[trend_idx]
-            else:
-                trend_idx = lookback_start + np.argmax(highs[lookback_start:start_idx])
-                impulse_move_pct = (highs[trend_idx] - box_bottom) / highs[trend_idx]
+        # 4. حساب أبعاد الصندوق (شامل كل التذبذبات)
+        box_highs = highs[box_start_idx:i]
+        box_lows = lows[box_start_idx:i]
+        
+        box_top = np.max(box_highs)
+        box_bottom = np.min(box_lows)
+        box_height = box_top - box_bottom
+        box_mid = (box_top + box_bottom) / 2
+        
+        # يجب أن يكون الصندوق ضيقاً نسبياً مقارنة بالسعر
+        if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
+        
+        # يجب ألا يمحو الصندوق الموجة الحافزة بالكامل
+        if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
 
-            # شرط قوة الموجة: 4% (أو ما تحدده)
-            if impulse_move_pct < CONFIG["IMPULSE_MIN_PCT"]: continue
-            
-            # شرط الارتداد: الصندوق لا يمحو أكثر من 38.2%
-            impulse_move_abs = abs(closes[start_idx] - closes[trend_idx])
-            if impulse_move_abs > 0 and (box_height / impulse_move_abs) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
+        # 5. فحص الاختبار (Retest)
+        actual_entry_idx = i
+        actual_entry_price = closes[i]
+        retest_low = lows[i]
+        retest_high = highs[i]
 
-            # 3. فحص الاختبار (Retest) البرايس أكشن
-            actual_entry_idx = i
-            actual_entry_price = closes[i]
-            retest_low = lows[i]
-            retest_high = highs[i]
+        if CONFIG.get("REQUIRE_RETEST", False):
+            retest_found = False
+            for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
+                if is_bull_breakout:
+                    if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]) and closes[j] > box_top:
+                        candle_range = highs[j] - lows[j]
+                        if candle_range > 0 and (closes[j] - lows[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
+                            retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; retest_low = lows[j]; break
+                elif is_bear_breakout:
+                    if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]) and closes[j] < box_bottom:
+                        candle_range = highs[j] - lows[j]
+                        if candle_range > 0 and (highs[j] - closes[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
+                            retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; retest_high = highs[j]; break
+            if not retest_found: continue
 
-            if CONFIG.get("REQUIRE_RETEST", False):
-                retest_found = False
-                for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
-                    if is_bull_breakout:
-                        if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]) and closes[j] > box_top:
-                            candle_range = highs[j] - lows[j]
-                            if candle_range > 0 and (closes[j] - lows[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
-                                retest_found = True
-                                actual_entry_idx = j
-                                actual_entry_price = closes[j]
-                                retest_low = lows[j]
-                                break
-                    elif is_bear_breakout:
-                        if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]) and closes[j] < box_bottom:
-                            candle_range = highs[j] - lows[j]
-                            if candle_range > 0 and (highs[j] - closes[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
-                                retest_found = True
-                                actual_entry_idx = j
-                                actual_entry_price = closes[j]
-                                retest_high = highs[j]
-                                break
-                
-                if not retest_found: continue
+        # 6. رسم النموذج وإدارة الصفقة
+        box_nodes = [
+            (df.index[box_start_idx], box_top), (df.index[actual_entry_idx], box_top),
+            (df.index[box_start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)
+        ]
+        
+        # الخط المتقطع للموجة الحافزة: من بداية الموجة -> إلى بداية الصندوق -> إلى نقطة الدخول
+        trend_nodes = [
+            (df.index[impulse_start_idx], impulse_start_price), 
+            (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), 
+            (df.index[actual_entry_idx], actual_entry_price)
+        ]
 
-            box_nodes = [
-                (df.index[start_idx], box_top), (df.index[actual_entry_idx], box_top),
-                (df.index[start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)
-            ]
-            trend_nodes = [
-                (df.index[trend_idx], lows[trend_idx] if is_bull_breakout else highs[trend_idx]), 
-                (df.index[start_idx], box_bottom if is_bull_breakout else box_top), 
-                (df.index[actual_entry_idx], actual_entry_price)
-            ]
+        if is_bull_breakout and actual_entry_price > box_top:
+            structural_sl = min(retest_low, box_bottom) 
+            final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, box_height)
+            pattern = {
+                "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
+                "bias": "Bullish", "match": 100.0, "nodes": trend_nodes,
+                "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
+                "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
+                "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
+                "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"
+            }
+            pattern.update(simulate_trade(pattern, df))
+            pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
+            patterns.append(pattern)
+            break
 
-            # 4. إدارة الصفقة (هيكلية)
-            if is_bull_breakout and actual_entry_price > box_top:
-                structural_sl = min(retest_low, box_bottom) 
-                final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, box_height)
-                pattern = {
-                    "name": "Impulse + Box + Retest", "pattern": "Box Breakout", "pattern_type": "Continuation",
-                    "bias": "Bullish", "match": 100.0, "nodes": trend_nodes,
-                    "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                    "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
-                    "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
-                    "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"
-                }
-                pattern.update(simulate_trade(pattern, df))
-                pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
-                patterns.append(pattern)
-                break
-
-            elif is_bear_breakout and actual_entry_price < box_bottom:
-                structural_sl = max(retest_high, box_top) 
-                final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, box_height)
-                pattern = {
-                    "name": "Impulse + Box + Retest", "pattern": "Box Breakout", "pattern_type": "Continuation",
-                    "bias": "Bearish", "match": 100.0, "nodes": trend_nodes,
-                    "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
-                    "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
-                    "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
-                    "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"
-                }
-                pattern.update(simulate_trade(pattern, df))
-                pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
-                patterns.append(pattern)
-                break
+        elif is_bear_breakout and actual_entry_price < box_bottom:
+            structural_sl = max(retest_high, box_top) 
+            final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, box_height)
+            pattern = {
+                "name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation",
+                "bias": "Bearish", "match": 100.0, "nodes": trend_nodes,
+                "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)),
+                "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)),
+                "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx],
+                "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"
+            }
+            pattern.update(simulate_trade(pattern, df))
+            pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
+            patterns.append(pattern)
+            break
 
     return patterns
 
-# دوال التوافق مع الواجهة
+# دوال التوافق
 def run_full_analysis(df, interval="1h", symbol=None):
-    cfg = get_symbol_config(symbol)
-    df = calculate_indicators(df, cfg)
+    df = calculate_indicators(df)
     patterns = detect_box_breakouts(df, symbol, is_backtest=False)
     if not patterns: return {"signal": "WAITING", "pattern": "NO PATTERN", "bias": "Neutral", "df": df}
     latest = patterns[-1]
@@ -278,8 +270,7 @@ def run_full_analysis(df, interval="1h", symbol=None):
     }
 
 def backtest_strategy(df, interval="1h", symbol=None):
-    cfg = get_symbol_config(symbol)
-    df = calculate_indicators(df, cfg)
+    df = calculate_indicators(df)
     patterns = detect_box_breakouts(df, symbol, is_backtest=True)
     trades = []
     for p in patterns:
@@ -288,7 +279,7 @@ def backtest_strategy(df, interval="1h", symbol=None):
     return trades
 
 def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): 
-    return {"total_pivots": 0, "raw_candidates": 0, "rejected_trend": 0, "rejected_box_height": 0, "rejected_touches": 0, "rejected_breakout_strength": 0, "rejected_volume": 0, "passed": 0}
+    return {}
 
 def diagnose_filters(df, interval="1h", symbol=None): 
     trades = backtest_strategy(df, interval, symbol)
