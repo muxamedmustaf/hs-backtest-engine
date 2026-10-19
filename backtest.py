@@ -17,13 +17,14 @@ try:
 except ImportError:
     def get_symbols_from_sheet(*args, **kwargs): return [["EURUSD=X", "BTC-USD"]]
 
-st.set_page_config(page_title="Box Hunter", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Box Hunter Pro", page_icon="📦", layout="wide")
 
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
     .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
     div[data-testid='stPlotlyChart'] { width: 100% !important; }
+    iframe { width: 100% !important; }
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
     label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; font-weight: 500; }
@@ -48,9 +49,26 @@ SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
 ALL_GLOBAL_INTERVALS = ["15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1wk"]
 
 IC_MARKETS_SPECS = {
-    "BTC-USD":  {"contract": 1, "min_lot": 0.01, "step": 0.01, "pip": 1.0, "cat": "🪙 Crypto"},
+    "BTC-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "ETH-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
     "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
     "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 JPY"},
+    "USDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "AUDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "NZDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "EURGBP=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "EURJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "GBPJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "AUDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "NZDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "CADJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "CHFJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
+    "NZDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "AUDNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
+    "USDTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
+    "USDNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
 }
 
 PLOTLY_CONFIG = {
@@ -142,6 +160,23 @@ def compute_dollar_pnl(df, lot=0.01):
     df["PnL_USD"] = usd
     return df
 
+def check_risk_limit(entry, sl, lot, symbol, capital, risk_pct):
+    try: e = float(entry); s = float(sl); l = float(lot)
+    except (TypeError, ValueError): return {"allowed": False, "risk_usd": None, "max_risk_usd": None, "risk_pct_actual": None, "message": "⚠️ بيانات ناقصة"}
+    if e == 0: return {"allowed": False, "risk_usd": None, "max_risk_usd": None, "risk_pct_actual": None, "message": "⚠️ سعر غير صالح"}
+    pm = abs(e - s)
+    su = str(symbol).upper()
+    if any(x in su for x in ("BTC", "ETH", "US30", "NAS", "SPX")): r = pm * l
+    elif "XAU" in su or "GC=F" in su: r = pm * l * 100
+    elif "XAG" in su or "SI=F" in su: r = pm * l * 5000
+    elif su.endswith("USD"): r = pm * l * 100000
+    else: r = pm * l * 100000 / e
+    mx = capital * (risk_pct / 100)
+    pct_a = (r / capital * 100) if capital > 0 else 0
+    ok = r <= mx
+    msg = (f"✅ مقبولة — المخاطرة {r:.2f}$ ({pct_a:.2f}%) ≤ الحد {mx:.2f}$" if ok else f"❌ مرفوضة — المخاطرة {r:.2f}$ ({pct_a:.2f}%) > الحد {mx:.2f}$")
+    return {"allowed": ok, "risk_usd": round(r, 2), "max_risk_usd": round(mx, 2), "risk_pct_actual": round(pct_a, 2), "message": msg}
+
 def draw_box_pattern(fig, source):
     if source is None: return
     nodes = source.get("nodes", [])
@@ -199,7 +234,7 @@ def render_chart_fast(sym, cur, df_chart_full):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-def render_financial_report(df, lot_size, symbol, period):
+def render_financial_report(df, lot_size, symbol, period, raw_df=None, interval="1h"):
     st.markdown("### 📊 التقرير المالي الكامل")
     if df is None or df.empty: st.info("ℹ️ لا توجد صفقات"); return
 
@@ -236,6 +271,18 @@ def render_financial_report(df, lot_size, symbol, period):
     elif wr >= 40 and pf >= 1.0: st.warning("🟡 استراتيجية مقبولة")
     else: st.error("🔴 استراتيجية ضعيفة")
 
+    if l > 0:
+        st.markdown("---")
+        st.markdown("### 🔍 تحليل الخسائر (القاسم المشترك)")
+        c1, c2, c3 = st.columns(3)
+        if "Loss Category" in l_df.columns and not l_df["Loss Category"].dropna().empty:
+            common_cat = l_df["Loss Category"].mode().iloc[0]
+            reason_text = REASON_MAP.get(common_cat, {}).get("reason", common_cat) if REASON_MAP else common_cat
+            c1.metric("🚩 السبب الأكثر شيوعاً", reason_text)
+        else: c1.metric("🚩 السبب الأكثر شيوعاً", "غير محدد")
+        c2.metric("📉 متوسط الوصول للهدف", f"{l_df['Max Reach %'].mean():.1f}%")
+        c3.metric("📏 متوسط النقاط الخاسرة", f"{l_df['Pips'].mean():.1f}")
+
     st.markdown("---")
     csv = df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 تنزيل بيانات الدورة (CSV)", csv, f"backtest_{symbol}_{period}.csv", "text/csv", use_container_width=True, type="primary")
@@ -264,8 +311,7 @@ def render_advanced_risk_calculator(unique_id="main"):
         ds = float(st.session_state.get("active_signal_sl") or de * 1.01)
         dt = float(st.session_state.get("active_signal_tp") or de * 0.98)
         st.info("🔗 مُحمّل من الإشارة النشطة")
-    else:
-        de, ds, dt = 1.0, 1.01, 0.98
+    else: de, ds, dt = 1.0, 1.01, 0.98
 
     ce, cs, ct = st.columns(3)
     with ce: entry = st.number_input("📈 الدخول:", value=float(de), format="%.5f", key=f"{unique_id}_e_{sel}")
@@ -278,11 +324,49 @@ def render_advanced_risk_calculator(unique_id="main"):
         st.metric("🎯 النقاط الصافية للهدف (TP)", f"{net_points:.1f} نقطة")
     except: pass
 
+    chk = check_risk_limit(entry, sl_p, lot, sel, capital, risk_pct)
     try: rd = abs(float(entry) - float(sl_p)); rw = abs(float(tp_p) - float(entry)); rr = round(rw / rd, 2) if rd > 0 else "—"
     except: rr = "—"
 
+    if chk["allowed"]: st.success("### ✅ مقبولة")
+    else: st.error("### ❌ مرفوضة")
+
     m1, m2, m3 = st.columns(3)
-    m1.metric("💸 المخاطرة", "—"); m2.metric("📊 النسبة", "—"); m3.metric("⚖️ R:R", f"1:{rr}" if rr != "—" else "—")
+    m1.metric("💸 المخاطرة", f"${chk['risk_usd']:,.2f}" if chk['risk_usd'] else "—")
+    m2.metric("📊 النسبة", f"{chk['risk_pct_actual']}%" if chk['risk_pct_actual'] else "—")
+    m3.metric("⚖️ R:R", f"1:{rr}" if rr != "—" else "—")
+    st.info(f"**التفاصيل:** {chk['message']}")
+
+    st.markdown("---")
+    st.markdown("### 🧮 حاسبة حسابية")
+    calc_key = f"{unique_id}_calc_result"
+    if calc_key not in st.session_state: st.session_state[calc_key] = 0.0
+
+    c_a, c_b = st.columns(2)
+    with c_a: num_a = st.number_input("🔢 الرقم الأول:", value=float(st.session_state.get(f"{unique_id}_calc_a", 0.0)), step=1.0, format="%.4f", key=f"{unique_id}_calc_a")
+    with c_b: num_b = st.number_input("🔢 الرقم الثاني:", value=float(st.session_state.get(f"{unique_id}_calc_b", 0.0)), step=1.0, format="%.4f", key=f"{unique_id}_calc_b")
+
+    op1, op2, op3, op4 = st.columns(4)
+    result_val = None; op_symbol = ""
+    with op1:
+        if st.button("➕ جمع", use_container_width=True, key=f"{unique_id}_calc_add"): result_val = num_a + num_b; op_symbol = "+"
+    with op2:
+        if st.button("➖ طرح", use_container_width=True, key=f"{unique_id}_calc_sub"): result_val = num_a - num_b; op_symbol = "−"
+    with op3:
+        if st.button("✖️ ضرب", use_container_width=True, key=f"{unique_id}_calc_mul"): result_val = num_a * num_b; op_symbol = "×"
+    with op4:
+        if st.button("➗ قسمة", use_container_width=True, key=f"{unique_id}_calc_div"):
+            if num_b != 0: result_val = num_a / num_b; op_symbol = "÷"
+            else: st.error("⚠️ لا يمكن القسمة على صفر")
+
+    if result_val is not None:
+        st.session_state[calc_key] = result_val; st.session_state[f"{unique_id}_calc_last_op"] = op_symbol
+        st.session_state[f"{unique_id}_calc_last_a"] = num_a; st.session_state[f"{unique_id}_calc_last_b"] = num_b
+
+    last_op = st.session_state.get(f"{unique_id}_calc_last_op", ""); last_a = st.session_state.get(f"{unique_id}_calc_last_a", 0); last_b = st.session_state.get(f"{unique_id}_calc_last_b", 0); current_result = st.session_state.get(calc_key, 0.0)
+
+    if last_op: st.success(f"### = `{current_result:.4f}`  ({last_a:.4f} {last_op} {last_b:.4f})")
+    else: st.info(f"### النتيجة: `{current_result:.4f}`")
 
 app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"], horizontal=True)
 st.markdown("---")
@@ -290,13 +374,14 @@ st.markdown("---")
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
     bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True)
-    bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")] if bt_mode == "سهم فردي" else st.multiselect("اختر:", ["BTC-USD", "GBPUSD=X", "ETH-USD"], default=["BTC-USD"])
+    bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")] if bt_mode == "سهم فردي" else st.multiselect("اختر:", ["BTC-USD", "GBPUSD=X", "ETH-USD", "EURUSD=X", "USDJPY=X"], default=["BTC-USD"])
 
     now = datetime.datetime.now()
     c1, c2, c3 = st.columns(3)
     sd = c1.date_input("من:", value=datetime.date(now.year-1, 1, 1)).strftime("%Y-%m-%d")
     ed = c2.date_input("إلى:", value=datetime.date.today()).strftime("%Y-%m-%d")
     interval = c3.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
+    lot = st.number_input("حجم اللوت:", 0.01, 100.0, 0.01, 0.01, "%.2f", key="bt_lot")
     
     if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols:
         results, dfs = [], {}
@@ -323,7 +408,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
             comb = pd.concat(all_dfs, ignore_index=True)
             tab1, tab2, tab3 = st.tabs(["📊 التقرير المالي", "📉 الرسوم البيانية والصفقات", "🧠 التشخيص"])
             
-            with tab1: render_financial_report(comb, 0.01, "الكل", "مخصص")
+            with tab1: render_financial_report(comb, lot, "الكل", "مخصص")
             with tab2:
                 opts = [f"{r['symbol']} ({r['total']})" for r in rl]
                 ai = rl[opts.index(st.selectbox("اختر الأصل:", opts))]
@@ -335,12 +420,16 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     st.write(cur.get("Trade Recommendation", ""))
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
                     render_chart_fast(sym, cur, df_chart)
+                    
+                    with st.expander("📋 التفاصيل", expanded=False):
+                        for col in ["Entry Date", "Exit Date", "Bias", "Result", "Entry Price", "Stop Loss", "Take Profit", "Max Reach %", "SL Safety %", "Loss Category"]:
+                            if col in cur: st.text(f"{col}: {cur[col]}")
             with tab3:
                 st.info("التشخيص قيد التطوير لهذا المحرك.")
 
 else:
     st.markdown("### 🚀 الماسح الحي")
-    symbols = st.multiselect("اختر العملات:", ["BTC-USD", "GBPUSD=X", "ETH-USD"], default=["BTC-USD"])
+    symbols = st.multiselect("اختر العملات:", ["BTC-USD", "GBPUSD=X", "ETH-USD", "EURUSD=X", "USDJPY=X"], default=["BTC-USD"])
     interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
     period = st.selectbox("النطاق:", ["1mo", "3mo", "6mo", "1y"], index=2)
     
@@ -366,5 +455,5 @@ else:
             if df_chart is not None: render_chart_fast(sym, ar, df_chart)
 
 st.markdown("---")
-with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
+with st.expander("💰 حاسبة المخاطرة المتقدمة + 🧮 حاسبة حسابية", expanded=False):
     render_advanced_risk_calculator(unique_id="end")
