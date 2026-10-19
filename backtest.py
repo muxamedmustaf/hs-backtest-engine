@@ -13,6 +13,7 @@ except ImportError as e:
 
 st.set_page_config(page_title="Box Hunter", page_icon="📦", layout="wide")
 
+# 🎯 CSS السحري للتمرير بالإصبع
 st.markdown("""
 <style>
     .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
@@ -177,7 +178,12 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 ai = rl[opts.index(st.selectbox("اختر الأصل:", opts))]
                 sym, tdf = ai["symbol"], ai["trades_df"]
                 if not tdf.empty:
-                    si = st.slider("الصفقة:", 0, len(tdf)-1, len(tdf)-1)
+                    # 🎯 إصلاح خطأ شريط التمرير هنا
+                    if len(tdf) > 1:
+                        si = st.slider("الصفقة:", 0, len(tdf)-1, len(tdf)-1)
+                    else:
+                        si = 0
+                        
                     cur = tdf.iloc[si]
                     st.write(cur.get("Trade Recommendation", ""))
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
@@ -201,7 +207,13 @@ else:
                 valid.append({"symbol": sym, "result": res})
         if valid:
             st.success(f"تم العثور على {len(valid)} إشارة")
-            si = st.slider("الإشارة:", 0, len(valid)-1, 0)
+            
+            # 🎯 إصلاح خطأ شريط التمرير هنا
+            if len(valid) > 1:
+                si = st.slider("الإشارة:", 0, len(valid)-1, 0)
+            else:
+                si = 0
+                
             ar, sym = valid[si]["result"], valid[si]["symbol"]
             st.write(f"**{sym}** - {ar['signal']}")
             df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
