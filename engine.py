@@ -1,42 +1,23 @@
 # -*- coding: utf-8 -*-
-"""
-ENGINE.PY — Box Hunter Pro (Pure Price Action + Tight SL)
-===================================================
-- برايس أكشن خالص (بدون مؤشرات).
-- الهدف = طول الموجة الحافزة (Measured Move).
-- وقف خسارة هيكلي ضيق (تحت شمعة الاختبار/الاختراق مباشرة).
-"""
 import pandas as pd
 import numpy as np
 
 CONFIG = {
-    # إعدادات الموجة الحافزة
-    "IMPULSE_MIN_PCT": 0.025,      # 2.5% حركة للموجة الحافزة
-    "IMPULSE_MAX_LOOKBACK": 40,    # البحث في آخر 40 شمعة
-    
-    # إعدادات الصندوق (التجميع)
+    "IMPULSE_MIN_PCT": 0.025,      
+    "IMPULSE_MAX_LOOKBACK": 40,    
     "BOX_MIN_CANDLES": 10,         
     "BOX_MAX_HEIGHT_PCT": 0.05,    
     "MAX_RETRACEMENT_PCT": 0.50,   
-    
-    # إعدادات الكسر (Breakout)
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
-    
-    # إعدادات الاختبار (Retest)
     "REQUIRE_RETEST": True,        
     "RETEST_MAX_CANDLES": 8,       
     "RETEST_TOLERANCE": 0.003,     
     "RETEST_STRONG_CLOSE_RATIO": 0.5, 
-    
-    # إعدادات الماسح الحي (تجاهل الإشارات القديمة)
     "LIVE_MAX_BREAKOUT_CANDLES": 10, 
-    
-    # إدارة الصفقة
     "TP_MEASURED_MOVE_FACTOR": 1.0, 
     "TRAILING_LEVELS_HEAD": [(1.00, 0.30), (1.50, 0.80), (2.00, 1.20)],
     "SAFE_SL_MARGIN": 0.05,        
     "USE_SAFE_SL": True,
-    
     "VOLUME_MA_PERIOD": 20,
     "TREND_EMA_PERIOD": 200
 }
@@ -64,7 +45,6 @@ def calculate_indicators(df, cfg=None):
     else:
         df["Volume"] = 0.0
         df["Volume_MA"] = 0.0
-    
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=CONFIG["TREND_EMA_PERIOD"], adjust=False).mean()
     return df
@@ -190,7 +170,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
         actual_entry_idx = i
         actual_entry_price = closes[i]
-        
         structural_sl = lows[i] if is_bull_breakout else highs[i]
 
         if CONFIG.get("REQUIRE_RETEST", False):
@@ -200,20 +179,12 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                     if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]) and closes[j] > box_top:
                         candle_range = highs[j] - lows[j]
                         if candle_range > 0 and (closes[j] - lows[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
-                            retest_found = True
-                            actual_entry_idx = j
-                            actual_entry_price = closes[j]
-                            structural_sl = lows[j] 
-                            break
+                            retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; structural_sl = lows[j]; break
                 elif is_bear_breakout:
                     if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]) and closes[j] < box_bottom:
                         candle_range = highs[j] - lows[j]
                         if candle_range > 0 and (highs[j] - closes[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
-                            retest_found = True
-                            actual_entry_idx = j
-                            actual_entry_price = closes[j]
-                            structural_sl = highs[j] 
-                            break
+                            retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; structural_sl = highs[j]; break
             if not retest_found: continue
 
         box_nodes = [
