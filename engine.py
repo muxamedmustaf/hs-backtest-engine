@@ -1,31 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-ENGINE.PY — Box Breakout Hunter (Pro Version)
+ENGINE.PY — Box Breakout Hunter (Macro Consolidations)
 ===================================================
-- تقليص وقف الخسارة إلى منتصف الصندوق أو قاع الاختراق.
-- إدارة هدف أكثر ذكاءً (1.5x الصندوق) مع تريلينغ ستوب قوي.
-- إمكانية تفعيل شرط "إعادة الاختبار" (Retest).
-- مؤشرات الحجم والاتجاه.
+- يبحث عن التجمعات الكبيرة (Macro Boxes) وليس الصغيرة.
+- توسيع نطاق الوقت والارتفاع.
+- البحث من الأكبر للأصغر لضمان التقاط التجمع الرئيسي.
 """
 import pandas as pd
 import numpy as np
 
 CONFIG = {
-    "MIN_BOX_CANDLES": 8, "MAX_BOX_CANDLES": 40, "BOX_MAX_HEIGHT_PCT": 0.03,            
-    "MIN_TOUCHES": 2, "BOX_EQUALITY_TOLERANCE": 0.002,       
-    "TREND_MIN_ATR_MULTIPLIER": 2.5, "TREND_LOOKBACK_CANDLES": 20,          
+    # 🎯 إعدادات التجمعات الكبيرة
+    "MIN_BOX_CANDLES": 20,                 # التجمع يجب أن يكون طويلاً (20 شمعة على الأقل)
+    "MAX_BOX_CANDLES": 120,                # السماح بتجمعات طويلة جداً (120 شمعة)
+    "BOX_MAX_HEIGHT_PCT": 0.08,            # السماح بارتفاع يصل إلى 8% (للتجمعات العريضة)
+    "MIN_TOUCHES": 3,                      # نطلب 3 لمسات على الأقل (لتأكيد الهيكل الكبير)
+    "BOX_EQUALITY_TOLERANCE": 0.005,       # تسامح 0.5% لاعتبار القمم متساوية
+    
+    "TREND_MIN_ATR_MULTIPLIER": 2.5, "TREND_LOOKBACK_CANDLES": 30,          
     "REQUIRE_TRUE_BREAKOUT": True, "TRUE_BREAKOUT_MIN_PCT": 0.0005,       
     "BREAKOUT_ATR_MULTIPLIER": 1.2, "REQUIRE_VOLUME_BREAKOUT": True,
     "VOLUME_BREAKOUT_FACTOR": 1.2, "VOLUME_MA_PERIOD": 20,
+    "LIVE_MAX_BREAKOUT_CANDLES": 15,
     
-    # 🆕 إعدادات إعادة الاختبار (Retest)
-    "REQUIRE_RETEST": False,               # إذا كان True، ينتظر الكود عودة السعر لاختبار الصندوق قبل الدخول
-    "RETEST_MAX_CANDLES": 5,               # أقصى عدد شموع للانتظار لإعادة الاختبار
-    
-    # 🆕 إدارة الصفقة (أكثر أماناً)
-    "TP_REACH_FACTOR": 1.5,                # الهدف = 1.5 × ارتفاع الصندوق
+    # إدارة الصفقة
+    "TP_REACH_FACTOR": 1.5,                
     "USE_SAFE_SL": True, 
-    "SAFE_SL_MARGIN": 0.10,                # هامش أمان أقل (10%) لأننا سنقترب من منتصف الصندوق
+    "SAFE_SL_MARGIN": 0.10,                
     "TRAILING_LEVELS_HEAD": [(1.00, 0.30), (1.50, 0.80), (2.00, 1.20)],
     "MEASURE_FULL_EXTENSION": True,
 }
@@ -87,7 +88,7 @@ def generate_trade_recommendation(bias, entry, sl, tp, pattern_name):
 def simulate_trade_outcome(pattern, df, cfg):
     bias, entry, initial_sl, tp = pattern["bias"], float(pattern["entry"]), float(pattern["sl"]), float(pattern["tp"])
     sl = initial_sl
-    end_idx = pattern["neckline_end_idx"] if "neckline_end_idx" in pattern else pattern["nodes"][-1][0]
+    end_idx = pattern.get("neckline_end_idx", pattern["nodes"][-1][0])
     
     if end_idx not in df.index: return {"Result": "OPEN"}
     post_df = df.loc[end_idx:]
@@ -171,7 +172,8 @@ def detect_box_breakouts(df, is_backtest=False, cfg=None):
         if candle_body < (atr[i] * cfg["BREAKOUT_ATR_MULTIPLIER"]): continue
         if cfg["REQUIRE_VOLUME_BREAKOUT"] and vols[i] < (vol_ma[i] * cfg["VOLUME_BREAKOUT_FACTOR"]): continue
 
-        for box_len in range(cfg["MIN_BOX_CANDLES"], cfg["MAX_BOX_CANDLES"] + 1):
+        # 🔄 البحث من الأكبر إلى الأصغر لالتقاط التجمع الكبير أولاً
+        for box_len in range(cfg["MAX_BOX_CANDLES"], cfg["MIN_BOX_CANDLES"] - 1, -1):
             start_idx = i - box_len
             if start_idx < cfg["TREND_LOOKBACK_CANDLES"]: continue
             
@@ -180,6 +182,7 @@ def detect_box_breakouts(df, is_backtest=False, cfg=None):
             box_height = box_top - box_bottom
             box_mid = (box_top + box_bottom) / 2
             
+            # فلتر الارتفاع
             if box_height / box_mid > cfg["BOX_MAX_HEIGHT_PCT"]: continue
             if box_height == 0: continue
 
@@ -204,19 +207,7 @@ def detect_box_breakouts(df, is_backtest=False, cfg=None):
 
             # 🟢 Bullish Breakout
             if breakout_close > box_top * (1 + cfg["TRUE_BREAKOUT_MIN_PCT"]) and is_uptrend:
-                # 🆕 فحص إعادة الاختبار إذا كان مفعلاً
-                if cfg.get("REQUIRE_RETEST", False):
-                    retest_found = False
-                    for j in range(i + 1, min(n, i + 1 + cfg["RETEST_MAX_CANDLES"])):
-                        if lows[j] <= box_top and closes[j] > box_top:
-                            retest_found = True
-                            i = j # الدخول عند شمعة إعادة الاختبار
-                            breakout_close = closes[j]
-                            break
-                    if not retest_found: continue
-
                 entry = breakout_close
-                # 🆕 وقف الخسارة: منتصف الصندوق (أكثر أماناً)
                 structural_sl = box_mid 
                 final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bullish", entry, structural_sl, None, box_height, cfg)
                 
@@ -235,18 +226,7 @@ def detect_box_breakouts(df, is_backtest=False, cfg=None):
 
             # 🔴 Bearish Breakout
             elif breakout_close < box_bottom * (1 - cfg["TRUE_BREAKOUT_MIN_PCT"]) and is_downtrend:
-                if cfg.get("REQUIRE_RETEST", False):
-                    retest_found = False
-                    for j in range(i + 1, min(n, i + 1 + cfg["RETEST_MAX_CANDLES"])):
-                        if highs[j] >= box_bottom and closes[j] < box_bottom:
-                            retest_found = True
-                            i = j
-                            breakout_close = closes[j]
-                            break
-                    if not retest_found: continue
-
                 entry = breakout_close
-                # 🆕 وقف الخسارة: منتصف الصندوق
                 structural_sl = box_mid 
                 final_sl, tp, safe_sl, _ = compute_safe_sl_and_tp("Bearish", entry, structural_sl, None, box_height, cfg)
                 
