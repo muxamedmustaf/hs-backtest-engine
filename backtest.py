@@ -19,6 +19,7 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter", page_icon="📦", layout="wide")
 
+# 🎯 CSS السحري للتمرير بالإصبع والواجهة
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -153,19 +154,19 @@ def draw_box_pattern(fig, source):
     box_nodes = source.get("neckline_nodes", [])
     if len(nodes) < 3 or len(box_nodes) < 4: return
 
-    fig.add_trace(go.Scatter(x=[nodes[0][0], nodes[1][0]], y=[nodes[0][1], nodes[1][1]], mode="lines", name="Trend", line=dict(color="#FF9800", width=2, dash="dot")))
+    fig.add_trace(go.Scatter(x=[nodes[0][0], nodes[1][0]], y=[nodes[0][1], nodes[1][1]], mode="lines", name="Trend", line=dict(color="#FF9800", width=2, dash="dot")), row=1, col=1)
     top_x, top_y = [box_nodes[0][0], box_nodes[1][0]], [box_nodes[0][1], box_nodes[1][1]]
     bot_x, bot_y = [box_nodes[2][0], box_nodes[3][0]], [box_nodes[2][1], box_nodes[3][1]]
     
-    fig.add_trace(go.Scatter(x=top_x, y=top_y, mode="lines", name="Resistance", line=dict(color="#2196F3", width=2)))
-    fig.add_trace(go.Scatter(x=bot_x, y=bot_y, mode="lines", name="Support", line=dict(color="#2196F3", width=2)))
-    fig.add_trace(go.Scatter(x=[top_x[0], bot_x[0]], y=[top_y[0], bot_y[0]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False))
-    fig.add_trace(go.Scatter(x=[top_x[1], bot_x[1]], y=[top_y[1], bot_y[1]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False))
-    fig.add_trace(go.Scatter(x=[nodes[2][0]], y=[nodes[2][1]], mode="markers+text", name="Breakout", marker=dict(size=14, color="#E91E63", symbol="star"), text=["كسر"], textposition="top center"))
+    fig.add_trace(go.Scatter(x=top_x, y=top_y, mode="lines", name="Resistance", line=dict(color="#2196F3", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=bot_x, y=bot_y, mode="lines", name="Support", line=dict(color="#2196F3", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[top_x[0], bot_x[0]], y=[top_y[0], bot_y[0]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[top_x[1], bot_x[1]], y=[top_y[1], bot_y[1]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[nodes[2][0]], y=[nodes[2][1]], mode="markers+text", name="Breakout", marker=dict(size=14, color="#E91E63", symbol="star"), text=["كسر"], textposition="top center"), row=1, col=1)
 
     entry, sl, tp, entry_x = source.get("entry"), source.get("sl"), source.get("tp"), nodes[2][0]
-    if entry and sl: fig.add_annotation(x=entry_x, y=sl, text="SL", showarrow=True, arrowhead=1, ax=20, ay=20, font=dict(color="red"))
-    if entry and tp: fig.add_annotation(x=entry_x, y=tp, text="TP", showarrow=True, arrowhead=1, ax=20, ay=-20, font=dict(color="green"))
+    if entry and sl: fig.add_annotation(x=entry_x, y=sl, text="SL", showarrow=True, arrowhead=1, ax=20, ay=20, font=dict(color="red"), row=1, col=1)
+    if entry and tp: fig.add_annotation(x=entry_x, y=tp, text="TP", showarrow=True, arrowhead=1, ax=20, ay=-20, font=dict(color="green"), row=1, col=1)
 
 def render_chart_fast(sym, cur, df_chart_full):
     if df_chart_full is None or df_chart_full.empty: return
@@ -173,7 +174,9 @@ def render_chart_fast(sym, cur, df_chart_full):
     if not nodes: return
     pattern_start, pattern_end = nodes[0][0], nodes[-1][0]
     span = pattern_end - pattern_start
-    x_min, x_max = pattern_start - span * 1.5, pattern_end + span * 2.0
+    
+    # 🎯 توسيع الرؤية (Zoom Out) لرؤية التجمع الكبير
+    x_min, x_max = pattern_start - span * 2.5, pattern_end + span * 2.5
     
     try:
         idx_min = max(0, df_chart_full.index.searchsorted(x_min))
@@ -181,7 +184,7 @@ def render_chart_fast(sym, cur, df_chart_full):
         df_window = df_chart_full.iloc[idx_min:idx_max]
     except: df_window = df_chart_full
     
-    # 🆕 إنشاء الشارت مع مؤشر الحجم (Volume) في الأسفل
+    # 🎯 إنشاء الشارت مع مؤشر الحجم (Volume) في الأسفل
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
     
     fig.add_trace(go.Candlestick(x=df_window.index, open=df_window["Open"], high=df_window["High"], low=df_window["Low"], close=df_window["Close"], name="Price"), row=1, col=1)
@@ -191,10 +194,11 @@ def render_chart_fast(sym, cur, df_chart_full):
     
     draw_box_pattern(fig, cur)
     
-    # 🆕 إضافة الحجم
+    # 🎯 إضافة الحجم
     if "Volume" in df_window.columns:
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
+    # 🎯 تعديلات المحور والهامش لسهولة السحب والتكبير الجانبي
     fig.update_layout(
         template="plotly_white", 
         height=750, 
@@ -204,7 +208,7 @@ def render_chart_fast(sym, cur, df_chart_full):
         hovermode="x unified", 
         margin=dict(l=10, r=60, t=30, b=30), 
         yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
-        yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True), # محور الحجم
+        yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True),
         xaxis=dict(showgrid=True, gridcolor="#F5F5F5", range=[x_min, x_max], fixedrange=False),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
     )
