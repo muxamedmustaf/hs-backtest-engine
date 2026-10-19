@@ -10,38 +10,25 @@ from data_provider import fetch_data
 try:
     from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals, diagnose_filters
 except ImportError as e:
-    st.error(f"❌ فشل الاستيراد: {e}"); st.stop()
+    st.error(f"❌ فشل الاستيراد من engine: {e}"); st.stop()
 
+# محاولة استيراد دالة الشيت
 try:
     from ffff import get_symbols_from_sheet
+    HAS_SHEET = True
 except ImportError:
+    HAS_SHEET = False
     def get_symbols_from_sheet(*args, **kwargs): return [["EURUSD=X", "BTC-USD"]]
 
 st.set_page_config(page_title="Box Hunter Pro", page_icon="📦", layout="wide")
 
-# 🎯 CSS السحري للتمرير بالإصبع والواجهة
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
     .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
-    div[data-testid='stPlotlyChart'] { width: 100% !important; }
-    iframe { width: 100% !important; }
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
-    label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; font-weight: 500; }
-    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; font-size: 14px; }
-    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; font-size: 20px; }
-    .stButton > button { direction: rtl; text-align: center; border-radius: 8px; }
-    .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; border-radius: 8px; }
-    .stDataFrame { direction: ltr; }
-    * { transition: none !important; animation: none !important; }
-    section.main > div { contain: layout style !important; }
-    .stDataFrame, .stPlotlyChart { contain: content !important; }
-    .stExpander, .stMetric, .stDataFrame { box-shadow: none !important; }
-    details { padding: 0.3rem !important; }
-    div[data-testid="stMetric"] { padding: 8px !important; background: #f8f9fa; border-radius: 10px; border: 1px solid #e9ecef; }
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 8px 16px; }
+    label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; }
     .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { touch-action: none !important; } 
 </style>
 """, unsafe_allow_html=True)
@@ -50,31 +37,13 @@ SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
 ALL_GLOBAL_INTERVALS = ["15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1wk"]
 
 IC_MARKETS_SPECS = {
-    "BTC-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
-    "ETH-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "BTC-USD":  {"contract": 1, "min_lot": 0.01, "step": 0.01, "pip": 1.0, "cat": "🪙 Crypto"},
     "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
     "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-    "USDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 JPY"},
-    "USDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-    "USDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-    "AUDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-    "NZDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
-    "EURGBP=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
-    "EURJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
-    "GBPJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
-    "AUDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
-    "NZDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
-    "CADJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
-    "CHFJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 Cross"},
-    "NZDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
-    "AUDNZD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "🔀 Cross"},
-    "USDTRY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Exotic"},
-    "USDNOK=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "⚠️ Scandinavian"},
 }
 
 PLOTLY_CONFIG = {
     'responsive': True, 'scrollZoom': True, 'displaylogo': False, 'displayModeBar': True, 
-    'modeBarButtonsToRemove': ['sendDataToCloud', 'lasso2d', 'select2d', 'toggleSpikelines'],
     'dragmode': 'pan', 'doubleClick': 'reset+autosize'
 }
 
@@ -90,15 +59,51 @@ def pip_size_for(symbol):
         if key.upper() == s: return spec["pip"]
     return 0.0001
 
+# 🎯 الدالة الاحترافية الجديدة لجلب الرموز (تكشف الأخطاء ولا تخفيها)
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
+    
+    if not HAS_SHEET:
+        st.warning("⚠️ **تنبيه:** لم يتم العثور على ملف `ffff.py`، يتم عرض الرموز الافتراضية فقط.")
+        return sorted(s)
+
     try:
-        sheet_symbols = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
-        if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
-            for x in sheet_symbols[0]: 
-                s.add(str(x).strip().upper())
-    except Exception as e: 
-        pass
+        # استدعاء الدالة
+        raw_data = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
+        
+        fetched_symbols = []
+        
+        # 1. إذا كانت النتيجة Pandas DataFrame
+        if isinstance(raw_data, pd.DataFrame):
+            if not raw_data.empty:
+                # نفترض أن العمود الأول يحتوي على الرموز
+                fetched_symbols = raw_data.iloc[:, 0].dropna().astype(str).tolist()
+                
+        # 2. إذا كانت النتيجة List of Lists (القوائم المتداخلة)
+        elif isinstance(raw_data, (list, tuple)) and len(raw_data) > 0:
+            first_item = raw_data[0]
+            if isinstance(first_item, (list, tuple)):
+                fetched_symbols = [str(x) for x in first_item if pd.notna(x)]
+            elif isinstance(first_item, str):
+                # إذا كانت قائمة مسطحة
+                fetched_symbols = [str(x) for x in raw_data if pd.notna(x)]
+
+        # إضافة الرموز التي تم جلبها
+        for sym in fetched_symbols:
+            sym_clean = sym.strip().upper()
+            if sym_clean: 
+                s.add(sym_clean)
+
+        if len(fetched_symbols) > 0:
+            st.sidebar.success(f"✅ تم جلب {len(fetched_symbols)} رمز من الشيت.")
+        else:
+            st.sidebar.warning("⚠️ تم الاتصال بالشيت ولكنه رجع فارغاً أو بصيغة غير معروفة.")
+
+    except Exception as e:
+        # هنا نطبع الخطأ للمستخدم بدلاً من تجاهله
+        st.error(f"🚨 **خطأ أثناء قراءة الشيت:** {str(e)}")
+        st.info("يتم استخدام القائمة الافتراضية كاحتياطي.")
+        
     return sorted(s)
 
 @st.cache_data(ttl=3600, show_spinner=False)
