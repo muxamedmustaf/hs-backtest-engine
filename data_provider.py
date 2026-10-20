@@ -16,7 +16,6 @@ PROVIDER = "twelve_data"
 TWELVE_DATA_API_KEY = "951d7884292c4734aee5e4fc82878dc3" 
 TARGET_TIMEZONE = "GMT+2"
 
-# 🎯 قراءة التوكن من إعدادات Streamlit
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "YOUR_GITHUB_TOKEN_HERE")
 GITHUB_REPO = st.secrets.get("GITHUB_REPO", "muxamedmustaf/hs-backtest-engine")
 DATA_BRANCH = "main"
@@ -83,12 +82,15 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
     td = TDClient(apikey=TWELVE_DATA_API_KEY)
     tf = _timeframe_twelve(interval)
     sym = _symbol_twelve(symbol)
-    kwargs = {"symbol": sym, "interval": tf, "timezone": "UTC"}
+    
+    # نطلب 5000 شمعة دائماً كحد أقصى
+    kwargs = {"symbol": sym, "interval": tf, "timezone": "UTC", "outputsize": 5000}
 
+    # إذا تم تمرير تواريخ، نستخدمها (لكننا سنعتمد غالباً على الـ 5000 شمعة)
     if start_date and end_date:
         kwargs["start_date"] = start_date
         kwargs["end_date"] = end_date
-    else: kwargs["outputsize"] = 5000
+        kwargs.pop("outputsize", None) # TwelveData لا يسمح باستخدام outputsize مع start_date
 
     try:
         ts = td.time_series(**kwargs)
@@ -98,25 +100,38 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
         df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}, inplace=True)
         time.sleep(8) 
         return df
-    except Exception: return None
+    except Exception as e: 
+        print(f"API Error: {e}")
+        return None
 
 def fetch_data(symbol, interval="1h", period="3mo", start_date=None, end_date=None, cache_hours=None, force_download=False, **kwargs):
     df_github = load_from_github(symbol, interval)
     
-    if not force_download and df_github is not None and not df_github.empty and start_date and end_date:
+    # 1. إذا لم نطلب تحديثاً قسرياً، ولدينا بيانات، نرجعها مباشرة
+    if not force_download and df_github is not None and not df_github.empty:
         return adjust_timezone(df_github)
 
-    fetch_start = start_date
-    if df_github is not None and not df_github.empty:
-        last_date = df_github.index.max()
-        fetch_start = (last_date + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-    
-    df_new = _fetch_twelve(symbol, interval, fetch_start, end_date)
-    
-    if df_new is not None and not df_new.empty:
+    # 2. إذا طلبنا تحديثاً قسرياً (force_download=True)، نتجاهل الملف القديم تماماً
+    if force_download:
+        df_new = _fetch_twelve(symbol, interval, None, None) # جلب 5000 شمعة جديدة بالكامل
+    else:
+        # إذا لم يكن هناك تحديث قسري، نكمل من آخر تاريخ
+        fetch_start = start_date
         if df_github is not None and not df_github.empty:
+            last_date = df_github.index.max()
+            fetch_start = (last_date + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
+        df_new = _fetch_twelve(symbol, interval, fetch_start, end_date)
+    
+    # 3. دمج البيانات
+    if df_new is not None and not df_new.empty:
+        if force_download:
+            df_merged = df_new # استبدال كامل بالبيانات الجديدة
+        elif df_github is not None and not df_github.empty:
             df_merged = pd.concat([df_github, df_new]).drop_duplicates().sort_index()
-        else: df_merged = df_new
+        else: 
+            df_merged = df_new
+        
         save_to_github(symbol, interval, df_merged)
         return adjust_timezone(df_merged)
+        
     return adjust_timezone(df_github)
