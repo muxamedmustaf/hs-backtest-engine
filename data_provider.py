@@ -83,54 +83,53 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
     tf = _timeframe_twelve(interval)
     sym = _symbol_twelve(symbol)
     
+    # 🚨 السر هنا: نطلب 5000 شمعة دائماً ونتجاهل التواريخ في طلب الـ API
+    # لكي لا يقوم الـ API بإرجاع 30 شمعة كإعداد افتراضي
     kwargs = {"symbol": sym, "interval": tf, "timezone": "UTC", "outputsize": 5000}
-
-    if start_date and end_date:
-        kwargs["start_date"] = start_date
-        kwargs["end_date"] = end_date
-        kwargs.pop("outputsize", None) 
 
     try:
         ts = td.time_series(**kwargs)
         df = ts.as_pandas()
         if df is None or df.empty: return None
+        
         df = df.iloc[::-1]
         df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}, inplace=True)
+        
+        # الآن نقوم بقص البيانات محلياً (في بايثون) حسب التواريخ التي اخترتها في الواجهة
+        if start_date and end_date:
+            df.index = pd.to_datetime(df.index)
+            # نضيف يوم كامل لتاريخ النهاية لضمان تضمينه
+            end_date_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+            df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= end_date_dt)]
+
         time.sleep(8) 
         return df
     except Exception as e: 
+        st.error(f"خطأ من Twelve Data: {e}")
         return None
 
 def fetch_data(symbol, interval="1h", period="3mo", start_date=None, end_date=None, cache_hours=None, force_download=False, **kwargs):
     df_github = load_from_github(symbol, interval)
     
-    # 🚨 الشرط الذكي: إذا كانت البيانات المحفوظة أقل من 100 شمعة، اعتبرها تالفة واجلب من الإنترنت
+    # إذا كانت البيانات المحفوظة أقل من 100 شمعة، اعتبرها تالفة واجلب من الإنترنت
     if df_github is not None and len(df_github) < 100:
         force_download = True
 
-    # إذا لم نطلب تحديثاً، ولدينا بيانات كافية، نرجعها
     if not force_download and df_github is not None and not df_github.empty:
+        # حتى لو قرأنا من GitHub، نقوم بقصها حسب التواريخ
+        if start_date and end_date:
+            df_github.index = pd.to_datetime(df_github.index)
+            end_date_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+            df_filtered = df_github[(df_github.index >= pd.to_datetime(start_date)) & (df_github.index <= end_date_dt)]
+            if not df_filtered.empty:
+                return adjust_timezone(df_filtered)
         return adjust_timezone(df_github)
 
     # جلب 5000 شمعة جديدة
-    if force_download:
-        df_new = _fetch_twelve(symbol, interval, None, None)
-    else:
-        fetch_start = start_date
-        if df_github is not None and not df_github.empty:
-            last_date = df_github.index.max()
-            fetch_start = (last_date + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-        df_new = _fetch_twelve(symbol, interval, fetch_start, end_date)
+    df_new = _fetch_twelve(symbol, interval, start_date, end_date)
     
     if df_new is not None and not df_new.empty:
-        if force_download:
-            df_merged = df_new 
-        elif df_github is not None and not df_github.empty:
-            df_merged = pd.concat([df_github, df_new]).drop_duplicates().sort_index()
-        else: 
-            df_merged = df_new
-        
-        save_to_github(symbol, interval, df_merged)
-        return adjust_timezone(df_merged)
+        save_to_github(symbol, interval, df_new)
+        return adjust_timezone(df_new)
         
     return adjust_timezone(df_github)
