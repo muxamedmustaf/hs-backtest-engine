@@ -83,14 +83,12 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
     tf = _timeframe_twelve(interval)
     sym = _symbol_twelve(symbol)
     
-    # نطلب 5000 شمعة دائماً كحد أقصى
     kwargs = {"symbol": sym, "interval": tf, "timezone": "UTC", "outputsize": 5000}
 
-    # إذا تم تمرير تواريخ، نستخدمها (لكننا سنعتمد غالباً على الـ 5000 شمعة)
     if start_date and end_date:
         kwargs["start_date"] = start_date
         kwargs["end_date"] = end_date
-        kwargs.pop("outputsize", None) # TwelveData لا يسمح باستخدام outputsize مع start_date
+        kwargs.pop("outputsize", None) 
 
     try:
         ts = td.time_series(**kwargs)
@@ -101,31 +99,32 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
         time.sleep(8) 
         return df
     except Exception as e: 
-        print(f"API Error: {e}")
         return None
 
 def fetch_data(symbol, interval="1h", period="3mo", start_date=None, end_date=None, cache_hours=None, force_download=False, **kwargs):
     df_github = load_from_github(symbol, interval)
     
-    # 1. إذا لم نطلب تحديثاً قسرياً، ولدينا بيانات، نرجعها مباشرة
+    # 🚨 الشرط الذكي: إذا كانت البيانات المحفوظة أقل من 100 شمعة، اعتبرها تالفة واجلب من الإنترنت
+    if df_github is not None and len(df_github) < 100:
+        force_download = True
+
+    # إذا لم نطلب تحديثاً، ولدينا بيانات كافية، نرجعها
     if not force_download and df_github is not None and not df_github.empty:
         return adjust_timezone(df_github)
 
-    # 2. إذا طلبنا تحديثاً قسرياً (force_download=True)، نتجاهل الملف القديم تماماً
+    # جلب 5000 شمعة جديدة
     if force_download:
-        df_new = _fetch_twelve(symbol, interval, None, None) # جلب 5000 شمعة جديدة بالكامل
+        df_new = _fetch_twelve(symbol, interval, None, None)
     else:
-        # إذا لم يكن هناك تحديث قسري، نكمل من آخر تاريخ
         fetch_start = start_date
         if df_github is not None and not df_github.empty:
             last_date = df_github.index.max()
             fetch_start = (last_date + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
         df_new = _fetch_twelve(symbol, interval, fetch_start, end_date)
     
-    # 3. دمج البيانات
     if df_new is not None and not df_new.empty:
         if force_download:
-            df_merged = df_new # استبدال كامل بالبيانات الجديدة
+            df_merged = df_new 
         elif df_github is not None and not df_github.empty:
             df_merged = pd.concat([df_github, df_new]).drop_duplicates().sort_index()
         else: 
