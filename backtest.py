@@ -19,14 +19,19 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter Pro", page_icon="📦", layout="wide")
 
+# ⬇️⬇️ إضافة كود CSS لإخفاء القائمة الجانبية تماماً ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
+    /* إخفاء القائمة الجانبية وزرها */
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    
     .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
     label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; }
-    .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { touch-action: none !important; } 
+    .js-plotly-plot .plotly, .js-plotly-plot .main-svg { touch-action: none !important; } 
 </style>
 """, unsafe_allow_html=True)
 
@@ -63,16 +68,19 @@ def _cached_fetch(symbol, interval, start_date=None, end_date=None, period=None,
     try:
         if start_date and end_date: return fetch_data(symbol, interval=interval, start_date=start_date, end_date=end_date, force_download=force_download)
         return fetch_data(symbol, interval=interval, period=period)
-    except Exception: return None
+    except Exception as e: 
+        return None
 
-# ⬇️ تم إضافة force_download هنا ⬇️
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_backtest(symbol, interval, start_date, end_date, force_download=False):
     df = _cached_fetch(symbol, interval, start_date, end_date, None, force_download)
-    if df is None or df.empty: return None, None
-    try: trades = backtest_strategy(df, interval=interval, symbol=symbol)
-    except Exception: return df, None
-    return df, trades
+    if df is None or df.empty: 
+        return None, None, "فشل جلب البيانات أو لا توجد بيانات في هذه الفترة."
+    try: 
+        trades = backtest_strategy(df, interval=interval, symbol=symbol)
+    except Exception as e: 
+        return df, None, f"خطأ داخل محرك البحث (engine.py): {str(e)}"
+    return df, trades, None
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_live(symbol, interval, period):
@@ -184,28 +192,25 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"], horizontal=True)
-
-# 🎯 القائمة الجانبية
-with st.sidebar:
-    st.markdown("### ⚙️ إدارة البيانات (GitHub)")
+# ⬇️⬇️ نقل إدارة البيانات إلى الصفحة الرئيسية بدلاً من القائمة الجانبية ⬇️⬇️
+with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح"):
     repo = get_github_repo()
     if repo:
         st.success(f"✅ متصل بـ: {repo.full_name}")
         if st.button("📥 تحديث وحفظ البيانات (الكل)", use_container_width=True):
             av = get_available_symbols()[:10]
             intervals = ["1h", "4h"]
-            progress_bar = st.progress(0)
-            for i, sym in enumerate(av):
-                for intv in intervals:
-                    _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
-                progress_bar.progress((i+1)/len(av))
-            st.cache_data.clear()
-            st.success("✅ تم التحديث والحفظ في GitHub!")
+            with st.status("جاري تحديث البيانات وحفظها...", expanded=True) as status:
+                for i, sym in enumerate(av):
+                    st.write(f"تحديث {sym}...")
+                    for intv in intervals:
+                        _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                st.cache_data.clear()
+                status.update(label="✅ تم التحديث والحفظ في GitHub!", state="complete", expanded=False)
     else:
         st.warning("⚠️ لم يتم ربط GitHub. يرجى إضافة التوكن في الإعدادات.")
 
-st.markdown("---")
+app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"], horizontal=True)
 
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
@@ -218,7 +223,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
     ed = c2.date_input("إلى:", value=datetime.date.today()).strftime("%Y-%m-%d")
     interval = c3.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
     
-    # ⬇️⬇️ الخيار الجديد لتوجيه المختبر للبيانات المحفوظة ⬇️⬇️
     bt_data_source = st.radio(
         "📁 مصدر البيانات للمحاكاة:",
         ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)"],
@@ -226,22 +230,35 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
     )
     force_dl = True if "الإنترنت" in bt_data_source else False
-    # ⬆️⬆️ ------------------------------------------ ⬆️⬆️
 
     if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols:
         results, dfs = [], {}
-        bar = st.progress(0)
-        for i, sym in enumerate(bt_symbols):
-            bar.progress((i+1)/len(bt_symbols))
+        
+        with st.status(f"جاري محاكاة {len(bt_symbols)} رموز...", expanded=True) as status:
+            for i, sym in enumerate(bt_symbols):
+                st.write(f"⏳ **جاري معالجة {sym}** (خطوة {i+1}/{len(bt_symbols)})...")
+                df, trades, error_msg = _cached_backtest(fix_symbol(sym), interval, sd, ed, force_download=force_dl)
+                
+                if error_msg:
+                    st.error(f"❌ **{sym}:** {error_msg}")
+                    continue 
+                    
+                if df is not None:
+                    st.write(f"✔️ تم جلب {len(df)} شمعة.")
+                    dfs[sym] = df
+                    
+                    if trades:
+                        tdf = pd.DataFrame(trades)
+                        results.append({"symbol": sym, "trades_df": tdf, "total": len(tdf)})
+                        st.success(f"✅ تم العثور على {len(tdf)} صفقة لـ {sym}.")
+                    else:
+                        st.warning(f"⚠️ **{sym}:** لم يتم العثور على أي نماذج تتطابق مع شروط 'الصناديق' في هذه الفترة. (المحرك لم يجد إشارات).")
             
-            # ⬇️ نمرر force_dl لدالة الكاش ⬇️
-            df, trades = _cached_backtest(fix_symbol(sym), interval, sd, ed, force_download=force_dl)
-            
-            if df is not None:
-                dfs[sym] = df
-                if trades:
-                    tdf = pd.DataFrame(trades)
-                    results.append({"symbol": sym, "trades_df": tdf, "total": len(tdf)})
+            if results:
+                status.update(label=f"✅ اكتملت المحاكاة. تم العثور على صفقات في {len(results)} أصول.", state="complete", expanded=False)
+            else:
+                status.update(label="⚠️ اكتملت المحاكاة. لم يتم العثور على أي صفقات في أي من الرموز المحددة.", state="error", expanded=True)
+
         st.session_state["bt_results"] = results
         st.session_state["bt_dfs"] = dfs
         st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_int"] = sd, ed, interval
@@ -274,6 +291,9 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     st.write(cur.get("Trade Recommendation", ""))
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
                     render_chart_fast(sym, cur, df_chart, chart_mode)
+    else:
+        if st.session_state.get("bt_results") == []:
+             st.error("🔍 **لماذا لا تظهر نتائج؟** محرك البحث (`engine.py`) يعتمد على شروط صارمة جداً (موجة حافزة -> صندوق تجميع -> كسر -> إعادة اختبار). من المحتمل جداً أن الفترة الزمنية المحددة أو الإطار الزمني (1h) لا يحتوي على نماذج مكتملة. جرب تغيير الإطار الزمني إلى (4h) أو (1d)، أو قم بتوسيع الفترة الزمنية.")
 
 else:
     st.markdown("### 🚀 الماسح الحي")
