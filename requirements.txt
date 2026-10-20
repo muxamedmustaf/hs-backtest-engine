@@ -6,3 +6,5 @@ plotly
 gspread
 google-auth
 twelvedata
+PyGithub
+pyarrow
