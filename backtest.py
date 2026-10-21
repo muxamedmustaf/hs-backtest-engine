@@ -209,7 +209,7 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     if "Volume" in df_window.columns:
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
-    # ⬇️ تكبير ارتفاع الشارت ليكون 750 بكسل (أطول وأوضح) ⬇️
+    # ⬇️ تكبير ارتفاع الشارت ليكون 750 بكسل ⬇️
     fig.update_layout(
         template="plotly_white", height=750, autosize=True, xaxis_rangeslider_visible=False, 
         dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=40, b=40), 
@@ -222,14 +222,64 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
 
 all_symbols = get_available_symbols()
 
+# ⬇️⬇️ قسم إدارة البيانات (GitHub) - موجود بالكامل ⬇️⬇️
+with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
+    repo = get_github_repo()
+    if repo:
+        st.success(f"✅ متصل بـ: {repo.full_name}")
+        
+        if SHEET_ENABLED:
+            st.info(f"📊 تم جلب **{len(all_symbols)}** عملة من الشيت + العملات الافتراضية.")
+        else:
+            st.warning("⚠️ تعذر جلب العملات من الشيت (قد يكون ملف `ffff.py` مفقوداً).")
+        
+        dl_mode = st.radio("طريقة التنزيل:", ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], horizontal=True, key="dl_mode")
+        intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ["1h", "4h", "1d"], default=["1h", "4h"], key="dl_intvs")
+        
+        if dl_mode == "الكل (شيت)":
+            st.info(f"سيتم تنزيل **جميع** العملات ({len(all_symbols)} عملة).")
+            if st.button("📥 تنزيل وحفظ الكل", use_container_width=True):
+                with st.status("جاري تحديث البيانات وحفظها...", expanded=True) as status:
+                    for i, sym in enumerate(all_symbols):
+                        st.write(f"[{i+1}/{len(all_symbols)}] تحديث {sym}...")
+                        for intv in intvs_to_dl:
+                            _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                    st.cache_data.clear()
+                    status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
+                    
+        elif dl_mode == "مجموعة محددة":
+            selected_syms = st.multiselect("اختر العملات المراد تنزيلها:", all_symbols, default=all_symbols[:5], key="dl_selected_syms")
+            if st.button("📥 تنزيل وحفظ المحدد", use_container_width=True) and selected_syms:
+                with st.status(f"جاري تحديث {len(selected_syms)} عملات...", expanded=True) as status:
+                    for i, sym in enumerate(selected_syms):
+                        st.write(f"[{i+1}/{len(selected_syms)}] تحديث {sym}...")
+                        for intv in intvs_to_dl:
+                            _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                    st.cache_data.clear()
+                    status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
+                    
+        elif dl_mode == "عملة واحدة":
+            single_sym = st.text_input("أدخل رمز العملة (مثال: XAUUSD أو EURUSD):", value="BTC-USD", key="single_dl_sym")
+            if st.button("📥 تنزيل وحفظ العملة", use_container_width=True) and single_sym:
+                with st.status(f"جاري تحديث {single_sym}...", expanded=True) as status:
+                    for intv in intvs_to_dl:
+                        st.write(f"تحديث {single_sym} للإطار {intv}...")
+                        _cached_fetch(fix_symbol(single_sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                    st.cache_data.clear()
+                    status.update(label=f"✅ تم تحديث {single_sym}!", state="complete", expanded=False)
+    else:
+        st.warning("⚠️ لم يتم ربط GitHub. يرجى إضافة التوكن في الإعدادات.")
+
 app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"], horizontal=True)
 
+# ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
     bt_data_source = st.radio(
         "📁 مصدر البيانات للمحاكاة:",
         ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)"],
-        horizontal=True
+        horizontal=True,
+        help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
     )
     force_dl = True if "الإنترنت" in bt_data_source else False
 
@@ -304,7 +354,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     tdf_pips = compute_dollar_pnl(tdf_pips, lot=0.01)
                     display_cols = ["Entry Date", "Exit Date", "bias", "Entry Price", "Stop Loss", "Take Profit", "Result", "Pips", "PnL_USD"]
                     available_cols = [c for c in display_cols if c in tdf_pips.columns]
-                    # ⬇️ تكبير ارتفاع الجدول ليكون أطول ⬇️
                     st.dataframe(tdf_pips[available_cols], use_container_width=True, height=600)
 
             with tab3:
@@ -382,7 +431,62 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         if st.button("⬅️ السابق", key="bt_prev_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
                     with n6:
                         if st.button("التالي ➡️", key="bt_next_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
+
+# ================= LIVE SCAN MODE =================
 else:
-    # كود الماسح الحي
     st.markdown("### 🚀 الماسح الحي")
-    st.info("جاري العمل على باقي الواجهة...")
+    live_data_source = st.radio(
+        "📡 مصدر البيانات:",
+        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)"],
+        horizontal=True
+    )
+    force_dl = True if "الإنترنت" in live_data_source else False
+
+    live_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True, key="live_mode_radio")
+    if live_mode == "سهم فردي":
+        symbols = [st.text_input("رمز:", value="BTC-USD", key="live_sym_input")]
+    else:
+        c1, c2 = st.columns(2)
+        if c1.button("✅ تحديد كل العملات", use_container_width=True, key="live_sel_all"):
+            st.session_state["live_selected_symbols"] = all_symbols; st.rerun()
+        if c2.button("❌ إلغاء التحديد", use_container_width=True, key="live_clr_all"):
+            st.session_state["live_selected_symbols"] = []; st.rerun()
+        if "live_selected_symbols" not in st.session_state: st.session_state["live_selected_symbols"] = ["BTC-USD"]
+        symbols = st.multiselect("اختر العملات:", all_symbols, key="live_selected_symbols")
+
+    interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
+    period = st.selectbox("النطاق:", ALL_PERIODS, index=2)
+    
+    if st.button("🚀 بدء المسح", use_container_width=True) and symbols:
+        valid = []
+        for sym in symbols:
+            df, res = _cached_live(fix_symbol(sym), interval, period)
+            if res and res.get("signal") in ("STRONG BUY", "STRONG SELL"):
+                valid.append({"symbol": sym, "result": res})
+        if valid:
+            st.success(f"تم العثور على {len(valid)} إشارة")
+            
+            si = st.session_state.get("live_signal_index", 0)
+            if si >= len(valid) or si < 0:
+                si = 0
+                st.session_state["live_signal_index"] = si
+                
+            n1, n2, n3 = st.columns([1, 2, 1])
+            with n1:
+                if st.button("⬅️ السابق", use_container_width=True, key="live_prev_top"): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
+            with n2:
+                st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(valid)}</div>", unsafe_allow_html=True)
+            with n3:
+                if st.button("التالي ➡️", use_container_width=True, key="live_next_top"): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
+
+            ar, sym = valid[si]["result"], valid[si]["symbol"]
+            st.write(f"**{sym}** - {ar['signal']}")
+            df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
+            if df_chart is not None: render_chart_fast(sym, ar, df_chart, "adaptive")
+            
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            n4, n5, n6 = st.columns([1, 2, 1])
+            with n4:
+                if st.button("⬅️ السابق", key="live_prev_bottom", use_container_width=True): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
+            with n6:
+                if st.button("التالي ➡️", key="live_next_bottom", use_container_width=True): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
