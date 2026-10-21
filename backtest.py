@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from data_provider import fetch_data, get_github_repo
 
+# ⬇️ استيراد المحرك ⬇️
 try:
     from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals, diagnose_filters
 except ImportError:
@@ -22,20 +23,40 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter Pro - Smart", page_icon="📦", layout="wide")
 
+# ⬇️⬇️ تحديثات CSS للتوسيع والتباعد (واجهة أوسع وأطول) ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
-    .main .block-container { max-width: 100% !important; padding: 0.5rem 1rem !important; }
-    html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 15px; }
-    h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
-    label, .stRadio label, .stTextInput label, .stSelectbox label { direction: rtl; text-align: right; }
-    div[data-testid="stMetricLabel"] { direction: rtl; text-align: right; }
-    div[data-testid="stMetricValue"] { direction: ltr; text-align: right; }
-    .stButton > button { direction: rtl; text-align: center; }
-    .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; }
+    
+    /* توسيع الحاوية الرئيسية وإضافة هوامش مريحة */
+    .main .block-container { 
+        max-width: 98% !important; 
+        padding: 1.5rem 2.5rem !important; 
+    }
+    
+    /* تنسيق اتجاه النصوص */
+    html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 16px; }
+    h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; margin-bottom: 1rem; }
+    label, .stRadio label, .stTextInput label, .stSelectbox label, .stMultiSelect label { direction: rtl; text-align: right; margin-bottom: 0.5rem; }
+    
+    /* تكبير وتوسيع الأزرار */
+    .stButton > button { 
+        direction: rtl; 
+        text-align: center; 
+        padding: 0.6rem 1rem;
+        font-size: 1rem;
+    }
+    
+    /* تنسيق التنبيهات والمربعات */
+    .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; padding: 1rem; }
     .stDataFrame { direction: ltr; }
+    
+    /* إضافة مسافات بين الصفوف والأعمدة */
+    div[data-testid="stHorizontalBlock"] { gap: 1.5rem; }
+    div[data-testid="stVerticalBlock"] { gap: 1rem; }
+    
     .js-plotly-plot .plotly, .js-plotly-plot .main-svg { touch-action: none !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -188,9 +209,10 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     if "Volume" in df_window.columns:
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
+    # ⬇️ تكبير ارتفاع الشارت ليكون 750 بكسل (أطول وأوضح) ⬇️
     fig.update_layout(
-        template="plotly_white", height=550, autosize=True, xaxis_rangeslider_visible=False, 
-        dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=30, b=30), 
+        template="plotly_white", height=750, autosize=True, xaxis_rangeslider_visible=False, 
+        dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=40, b=40), 
         yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
         yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True),
         xaxis=dict(showgrid=True, gridcolor="#F5F5F5", range=[x_min, x_max], fixedrange=False),
@@ -268,7 +290,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         all_dfs = [r["trades_df"] for r in rl if not r["trades_df"].empty]
         
         if all_dfs:
-            # ⬇️ إضافة التبويب الجديد (جدول كل الإشارات) ⬇️
             tab1, tab2, tab3, tab4 = st.tabs(["📉 الرسوم البيانية", "📋 جدول كل الإشارات", "🧠 التشخيص الذكي", "🛡️ تقرير الفلاتر"])
             
             with tab2:
@@ -283,7 +304,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     tdf_pips = compute_dollar_pnl(tdf_pips, lot=0.01)
                     display_cols = ["Entry Date", "Exit Date", "bias", "Entry Price", "Stop Loss", "Take Profit", "Result", "Pips", "PnL_USD"]
                     available_cols = [c for c in display_cols if c in tdf_pips.columns]
-                    st.dataframe(tdf_pips[available_cols], use_container_width=True)
+                    # ⬇️ تكبير ارتفاع الجدول ليكون أطول ⬇️
+                    st.dataframe(tdf_pips[available_cols], use_container_width=True, height=600)
 
             with tab3:
                 st.subheader("📊 تحليل النتائج وخطة التطوير الذاتي")
@@ -354,13 +376,13 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
                     render_chart_fast(sym, cur, df_chart, chart_mode)
                     
-                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown("<br><br>", unsafe_allow_html=True)
                     n4, n5, n6 = st.columns([1, 2, 1])
                     with n4:
                         if st.button("⬅️ السابق", key="bt_prev_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
                     with n6:
                         if st.button("التالي ➡️", key="bt_next_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
 else:
-    # كود الماسح الحي يبقى كما هو...
+    # كود الماسح الحي
     st.markdown("### 🚀 الماسح الحي")
     st.info("جاري العمل على باقي الواجهة...")
