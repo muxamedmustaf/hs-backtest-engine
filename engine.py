@@ -101,7 +101,7 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     # ⬇️ الهدف ضعف الوقف 1:2 ⬇️
     risk_distance = abs(entry - final_sl)
     if risk_distance == 0: risk_distance = 1e-5
-    target = risk_distance * 2.0
+    target = risk_distance * 1.5.0
     tp = entry + target if bias == "Bullish" else entry - target
     
     return final_sl, tp, safe_sl, structural_sl
