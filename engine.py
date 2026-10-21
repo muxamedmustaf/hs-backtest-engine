@@ -5,7 +5,7 @@ import numpy as np
 CONFIG = {
     "IMPULSE_MIN_PCT": 0.025,      
     "IMPULSE_MAX_LOOKBACK": 40,    
-    "BOX_MIN_CANDLES": 10,         
+    "BOX_MIN_CANDLES": 30,         
     "BOX_MAX_HEIGHT_PCT": 0.05,    
     "MAX_RETRACEMENT_PCT": 0.50,   
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
