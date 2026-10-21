@@ -1,17 +1,27 @@
 # -*- coding: utf-8 -*-
 import calendar, datetime
 import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
-from data_provider import fetch_data, get_provider_info, PROVIDER
+import numpy as np
 
+# ⬇️⬇️ استيراد صحيح لملف data_provider (بدون get_provider_info) ⬇️⬇️
+try:
+    from data_provider import fetch_data, get_github_repo, PROVIDER
+except ImportError:
+    fetch_data = None
+    get_github_repo = None
+    PROVIDER = None
+
+# ⬇️⬇️ استيراد محرك التحليل ⬇️⬇️
 try:
     from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_filters
 except ImportError:
     diagnose_filters = None
 
+# ⬇️⬇️ استيراد الشيت ⬇️⬇️
 try:
     from ffff import get_symbols_from_sheet
 except ImportError:
-    pass
+    def get_symbols_from_sheet(*args, **kwargs): return [["EURUSD=X", "BTC-USD"]]
 
 st.set_page_config(
     page_title="Smart Market Analyzer & Backtest Lab",
@@ -130,12 +140,13 @@ def get_default_lot_for_symbol(symbol):
     if any(x in s for x in ["US30", "NAS", "SPX"]): return 0.1
     return 0.01
 
+def to_float(v):
+    try: return float(v)
+    except (TypeError, ValueError): return None
+
 def compute_pips(trades_df):
     if trades_df is None or trades_df.empty: return trades_df
     df = trades_df.copy()
-    def to_float(v):
-        try: return float(v)
-        except (TypeError, ValueError): return None
     def pick(row, names):
         for n in names:
             if n in row and pd.notna(row[n]):
@@ -152,17 +163,11 @@ def compute_pips(trades_df):
         tp = pick(row, ["Take Profit", "TP", "tp"])
         bias = str(row.get("bias") or row.get("Bias") or "").upper()
         is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
-        pips = None
-        if entry is not None and exit_ is not None:
-            pips = (entry - exit_) / pip if is_sell else (exit_ - entry) / pip
-        risk = None
-        if entry is not None and sl is not None:
-            risk = (sl - entry) / pip if is_sell else (entry - sl) / pip
-            risk = abs(risk)
-        reward = None
-        if entry is not None and tp is not None:
-            reward = (entry - tp) / pip if is_sell else (tp - entry) / pip
-            reward = abs(reward)
+        pips = (entry - exit_) / pip if (entry is not None and exit_ is not None and is_sell) else ((exit_ - entry) / pip if (entry is not None and exit_ is not None) else None)
+        risk = (sl - entry) / pip if (entry is not None and sl is not None and is_sell) else ((entry - sl) / pip if (entry is not None and sl is not None) else None)
+        risk = abs(risk) if risk else None
+        reward = (entry - tp) / pip if (entry is not None and tp is not None and is_sell) else ((tp - entry) / pip if (entry is not None and tp is not None) else None)
+        reward = abs(reward) if reward else None
         rr = round(reward / risk, 2) if (risk and reward and risk > 0) else None
         pips_l.append(round(pips, 1) if pips is not None else None)
         risk_l.append(round(risk, 1) if risk is not None else None)
@@ -184,8 +189,8 @@ def compute_dollar_pnl(trades_df, lot=0.01):
         exit_ = row.get("Exit Price") or row.get("Exit")
         bias = str(row.get("bias") or row.get("Bias") or "").upper()
         is_sell = "SELL" in bias or "SHORT" in bias or "BEAR" in bias
-        try: entry_f = float(entry); exit_f = float(exit_)
-        except (TypeError, ValueError):
+        entry_f, exit_f = to_float(entry), to_float(exit_)
+        if entry_f is None or exit_f is None:
             usd_list.append(None); pct_list.append(None); continue
         price_move = (exit_f - entry_f) if not is_sell else (entry_f - exit_f)
         if any(x in sym for x in ["BTC", "ETH"]): pnl_usd = price_move * lot * 1
@@ -194,42 +199,13 @@ def compute_dollar_pnl(trades_df, lot=0.01):
         elif "XAG" in sym or "SI=F" in sym: pnl_usd = price_move * lot * 5000
         else:
             if sym.endswith("USD"): pnl_usd = price_move * lot * 100000
-            else:
-                if exit_f == 0: pnl_usd = None
-                else: pnl_usd = price_move * lot * 100000 / exit_f
-        if entry_f and entry_f != 0: pct = price_move / entry_f * 100
-        else: pct = None
+            else: pnl_usd = price_move * lot * 100000 / exit_f if exit_f != 0 else None
+        pct = (price_move / entry_f * 100) if entry_f != 0 else None
         usd_list.append(round(pnl_usd, 2) if pnl_usd is not None else None)
         pct_list.append(round(pct, 2) if pct is not None else None)
     df["PnL_USD"] = usd_list
     df["PnL_Pct"] = pct_list
     return df
-
-def calculate_trade_risk_usd(entry, sl, lot, symbol):
-    try: entry_f = float(entry); sl_f = float(sl); lot_f = float(lot)
-    except (TypeError, ValueError): return None
-    if entry_f == 0: return None
-    price_move = abs(entry_f - sl_f)
-    s = str(symbol).upper()
-    if any(x in s for x in ["BTC", "ETH"]): return price_move * lot_f * 1
-    if any(x in s for x in ["US30", "NAS", "SPX"]): return price_move * lot_f * 1
-    if "XAU" in s or "GC=F" in s: return price_move * lot_f * 100
-    if "XAG" in s or "SI=F" in s: return price_move * lot_f * 5000
-    if s.endswith("USD"): return price_move * lot_f * 100000
-    else:
-        if entry_f == 0: return None
-        return price_move * lot_f * 100000 / entry_f
-
-def check_risk_limit(entry, sl, lot, symbol, capital, risk_pct):
-    risk_usd = calculate_trade_risk_usd(entry, sl, lot, symbol)
-    if risk_usd is None:
-        return {"allowed": False, "risk_usd": None, "max_risk_usd": None, "risk_pct_actual": None, "message": "⚠️ لا يمكن حساب المخاطرة — بيانات ناقصة"}
-    max_risk_usd = capital * (risk_pct / 100)
-    risk_pct_actual = (risk_usd / capital * 100) if capital > 0 else 0
-    allowed = risk_usd <= max_risk_usd
-    if allowed: message = f"✅ مقبولة — المخاطرة {risk_usd:.2f}$ ({risk_pct_actual:.2f}%) ≤ الحد {max_risk_usd:.2f}$"
-    else: message = f"❌ مرفوضة — المخاطرة {risk_usd:.2f}$ ({risk_pct_actual:.2f}%) > الحد {max_risk_usd:.2f}$"
-    return {"allowed": allowed, "risk_usd": round(risk_usd, 2), "max_risk_usd": round(max_risk_usd, 2), "risk_pct_actual": round(risk_pct_actual, 2), "message": message}
 
 def get_available_symbols():
     symbols_set = set(IC_MARKETS_SPECS.keys())
@@ -245,204 +221,48 @@ def get_available_symbols():
             if "symbol" in item: symbols_set.add(item["symbol"])
     return sorted(list(symbols_set))
 
-def get_last_known_price(symbol):
-    if "backtest_dfs" in st.session_state:
-        df = st.session_state.backtest_dfs.get(symbol)
-        if df is not None and not df.empty:
-            try: return float(df["Close"].iloc[-1])
-            except Exception: pass
-    if "scanned_signals" in st.session_state:
-        for item in st.session_state.scanned_signals:
-            if item.get("symbol") == symbol:
-                entry = item["result"].get("entry")
-                if entry: return float(entry)
-    return None
-
-def get_active_symbols():
-    active = set()
-    if "backtest_scanned_signals" in st.session_state:
-        for item in st.session_state.backtest_scanned_signals:
-            if "symbol" in item: active.add(item["symbol"])
-    if "scanned_signals" in st.session_state:
-        for item in st.session_state.scanned_signals:
-            if "symbol" in item: active.add(item["symbol"])
-    return sorted(list(active))
-
-def get_near_symbols():
-    near = set()
-    if "near_signals" in st.session_state:
-        for item in st.session_state.near_signals: near.add(item["symbol"])
-    return sorted(list(near))
-
-def render_realtime_actions(trades_df, is_live=False, live_prices=None):
-    st.markdown("### 🎯 التصرفات المطلوبة الآن")
-    st.caption("إجراءات محدّدة لصفقاتك")
-    if trades_df is None or trades_df.empty:
-        st.info("ℹ️ لا توجد صفقات للتحليل")
-        return []
-        
-    actions = []
-    relevant = trades_df.tail(5).index.tolist() if len(trades_df) > 5 else trades_df.index.tolist()
-    for idx in relevant:
-        row = trades_df.loc[idx]
-        sym = row.get("symbol") or row.get("Symbol") or "?"
-        result = str(row.get("Result", "")).upper()
-        if not is_live and result in ["WIN", "LOSS", "TIMEOUT", "BREAKEVEN"]: continue
-        try:
-            entry_f = float(row.get("Entry Price") or row.get("Entry") or 0)
-            sl_f = float(row.get("Stop Loss") or row.get("SL") or 0)
-            tp_f = float(row.get("Take Profit") or row.get("TP") or 0)
-        except (TypeError, ValueError): continue
-        if entry_f == 0 or sl_f == 0 or tp_f == 0: continue
-        bias = str(row.get("bias") or row.get("Bias") or "").upper()
-        is_bearish = "BEAR" in bias or "SELL" in bias
-        progress = row.get("Max Reach %", 0) or 0
-        
-        if is_live and live_prices and sym in live_prices:
-            current_price = live_prices[sym]
-            progress = ((entry_f - current_price) if is_bearish else (current_price - entry_f)) / abs(tp_f - entry_f) * 100
-            progress = max(0, min(progress, 200))
-        if progress < 15: continue
-        
-        total_tp = abs(tp_f - entry_f)
-        if progress >= 80:
-            priority = "🔴 عاجل"; action = "إغلاق 50% + Trailing 60%"; new_sl = entry_f + (0.6 * total_tp * (-1 if is_bearish else 1)); guaranteed = "60%"
-        elif progress >= 50:
-            priority = "🟠 عالي"; action = "تفعيل Trailing 30%"; new_sl = entry_f + (0.3 * total_tp * (-1 if is_bearish else 1)); guaranteed = "30%"
-        elif progress >= 25:
-            priority = "🟡 متوسط"; action = "نقل SL إلى التعادل"; new_sl = entry_f; guaranteed = "0%"
-        else: continue
-        
-        try:
-            lot = row.get("Lot") or 0.01
-            if any(x in sym.upper() for x in ["BTC", "ETH"]): dollar_profit = abs(entry_f - new_sl) * float(lot)
-            elif is_bearish: dollar_profit = (entry_f - new_sl) * float(lot) * 100000 / entry_f
-            else: dollar_profit = (new_sl - entry_f) * float(lot) * 100000 / entry_f
-        except Exception: dollar_profit = None
-        
-        actions.append({
-            "الأولوية": priority, "الزوج": sym, "الوصول": f"{progress:.1f}%", "الإجراء": action,
-            "SL الحالي": f"{sl_f:.5f}", "SL الجديد": f"{new_sl:.5f}", "الربح المضمون": guaranteed,
-            "بالدولار": f"+${dollar_profit:.2f}" if dollar_profit else "—",
-            "_priority": {"🔴 عاجل": 0, "🟠 عالي": 1, "🟡 متوسط": 2}.get(priority, 99),
-        })
-        
-    if not actions:
-        st.success("✅ لا توجد صفقات تحتاج تصرفًا الآن")
-        return []
-        
-    actions.sort(key=lambda x: x["_priority"])
-    for action in actions:
-        msg = f"""**{action['الأولوية']} | {action['الزوج']}**\n🎯 **الإجراء:** {action['الإجراء']}\n📊 **الوصول:** {action['الوصول']} من الهدف\n🛑 **SL:** `{action['SL الحالي']}` ← **`{action['SL الجديد']}`**\n💰 **الربح المضمون:** {action['الربح المضمون']} ({action['بالدولار']})"""
-        if action['الأولوية'] == "🔴 عاجل": st.error(msg)
-        elif action['الأولوية'] == "🟠 عالي": st.warning(msg)
-        else: st.info(msg)
-    return actions
-
-def detect_near_signals(df, interval="5m", symbol=None, proximity_pct=2.0):
-    try:
-        from engine import calculate_indicators, calculate_zigzag, get_chronological_pivots, detect_all_head_shoulders, CONFIG, _get_max_gap, _get_max_pattern_duration
-    except ImportError: return []
-    if df is None or df.empty or len(df) < 30: return []
-    df = df.copy()
-    for col in ["Open", "High", "Low", "Close"]:
-        if col not in df.columns: return []
-    df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    if len(df) < 30: return []
-    try:
-        df = calculate_indicators(df)
-        df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
-        pivots = get_chronological_pivots(df)
-        max_gap = _get_max_gap(interval)
-        max_pattern_dur = _get_max_pattern_duration(interval)
-        all_patterns = detect_all_head_shoulders(pivots, df, is_backtest=True, max_gap=max_gap, max_pattern_duration=max_pattern_dur)
-    except Exception: return []
-    
-    if not all_patterns: return []
-    current_price = float(df["Close"].iloc[-1])
-    last_pos = len(df) - 1
-    near_signals = []
-    for p in all_patterns[-50:]:
-        end_pos = p.get("end_pos", 0)
-        if (last_pos - end_pos) > 60 or (last_pos - end_pos) < 0: continue
-        entry = p.get("entry"); sl = p.get("sl"); tp = p.get("tp"); bias = str(p.get("bias", ""))
-        if entry is None or entry == 0: continue
-        distance_pct = (current_price - entry) / entry * 100 if "Bear" in bias else (entry - current_price) / entry * 100
-        if 0 <= distance_pct <= proximity_pct:
-            near_signals.append({
-                "symbol": symbol, "pattern": p.get("pattern", "H&S"), "bias": bias,
-                "neckline": round(entry, 5), "current_price": round(current_price, 5),
-                "distance_pct": round(distance_pct, 2), "sl": round(sl, 5) if sl else None,
-                "tp": round(tp, 5) if tp else None, "candles_since": last_pos - end_pos,
-            })
-    near_signals.sort(key=lambda x: x["distance_pct"])
-    return near_signals
-
-def render_near_signals(near_signals):
-    if not near_signals:
-        st.info("ℹ️ لا توجد إشارات قريبة من الكسر — انتظر تحديث البيانات")
-        return
-    st.warning(f"⚠️ **{len(near_signals)}** إشارة قريبة من الكسر")
-    df_disp = pd.DataFrame([{
-        "الزوج": s["symbol"], "النمط": s["pattern"], "الاتجاه": s["bias"],
-        "خط العنق": s["neckline"], "السعر": s["current_price"], "المسافة %": f"{s['distance_pct']:.2f}%",
-        "SL": s["sl"], "TP": s["tp"], "الشموع": s["candles_since"],
-    } for s in near_signals])
-    st.dataframe(df_disp, use_container_width=True, hide_index=True)
-    
-    if st.button("🔗 تحميل الإشارة الأولى إلى الحاسبة", key="load_near_sig", use_container_width=True):
-        first = near_signals[0]
-        st.session_state["active_signal_symbol"] = first["symbol"]
-        st.session_state["active_signal_entry"] = first["neckline"]
-        st.session_state["active_signal_sl"] = first["sl"]
-        st.session_state["active_signal_tp"] = first["tp"]
-        st.session_state["active_signal_bias"] = first["bias"]
-        st.success(f"✅ تم التحميل: {first['symbol']}")
-
-def render_advanced_risk_calculator(unique_id="main"):
-    st.markdown("### 💰 حاسبة المخاطرة المتقدمة")
-    c1, c2, c3 = st.columns(3)
-    with c1: capital = st.number_input("💵 رأس المال ($):", min_value=10.0, max_value=10_000_000.0, value=1000.0, step=100.0, key=f"{unique_id}_cap")
-    with c2: risk_pct = st.selectbox("📊 نسبة المخاطرة (%):", options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], index=4, key=f"{unique_id}_pct")
-    with c3: st.metric("🛑 الحد الأقصى للمخاطرة", f"${capital * (risk_pct / 100):,.2f}")
-    
-    active_sym = st.session_state.get("active_signal_symbol")
-    active_entry = st.session_state.get("active_signal_entry")
-    active_sl = st.session_state.get("active_signal_sl")
-    active_tp = st.session_state.get("active_signal_tp")
-    
-    default_entry = float(active_entry) if active_entry else 1.0
-    default_sl = float(active_sl) if active_sl else default_entry * 1.01
-    default_tp = float(active_tp) if active_tp else default_entry * 0.98
-    
-    c_sym, c_lot = st.columns([2, 1])
-    with c_sym: selected_symbol = st.text_input("🔽 العملة:", value=active_sym if active_sym else "EURUSD=X", key=f"{unique_id}_sym")
-    with c_lot: custom_lot = st.number_input("💵 اللوت:", min_value=0.0001, max_value=100.0, value=get_default_lot_for_symbol(selected_symbol), step=0.01, key=f"{unique_id}_lot")
-    
-    c_e, c_s, c_t = st.columns(3)
-    with c_e: entry_price = st.number_input("📈 سعر الدخول:", value=default_entry, format="%.5f", key=f"{unique_id}_e")
-    with c_s: sl_price = st.number_input("🛑 وقف الخسارة:", value=default_sl, format="%.5f", key=f"{unique_id}_s")
-    with c_t: tp_price = st.number_input("🎯 الهدف:", value=default_tp, format="%.5f", key=f"{unique_id}_t")
-    
-    check = check_risk_limit(entry_price, sl_price, custom_lot, selected_symbol, capital, risk_pct)
-    if check["allowed"]: st.success(check["message"])
-    else: st.error(check["message"])
-
 # ⬇️⬇️ إدارة الجلسة ⬇️⬇️
 for k, v in [
-    ("current_symbol", "NZDCAD=X"), ("status_summary", "⚡ Live Scan & Backtest Lab • جاهز"),
-    ("scanned_signals", []), ("backtest_scanned_signals", []), ("backtest_dfs", {}),
-    ("backtest_period", ""), ("backtest_start", ""), ("backtest_end", ""),
-    ("active_signal_symbol", None), ("active_signal_entry", None), ("active_signal_sl", None),
-    ("active_signal_tp", None), ("active_signal_bias", None), ("near_signals", []),
+    ("current_symbol", "NZDCAD=X"), 
+    ("status_summary", "⚡ Live Scan & Backtest Lab • جاهز"),
+    ("scanned_signals", []), 
+    ("backtest_scanned_signals", []), 
+    ("backtest_dfs", {}),
+    ("backtest_period", ""), 
+    ("backtest_start", ""), 
+    ("backtest_end", ""),
+    ("active_signal_symbol", None), 
+    ("active_signal_entry", None), 
+    ("active_signal_sl", None),
+    ("active_signal_tp", None), 
+    ("active_signal_bias", None), 
+    ("near_signals", []),
 ]:
     if k not in st.session_state: st.session_state[k] = v
 
+# ⬇️⬇️ الشريط العلوي وإدارة GitHub ⬇️⬇️
 st.markdown(f'''<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;direction:rtl;">
 <div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📈 {st.session_state.current_symbol}</div>
 <div style="border:1px solid #DADCE0;background:#FFF;border-radius:30px;padding:8px 14px;font-weight:700;color:#0B57D0;">{st.session_state.status_summary}</div>
 </div>''', unsafe_allow_html=True)
+
+if get_github_repo is not None:
+    with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
+        repo = get_github_repo()
+        if repo:
+            st.success(f"✅ متصل بـ: {repo.full_name}")
+            if st.button("📥 تحديث وحفظ البيانات (الكل)", use_container_width=True):
+                av = get_available_symbols()[:10]
+                intervals = ["1h", "4h"]
+                with st.status("جاري تحديث البيانات وحفظها...", expanded=True) as status:
+                    for i, sym in enumerate(av):
+                        st.write(f"تحديث {sym}...")
+                        for intv in intervals:
+                            fetch_data(fix_symbol(sym), interval=intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                    st.cache_data.clear()
+                    status.update(label="✅ تم التحديث والحفظ في GitHub!", state="complete", expanded=False)
+        else:
+            st.warning("⚠️ لم يتم ربط GitHub. يرجى إضافة التوكن في الإعدادات.")
 
 app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي للأسواق", "🧪 مختبر الاختبار الرجعي (Backtest)"], horizontal=True)
 st.markdown("---")
@@ -450,7 +270,7 @@ st.markdown("---")
 # ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     st.markdown("### 🧪 مختبر تحليل الأداء التاريخي")
-    bt_scan_mode = st.radio("طريقة فحص الاختبار الرجعي:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True, key="bt_scan_mode")
+    bt_scan_mode = st.radio("طريقة الفحص:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True, key="bt_scan_mode")
     
     if bt_scan_mode == "سهم فردي":
         bt_symbols = [st.text_input("رمز الأصل", value="EURUSD=X", key="bt_single_symbol")]
@@ -509,16 +329,17 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         st.success(f"✅ الفترة: **{period_label}**")
         if st.button("📊 بدء محاكاة الاختبار الرجعي", use_container_width=True) and bt_symbols:
             results, dfs = [], {}
-            dl_int = selected_interval if selected_interval in ["1m","5m","15m","30m","1h","1d","1wk","1mo"] else "1h"
             p_bar = st.progress(0); s_txt = st.empty(); error_log = []
             
             for idx, sym in enumerate(bt_symbols):
                 s_txt.text(f"محاكاة ({idx+1}/{len(bt_symbols)}): {sym}...")
                 p_bar.progress((idx + 1) / len(bt_symbols))
                 try:
-                    df = yf.download(fix_symbol(sym), start=start_date, end=end_date, interval=dl_int, progress=False, auto_adjust=False)
-                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                    # ⬇️⬇️ استخدام fetch_data من data_provider بدلاً من yf ⬇️⬇️
+                    df = fetch_data(sym, interval=selected_interval, start_date=start_date, end_date=end_date) if fetch_data else yf.download(fix_symbol(sym), start=start_date, end=end_date, interval=selected_interval, progress=False, auto_adjust=False)
+                    
                     if df is not None and not df.empty:
+                        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
                         trades = backtest_strategy(df, interval=selected_interval, symbol=sym)
                         if trades:
                             tdf = pd.DataFrame(trades)
@@ -652,7 +473,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 st.dataframe(cur_trade.to_frame().T, use_container_width=True)
 
             with st.expander("🔬 التقرير التشخيصي الذكي (تطوير ذاتي)", expanded=True):
-                if diagnose_filters is None: st.error("⚠️ `diagnose_filters` غير موجودة")
+                if diagnose_filters is None: st.error("⚠️ `diagnose_filters` غير موجودة في engine.py")
                 else:
                     df_for_diag = dfs_dict.get(active_sym)
                     if df_for_diag is not None and not df_for_diag.empty:
@@ -698,17 +519,20 @@ else:
     
     if st.button("🚀 بدء المسح والتحليل الفوري", use_container_width=True) and symbols:
         valid = []; p_bar = st.progress(0); s_txt = st.empty(); error_log = []
-        dl_int = selected_interval if selected_interval in ["1m","5m","15m","30m","1h","1d","1wk","1mo"] else "1h"
         
         for idx, sym in enumerate(symbols):
             s_txt.text(f"فحص ({idx+1}/{len(symbols)}): {sym}...")
             p_bar.progress((idx + 1) / len(symbols))
             try:
-                df = yf.download(fix_symbol(sym), period=selected_period, interval=dl_int, progress=False, auto_adjust=False)
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                if df is not None and not df.empty and len(df) >= 20:
-                    res = run_full_analysis(df, interval=selected_interval, symbol=sym)
-                    if res["signal"] in ["STRONG BUY", "STRONG SELL"] or scan_mode == "سهم فردي": valid.append({"symbol": sym, "result": res})
+                # ⬇️⬇️ استخدام fetch_data من data_provider ⬇️⬇️
+                df = fetch_data(sym, interval=selected_interval, period=selected_period) if fetch_data else yf.download(fix_symbol(sym), period=selected_period, interval=selected_interval, progress=False, auto_adjust=False)
+                
+                if df is not None and not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                    if len(df) >= 20:
+                        res = run_full_analysis(df, interval=selected_interval, symbol=sym)
+                        if res["signal"] in ["STRONG BUY", "STRONG SELL"] or scan_mode == "سهم فردي": 
+                            valid.append({"symbol": sym, "result": res})
                 else: error_log.append(f"⚠️ {sym}: لا توجد بيانات")
             except Exception as e: error_log.append(f"❌ {sym}: {type(e).__name__}: {e}")
         s_txt.empty(); p_bar.empty()
@@ -760,7 +584,7 @@ else:
             live_nodes = active_res.get("nodes") or active_res.get("pattern_nodes")
             if isinstance(live_nodes, list) and live_nodes:
                 sn = sorted(live_nodes, key=lambda x: pd.to_datetime(x[0]))
-                fig.add_trace(go.Scatter(x=[n[0] for n in sn], y=[n[1] for n in sn], mode="lines+markers", name="النمط المكتشف", line=dict(color="#9C27B0", width=2), marker=dict(size=8)))
+                fig.add_trace(go.Scatter(x=[n[0] for n in sn], y=[n[1] for n in sn], mode="lines+markers", name="النمط المكتشف", line=dict(color="#9C27B0", width=2)))
                 
             for val, col, txt in [(active_res.get('entry'), "#2196F3", "دخول"), (active_res.get('sl'), "#F44336", "وقف"), (active_res.get('tp'), "#4CAF50", "هدف")]:
                 if val: fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
@@ -774,39 +598,3 @@ else:
                 if st.button("⬅️ السابق", use_container_width=True, key="live_prev_bottom"): st.session_state["live_si"] = max(0, si - 1); st.rerun()
             with n6:
                 if st.button("التالي ➡️", use_container_width=True, key="live_next_bottom"): st.session_state["live_si"] = min(len(sigs)-1, si + 1); st.rerun()
-
-        # ⬇️⬇️ الإشارات القريبة (Near Signals) ⬇️⬇️
-        st.markdown("---")
-        st.markdown("#### ⏳ مراقبة الإشارات القريبة (Near Signals)")
-        col_prox, col_limit = st.columns([3, 1])
-        with col_prox: proximity_pct = st.slider("المسافة القريبة (%):", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-        with col_limit: max_near_check = st.number_input("حد الفحص:", min_value=5, max_value=50, value=20, step=5)
-            
-        if st.button("⏳ بحث عن الإشارات القريبة", use_container_width=True):
-            near = []; p_bar2 = st.progress(0); s_txt2 = st.empty()
-            check_list = symbols[:int(max_near_check)]
-            
-            for idx, sym in enumerate(check_list):
-                s_txt2.text(f"بحث ({idx+1}/{len(check_list)}): {sym}...")
-                p_bar2.progress((idx + 1) / len(check_list))
-                try:
-                    df_n = yf.download(fix_symbol(sym), period=selected_period, interval=dl_int, progress=False, auto_adjust=False)
-                    if isinstance(df_n.columns, pd.MultiIndex): df_n.columns = df_n.columns.get_level_values(0)
-                    if df_n is not None and not df_n.empty and len(df_n) >= 30:
-                        ns = detect_near_signals(df_n, interval=selected_interval, symbol=sym, proximity_pct=proximity_pct)
-                        if ns: near.extend(ns)
-                except Exception: continue
-            s_txt2.empty(); p_bar2.empty()
-            st.session_state.near_signals = near
-            
-            if near: st.success(f"✅ تم العثور على **{len(near)}** إشارة قريبة")
-            else: st.info(f"ℹ️ لا توجد إشارات قريبة (proximity = {proximity_pct}%).")
-
-    if st.session_state.get("near_signals"):
-        with st.expander("⏳ قائمة المراقبة — إشارات قريبة من الكسر", expanded=True):
-            render_near_signals(st.session_state.near_signals)
-
-# ⬇️⬇️ حاسبة المخاطر ⬇️⬇️
-st.markdown("---")
-with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
-    render_advanced_risk_calculator(unique_id="end")
