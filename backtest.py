@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from data_provider import fetch_data, get_github_repo
 
 # ⬇️ استيراد المحرك ⬇️
@@ -14,6 +15,7 @@ except ImportError:
     st.error("تأكد من وجود ملف engine.py")
     st.stop()
 
+# ⬇️ استيراد دالة جلب العملات من الشيت ⬇️
 try:
     from ffff import get_symbols_from_sheet
     SHEET_ENABLED = True
@@ -30,18 +32,15 @@ st.markdown("""
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     
-    /* توسيع الحاوية الرئيسية وإضافة هوامش مريحة */
     .main .block-container { 
         max-width: 98% !important; 
         padding: 1.5rem 2.5rem !important; 
     }
     
-    /* تنسيق اتجاه النصوص */
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 16px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; margin-bottom: 1rem; }
     label, .stRadio label, .stTextInput label, .stSelectbox label, .stMultiSelect label { direction: rtl; text-align: right; margin-bottom: 0.5rem; }
     
-    /* تكبير وتوسيع الأزرار */
     .stButton > button { 
         direction: rtl; 
         text-align: center; 
@@ -49,11 +48,9 @@ st.markdown("""
         font-size: 1rem;
     }
     
-    /* تنسيق التنبيهات والمربعات */
     .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; padding: 1rem; }
     .stDataFrame { direction: ltr; }
     
-    /* إضافة مسافات بين الصفوف والأعمدة */
     div[data-testid="stHorizontalBlock"] { gap: 1.5rem; }
     div[data-testid="stVerticalBlock"] { gap: 1rem; }
     
@@ -82,25 +79,50 @@ def pip_size_for(symbol):
 
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
+    sheet_count = 0
     if SHEET_ENABLED:
         try:
             sheet_symbols = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
             if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
                 for x in sheet_symbols[0]: s.add(str(x).strip().upper())
+                sheet_count = len(sheet_symbols[0])
         except Exception: pass
-    return sorted(s)
+    return sorted(s), sheet_count
+
+# ⬇️⬇️ دالة الجلب الذكية (التي تسمح بالاختيار بين المصادر) ⬇️⬇️
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_smart_fetch(symbol, interval, source_choice, start_date=None, end_date=None, period=None):
+    df = None
+    force_dl = True if "الإنترنت" in source_choice else False
+    
+    # الخيار 1: GitHub أو الإنترنت (Twelve Data)
+    if "GitHub" in source_choice or "الإنترنت" in source_choice:
+        try:
+            if start_date and end_date: 
+                df = fetch_data(symbol, interval=interval, start_date=start_date, end_date=end_date, force_download=force_dl)
+            else: 
+                df = fetch_data(symbol, interval=interval, period=period, force_download=force_dl)
+        except Exception:
+            df = None
+
+    # الخيار 2: Yahoo Finance (إما بطلب من المستخدم أو كبديل تلقائي)
+    if df is None or "Yahoo" in source_choice:
+        try:
+            if start_date and end_date:
+                df = yf.download(fix_symbol(symbol), start=start_date, end=end_date, interval=interval, progress=False, auto_adjust=False)
+            else:
+                df = yf.download(fix_symbol(symbol), period=period, interval=interval, progress=False, auto_adjust=False)
+        except Exception:
+            df = None
+
+    if df is not None and isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+        
+    return df
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_fetch(symbol, interval, start_date=None, end_date=None, period=None, force_download=False):
-    try:
-        if start_date and end_date: return fetch_data(symbol, interval=interval, start_date=start_date, end_date=end_date, force_download=force_download)
-        return fetch_data(symbol, interval=interval, period=period)
-    except Exception as e: 
-        return None
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cached_backtest(symbol, interval, start_date, end_date, force_download=False):
-    df = _cached_fetch(symbol, interval, start_date, end_date, None, force_download)
+def _cached_backtest(symbol, interval, start_date, end_date, source_choice):
+    df = _cached_smart_fetch(symbol, interval, source_choice, start_date=start_date, end_date=end_date)
     if df is None or df.empty: 
         return None, None, "فشل جلب البيانات أو لا توجد بيانات في هذه الفترة.", {}
     try: 
@@ -110,16 +132,16 @@ def _cached_backtest(symbol, interval, start_date, end_date, force_download=Fals
     return df, trades, None, stats
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _cached_live(symbol, interval, period):
-    df = _cached_fetch(symbol, interval, None, None, period)
+def _cached_live(symbol, interval, period, source_choice):
+    df = _cached_smart_fetch(symbol, interval, source_choice, period=period)
     if df is None or df.empty: return None, None
     try: res = run_full_analysis(df, interval=interval, symbol=symbol)
     except Exception: return df, None
     return df, res
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _prepare_chart_data(symbol, interval, start_date, end_date):
-    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+def _prepare_chart_data(symbol, interval, start_date, end_date, source_choice):
+    df = _cached_smart_fetch(symbol, interval, source_choice, start_date=start_date, end_date=end_date)
     if df is None or df.empty: return None
     df = df.copy()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
@@ -209,7 +231,6 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     if "Volume" in df_window.columns:
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
-    # ⬇️ تكبير ارتفاع الشارت ليكون 750 بكسل ⬇️
     fig.update_layout(
         template="plotly_white", height=750, autosize=True, xaxis_rangeslider_visible=False, 
         dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=40, b=40), 
@@ -220,16 +241,16 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-all_symbols = get_available_symbols()
+all_symbols, sheet_count = get_available_symbols()
 
-# ⬇️⬇️ قسم إدارة البيانات (GitHub) - موجود بالكامل ⬇️⬇️
+# ⬇️⬇️ قسم إدارة البيانات (GitHub) ⬇️⬇️
 with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
     repo = get_github_repo()
     if repo:
         st.success(f"✅ متصل بـ: {repo.full_name}")
         
-        if SHEET_ENABLED:
-            st.info(f"📊 تم جلب **{len(all_symbols)}** عملة من الشيت + العملات الافتراضية.")
+        if sheet_count > 0:
+            st.info(f"📊 تم جلب **{sheet_count}** عملة من الشيت + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
         else:
             st.warning("⚠️ تعذر جلب العملات من الشيت (قد يكون ملف `ffff.py` مفقوداً).")
         
@@ -243,7 +264,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                     for i, sym in enumerate(all_symbols):
                         st.write(f"[{i+1}/{len(all_symbols)}] تحديث {sym}...")
                         for intv in intvs_to_dl:
-                            _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                            _cached_smart_fetch(fix_symbol(sym), intv, "الإنترنت", start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"))
                     st.cache_data.clear()
                     status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
                     
@@ -254,7 +275,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                     for i, sym in enumerate(selected_syms):
                         st.write(f"[{i+1}/{len(selected_syms)}] تحديث {sym}...")
                         for intv in intvs_to_dl:
-                            _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                            _cached_smart_fetch(fix_symbol(sym), intv, "الإنترنت", start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"))
                     st.cache_data.clear()
                     status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
                     
@@ -264,7 +285,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                 with st.status(f"جاري تحديث {single_sym}...", expanded=True) as status:
                     for intv in intvs_to_dl:
                         st.write(f"تحديث {single_sym} للإطار {intv}...")
-                        _cached_fetch(fix_symbol(single_sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                        _cached_smart_fetch(fix_symbol(single_sym), intv, "الإنترنت", start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"))
                     st.cache_data.clear()
                     status.update(label=f"✅ تم تحديث {single_sym}!", state="complete", expanded=False)
     else:
@@ -275,13 +296,14 @@ app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "�
 # ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
+    
+    # ⬇️ إعادة خيارات مصدر البيانات ⬇️
     bt_data_source = st.radio(
         "📁 مصدر البيانات للمحاكاة:",
-        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)"],
+        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
         horizontal=True,
         help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
     )
-    force_dl = True if "الإنترنت" in bt_data_source else False
 
     bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True)
     if bt_mode == "سهم فردي":
@@ -307,7 +329,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         with st.status(f"جاري محاكاة {len(bt_symbols)} رموز...", expanded=True) as status:
             for i, sym in enumerate(bt_symbols):
                 st.write(f"⏳ **جاري معالجة {sym}** (خطوة {i+1}/{len(bt_symbols)})...")
-                df, trades, error_msg, stats = _cached_backtest(fix_symbol(sym), interval, sd, ed, force_download=force_dl)
+                df, trades, error_msg, stats = _cached_backtest(fix_symbol(sym), interval, sd, ed, bt_data_source)
                 
                 if error_msg:
                     st.error(f"❌ **{sym}:** {error_msg}")
@@ -422,7 +444,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                             
                     cur = tdf.iloc[si]
                     st.write(cur.get("Trade Recommendation", ""))
-                    df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
+                    df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"], bt_data_source)
                     render_chart_fast(sym, cur, df_chart, chart_mode)
                     
                     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -435,12 +457,14 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
 # ================= LIVE SCAN MODE =================
 else:
     st.markdown("### 🚀 الماسح الحي")
+    
+    # ⬇️ إعادة خيارات مصدر البيانات ⬇️
     live_data_source = st.radio(
         "📡 مصدر البيانات:",
-        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)"],
-        horizontal=True
+        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
+        horizontal=True,
+        help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
     )
-    force_dl = True if "الإنترنت" in live_data_source else False
 
     live_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True, key="live_mode_radio")
     if live_mode == "سهم فردي":
@@ -460,7 +484,7 @@ else:
     if st.button("🚀 بدء المسح", use_container_width=True) and symbols:
         valid = []
         for sym in symbols:
-            df, res = _cached_live(fix_symbol(sym), interval, period)
+            df, res = _cached_live(fix_symbol(sym), interval, period, live_data_source)
             if res and res.get("signal") in ("STRONG BUY", "STRONG SELL"):
                 valid.append({"symbol": sym, "result": res})
         if valid:
@@ -481,7 +505,7 @@ else:
 
             ar, sym = valid[si]["result"], valid[si]["symbol"]
             st.write(f"**{sym}** - {ar['signal']}")
-            df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
+            df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None, live_data_source)
             if df_chart is not None: render_chart_fast(sym, ar, df_chart, "adaptive")
             
             st.markdown("<br><br>", unsafe_allow_html=True)
