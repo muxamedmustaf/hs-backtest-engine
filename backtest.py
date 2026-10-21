@@ -19,7 +19,7 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter Pro", page_icon="📦", layout="wide")
 
-# ⬇️⬇️ إضافة كود CSS لإخفاء القائمة الجانبية تماماً ⬇️⬇️
+# ⬇️⬇️ الإعدادات الأصلية: إخفاء القائمة الجانبية وتنسيق RTL ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -182,8 +182,9 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     if "Volume" in df_window.columns:
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
+    # تعديل الارتفاع ليكون 500 ليتناسب مع الموبايل ويترك مجالاً للأزرار
     fig.update_layout(
-        template="plotly_white", height=700, autosize=True, xaxis_rangeslider_visible=False, 
+        template="plotly_white", height=500, autosize=True, xaxis_rangeslider_visible=False, 
         dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=30, b=30), 
         yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
         yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True),
@@ -192,7 +193,6 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-# ⬇️⬇️ نقل إدارة البيانات إلى الصفحة الرئيسية بدلاً من القائمة الجانبية ⬇️⬇️
 with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح"):
     repo = get_github_repo()
     if repo:
@@ -215,7 +215,25 @@ app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "�
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
     bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True)
-    bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")] if bt_mode == "سهم فردي" else st.multiselect("اختر:", get_available_symbols(), default=["BTC-USD"])
+    
+    if bt_mode == "سهم فردي":
+        bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")]
+    else:
+        all_av_symbols = get_available_symbols()
+        
+        # ⬇️⬇️ أزرار تحديد الكل / إلغاء التحديد ⬇️⬇️
+        c_sel1, c_sel2 = st.columns(2)
+        if c_sel1.button("✅ تحديد كل عملات الشيت", use_container_width=True, key="bt_sel_all"):
+            st.session_state["bt_selected_symbols"] = all_av_symbols
+            st.rerun()
+        if c_sel2.button("❌ إلغاء التحديد", use_container_width=True, key="bt_clr_all"):
+            st.session_state["bt_selected_symbols"] = []
+            st.rerun()
+            
+        if "bt_selected_symbols" not in st.session_state:
+            st.session_state["bt_selected_symbols"] = ["BTC-USD"]
+            
+        bt_symbols = st.multiselect("اختر:", all_av_symbols, key="bt_selected_symbols")
 
     now = datetime.datetime.now()
     c1, c2, c3 = st.columns(3)
@@ -268,8 +286,60 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         all_dfs = [r["trades_df"] for r in rl if not r["trades_df"].empty]
         
         if all_dfs:
-            tab1, tab2 = st.tabs(["📉 الرسوم البيانية", "🧠 التشخيص"])
-            with tab2: st.info("قيد التطوير")
+            tab1, tab2 = st.tabs(["📉 الرسوم البيانية", "🧠 التشخيص الذكي"])
+            
+            # ⬇️⬇️ التبويب الثاني: التشخيص الذكي والتطوير الذاتي ⬇️⬇️
+            with tab2:
+                st.subheader("📊 تحليل النتائج وخطة التطوير الذاتي")
+                all_trades_df = pd.concat(all_dfs, ignore_index=True)
+                
+                # حساب الإحصائيات الدقيقة
+                closed_trades = all_trades_df[all_trades_df["Result"].isin(["WIN", "LOSS"])]
+                total_closed = len(closed_trades)
+                wins = len(closed_trades[closed_trades["Result"] == "WIN"])
+                losses = len(closed_trades[closed_trades["Result"] == "LOSS"])
+                win_rate = round((wins / total_closed * 100), 1) if total_closed > 0 else 0
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("إجمالي الصفقات المغلقة", total_closed)
+                c2.metric("الصفقات الرابحة (WIN)", wins, f"{win_rate}%", delta_color="normal")
+                c3.metric("الصفقات الخاسرة (LOSS)", losses, f"{100 - win_rate}%", delta_color="inverse")
+                
+                if losses > 0:
+                    st.markdown("### 🔍 تحليل أسباب الخسارة")
+                    loss_counts = closed_trades[closed_trades["Result"] == "LOSS"]["Loss Category"].value_counts()
+                    
+                    for cat, count in loss_counts.items():
+                        cat_ar = REASON_MAP.get(cat, {}).get("reason", cat)
+                        pct = round(count/losses*100, 1)
+                        st.write(f"- **{cat_ar}**: {count} صفقة ({pct}% من الخسائر)")
+                        
+                    st.markdown("### 💡 خطة التطوير الذاتي (توصيات المحرك)")
+                    action_plan = []
+                    
+                    # منطق التوصيات بناءً على الإحصائيات
+                    early_rev_pct = (loss_counts.get("early_reversal", 0) / total_closed) * 100
+                    mid_rev_pct = (loss_counts.get("mid_reversal", 0) / total_closed) * 100
+                    late_rev_pct = (loss_counts.get("late_reversal", 0) / total_closed) * 100
+                    
+                    if early_rev_pct > 15:
+                        action_plan.append("⚠️ **انعكاس مبكر:** السعر يرفض الكسر فوراً. **الحل:** قم بزيادة `RETEST_STRONG_CLOSE_RATIO` إلى 0.6 أو 0.7 في `engine.py` لضمان إغلاق شمعة الاختبار بقوة أكبر.")
+                    if mid_rev_pct > 15:
+                        action_plan.append("⚠️ **انعكاس متوسط:** السعر يصل لمنتصف الهدف ثم يرتد. **الحل:** قم بتعديل `TRAILING_LEVELS_HEAD` لتأمين الربح مبكراً (مثلاً نقل الستوب لنقطة الدخول عند وصول 40% من الهدف).")
+                    if late_rev_pct > 10:
+                        action_plan.append("⚠️ **انعكاس متأخر:** السعر يصل لـ 70% من الهدف ثم يرتد. **الحل:** الهدف بعيد جداً. جرب تقليل `TP_MEASURED_MOVE_FACTOR` إلى 0.8.")
+                    if win_rate < 40:
+                        action_plan.append("📉 **أداء ضعيف:** جرب تفعيل فلتر الاتجاه العام `USE_TREND_FILTER=True` (EMA200) أو فلتر الحجم `USE_VOLUME_FILTER=True` لتصفية الإشارات الوهمية.")
+                        
+                    if not action_plan:
+                        action_plan.append("✅ الأداء متوازن ولا توجد انحرافات خطيرة في هذه الفترة. يمكنك تجربة تحسين الإعدادات يدوياً أو تغيير الإطار الزمني.")
+                        
+                    for action in action_plan:
+                        st.info(action)
+                else:
+                    st.success("🎉 لا توجد صفقات خاسرة في هذه الفترة! الإعدادات ممتازة جداً.")
+
+            # ⬇️⬇️ التبويب الأول: الرسوم البيانية ⬇️⬇️
             with tab1:
                 opts = [f"{r['symbol']} ({r['total']})" for r in rl]
                 ai = rl[opts.index(st.selectbox("اختر الأصل:", opts))]
@@ -279,18 +349,28 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     chart_mode = "adaptive" if "المتكيف" in chart_mode_label else "full"
                     
                     si = st.session_state.get(f"signal_index_{sym}", len(tdf)-1)
+                    
+                    # أزرار التنقل العلوية
                     n1, n2, n3 = st.columns([1, 2, 1])
                     with n1:
-                        if st.button("⬅️ السابق", use_container_width=True): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
+                        if st.button("⬅️ السابق", use_container_width=True, key="btn_prev_top"): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
                     with n2:
                         st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(tdf)}</div>", unsafe_allow_html=True)
                     with n3:
-                        if st.button("التالي ➡️", use_container_width=True): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
+                        if st.button("التالي ➡️", use_container_width=True, key="btn_next_top"): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
                             
                     cur = tdf.iloc[si]
                     st.write(cur.get("Trade Recommendation", ""))
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
                     render_chart_fast(sym, cur, df_chart, chart_mode)
+                    
+                    # أزرار التنقل السفلية (للموبايل)
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    n4, n5, n6 = st.columns([1, 2, 1])
+                    with n4:
+                        if st.button("⬅️ السابق", key="btn_prev_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
+                    with n6:
+                        if st.button("التالي ➡️", key="btn_next_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
     else:
         if st.session_state.get("bt_results") == []:
              st.error("🔍 **لماذا لا تظهر نتائج؟** محرك البحث (`engine.py`) يعتمد على شروط صارمة جداً (موجة حافزة -> صندوق تجميع -> كسر -> إعادة اختبار). من المحتمل جداً أن الفترة الزمنية المحددة أو الإطار الزمني (1h) لا يحتوي على نماذج مكتملة. جرب تغيير الإطار الزمني إلى (4h) أو (1d)، أو قم بتوسيع الفترة الزمنية.")
@@ -298,7 +378,25 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
 else:
     st.markdown("### 🚀 الماسح الحي")
     live_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True, key="live_mode_radio")
-    symbols = [st.text_input("رمز:", value="BTC-USD", key="live_sym_input")] if live_mode == "سهم فردي" else st.multiselect("اختر العملات:", get_available_symbols(), default=["BTC-USD"])
+    
+    if live_mode == "سهم فردي":
+        symbols = [st.text_input("رمز:", value="BTC-USD", key="live_sym_input")]
+    else:
+        all_av_symbols = get_available_symbols()
+        
+        # ⬇️⬇️ أزرار تحديد الكل / إلغاء التحديد (الماسح الحي) ⬇️⬇️
+        c_sel1, c_sel2 = st.columns(2)
+        if c_sel1.button("✅ تحديد كل عملات الشيت", use_container_width=True, key="live_sel_all"):
+            st.session_state["live_selected_symbols"] = all_av_symbols
+            st.rerun()
+        if c_sel2.button("❌ إلغاء التحديد", use_container_width=True, key="live_clr_all"):
+            st.session_state["live_selected_symbols"] = []
+            st.rerun()
+            
+        if "live_selected_symbols" not in st.session_state:
+            st.session_state["live_selected_symbols"] = ["BTC-USD"]
+            
+        symbols = st.multiselect("اختر العملات:", all_av_symbols, key="live_selected_symbols")
 
     interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
     period = st.selectbox("النطاق:", ALL_PERIODS, index=2)
@@ -313,15 +411,24 @@ else:
             st.success(f"تم العثور على {len(valid)} إشارة")
             si = st.session_state.get("live_signal_index", 0)
             
+            # أزرار التنقل العلوية
             n1, n2, n3 = st.columns([1, 2, 1])
             with n1:
-                if st.button("⬅️ السابق", use_container_width=True): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
+                if st.button("⬅️ السابق", use_container_width=True, key="live_prev_top"): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
             with n2:
                 st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(valid)}</div>", unsafe_allow_html=True)
             with n3:
-                if st.button("التالي ➡️", use_container_width=True): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
+                if st.button("التالي ➡️", use_container_width=True, key="live_next_top"): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
 
             ar, sym = valid[si]["result"], valid[si]["symbol"]
             st.write(f"**{sym}** - {ar['signal']}")
             df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
             if df_chart is not None: render_chart_fast(sym, ar, df_chart, "adaptive")
+            
+            # أزرار التنقل السفلية (للماسح الحي على الموبايل)
+            st.markdown("<br>", unsafe_allow_html=True)
+            n4, n5, n6 = st.columns([1, 2, 1])
+            with n4:
+                if st.button("⬅️ السابق", key="live_prev_bottom", use_container_width=True): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
+            with n6:
+                if st.button("التالي ➡️", key="live_next_bottom", use_container_width=True): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
