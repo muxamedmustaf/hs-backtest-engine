@@ -6,10 +6,10 @@ CONFIG = {
     "IMPULSE_MIN_PCT": 0.025,      
     "IMPULSE_MAX_LOOKBACK": 40,    
     
-    # ⬇️ التعديلات الجديدة التي طلبتها ⬇️
-    "BOX_MIN_CANDLES": 8,          # أقل عدد شمعات للتصحيح (8)
-    "BOX_MAX_CANDLES": 60,         # أقصى عدد شمعات للتصحيح (60)
-    "BOX_MAX_HEIGHT_PCT": 0.015,   # أقصى مسافة بين القمة والقاع (1.5%)
+    # ⬇️ شروط التجمع (الصندوق) ⬇️
+    "BOX_MIN_CANDLES": 8,          # أقل عدد شمعات
+    "BOX_MAX_CANDLES": 60,         # أقصى عدد شمعات
+    "BOX_MAX_HEIGHT_PCT": 0.015,   # أقصى مسافة 1.5%
     
     "MAX_RETRACEMENT_PCT": 0.50,   
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
@@ -19,20 +19,26 @@ CONFIG = {
     "RETEST_STRONG_CLOSE_RATIO": 0.5, 
     "LIVE_MAX_BREAKOUT_CANDLES": 10, 
     
-    # ⬇️ تعديل الهدف ليكون ضعف الوقف 1:2 ⬇️
+    # ⬇️ الهدف والتريلينج ⬇️
     "TRAILING_LEVELS_HEAD": [(0.50, 0.0), (0.75, 0.5), (1.00, 0.8)],
-    
     "SAFE_SL_MARGIN": 0.05,        
     "USE_SAFE_SL": True,
+    
+    # ⬇️ المتوسطات والفلاتر ⬇️
     "VOLUME_MA_PERIOD": 20,
     "TREND_EMA_PERIOD": 200,
-    
-    # ⬇️ فلتر الدعوم والمقاومات التاريخية ⬇️
     "USE_SR_FILTER": True,
     "SR_LOOKBACK": 150,
     "SR_WINDOW": 5,
     
-    # ⬇️ منع تداخل الصفقات ⬇️
+    # ⬇️ فلتر RSI المحدث (بناءً على طلبك الجديد) ⬇️
+    "USE_RSI_FILTER": True,
+    "RSI_PERIOD": 14,
+    "RSI_BUY_MIN": 30,   # للشراء: أكبر من 30
+    "RSI_BUY_MAX": 75,   # للشراء: أصغر من 75
+    "RSI_SELL_MIN": 25,  # للبيع: أكبر من 25
+    "RSI_SELL_MAX": 50,  # للبيع: أصغر من 50
+    
     "MIN_GAP_BETWEEN_TRADES": 5
 }
 
@@ -51,6 +57,8 @@ def get_symbol_config(symbol): return CONFIG.copy()
 
 def calculate_indicators(df, cfg=None):
     df = df.copy()
+    
+    # مؤشر الحجم
     if "Volume" in df.columns:
         v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
         df["Volume"] = v
@@ -58,8 +66,19 @@ def calculate_indicators(df, cfg=None):
     else:
         df["Volume"] = 0.0
         df["Volume_MA"] = 0.0
+        
+    # المتوسطات
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=CONFIG["TREND_EMA_PERIOD"], adjust=False).mean()
+    
+    # ⬇️ حساب مؤشر RSI ⬇️
+    delta = df["Close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=CONFIG.get("RSI_PERIOD", 14)).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=CONFIG.get("RSI_PERIOD", 14)).mean()
+    rs = gain / loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+    df["RSI"] = df["RSI"].fillna(50) # تعبئة القيم الفارغة بـ 50
+    
     return df
 
 def get_major_levels(df, current_idx, lookback=150, window=5):
@@ -91,7 +110,6 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     else: safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
     final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
     
-    # ⬇️ نسبة الهدف 1:2 ⬇️
     risk_distance = abs(entry - final_sl)
     if risk_distance == 0: risk_distance = 1e-5
     target = risk_distance * 2.0  
@@ -162,8 +180,10 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
     if n < 100: return patterns, {}
 
     highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
+    rsi_vals = df["RSI"].values if "RSI" in df.columns else np.full(n, 50)
+    
     last_entry_idx = -1000
-    stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0}
+    stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0, "rejected_rsi": 0}
     
     for i in range(60, n):
         if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]: continue
@@ -188,7 +208,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         if is_bull_breakout: box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
         else: box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
 
-        # ⬇️ تطبيق شرط الحد الأدنى والأقصى لعدد الشموع ⬇️
         box_length = i - box_start_idx
         if box_start_idx >= i or box_length < CONFIG["BOX_MIN_CANDLES"] or box_length > CONFIG.get("BOX_MAX_CANDLES", 60): 
             continue
@@ -200,7 +219,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         box_height = box_top - box_bottom
         box_mid = (box_top + box_bottom) / 2
         
-        # ⬇️ تطبيق شرط 1.5% كأقصى مسافة بين القمة والقاع ⬇️
         if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
         if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
 
@@ -208,6 +226,20 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         actual_entry_idx = i
         actual_entry_price = closes[i]
         structural_sl = lows[i] if is_bull_breakout else highs[i]
+
+        # ⬇️ تطبيق فلتر RSI المحدث ⬇️
+        if CONFIG.get("USE_RSI_FILTER", True):
+            current_rsi = rsi_vals[i]
+            
+            # شرط الشراء: 30 < RSI < 75
+            if is_bull_breakout and not (CONFIG["RSI_BUY_MIN"] < current_rsi < CONFIG["RSI_BUY_MAX"]): 
+                stats["rejected_rsi"] += 1
+                continue
+                
+            # شرط البيع: 25 < RSI < 50
+            if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
+                stats["rejected_rsi"] += 1
+                continue
 
         if CONFIG.get("REQUIRE_RETEST", False):
             retest_found = False
@@ -245,7 +277,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
             pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bullish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"}
             pattern.update(simulate_trade(pattern, df))
-            pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
+            pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}\n- RSI: {round(rsi_vals[actual_entry_idx], 1)}"
             patterns.append(pattern)
             last_entry_idx = actual_entry_idx
             
@@ -265,7 +297,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
             pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bearish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"}
             pattern.update(simulate_trade(pattern, df))
-            pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
+            pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}\n- RSI: {round(rsi_vals[actual_entry_idx], 1)}"
             patterns.append(pattern)
             last_entry_idx = actual_entry_idx
             
