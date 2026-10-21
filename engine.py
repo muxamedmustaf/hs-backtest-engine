@@ -6,9 +6,9 @@ CONFIG = {
     "IMPULSE_MIN_PCT": 0.025,      
     "IMPULSE_MAX_LOOKBACK": 40,    
     
-    # ⬇️ شروط التجمع (الصندوق) ⬇️
-    "BOX_MIN_CANDLES": 8,          # أقل عدد شمعات
-    "BOX_MAX_CANDLES": 60,         # أقصى عدد شمعات
+    # ⬇️ شروط التجمع (تم تعديلها لتجد إشارات أكثر) ⬇️
+    "BOX_MIN_CANDLES": 8,          # 8 شمعات كحد أدنى
+    "BOX_MAX_CANDLES": 60,         # 60 شمعة كحد أقصى
     "BOX_MAX_HEIGHT_PCT": 0.015,   # أقصى مسافة 1.5%
     
     "MAX_RETRACEMENT_PCT": 0.50,   
@@ -24,20 +24,20 @@ CONFIG = {
     "SAFE_SL_MARGIN": 0.05,        
     "USE_SAFE_SL": True,
     
-    # ⬇️ المتوسطات والفلاتر ⬇️
+    # ⬇️ الفلاتر ⬇️
     "VOLUME_MA_PERIOD": 20,
     "TREND_EMA_PERIOD": 200,
     "USE_SR_FILTER": True,
     "SR_LOOKBACK": 150,
     "SR_WINDOW": 5,
     
-    # ⬇️ فلتر RSI المحدث (بناءً على طلبك الجديد) ⬇️
+    # ⬇️ فلتر RSI (تطبيق شرطك بدقة) ⬇️
     "USE_RSI_FILTER": True,
     "RSI_PERIOD": 14,
-    "RSI_BUY_MIN": 30,   # للشراء: أكبر من 30
-    "RSI_BUY_MAX": 75,   # للشراء: أصغر من 75
-    "RSI_SELL_MIN": 25,  # للبيع: أكبر من 25
-    "RSI_SELL_MAX": 50,  # للبيع: أصغر من 50
+    "RSI_BUY_MIN": 30,   # Buy > 30
+    "RSI_BUY_MAX": 75,   # Buy < 75
+    "RSI_SELL_MIN": 25,  # Sell > 25
+    "RSI_SELL_MAX": 50,  # Sell < 50
     
     "MIN_GAP_BETWEEN_TRADES": 5
 }
@@ -57,8 +57,6 @@ def get_symbol_config(symbol): return CONFIG.copy()
 
 def calculate_indicators(df, cfg=None):
     df = df.copy()
-    
-    # مؤشر الحجم
     if "Volume" in df.columns:
         v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
         df["Volume"] = v
@@ -67,17 +65,15 @@ def calculate_indicators(df, cfg=None):
         df["Volume"] = 0.0
         df["Volume_MA"] = 0.0
         
-    # المتوسطات
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=CONFIG["TREND_EMA_PERIOD"], adjust=False).mean()
     
-    # ⬇️ حساب مؤشر RSI ⬇️
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=CONFIG.get("RSI_PERIOD", 14)).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=CONFIG.get("RSI_PERIOD", 14)).mean()
     rs = gain / loss
     df["RSI"] = 100 - (100 / (1 + rs))
-    df["RSI"] = df["RSI"].fillna(50) # تعبئة القيم الفارغة بـ 50
+    df["RSI"] = df["RSI"].fillna(50)
     
     return df
 
@@ -186,6 +182,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
     stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0, "rejected_rsi": 0}
     
     for i in range(60, n):
+        # منع التداخل
         if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]: continue
         candle_body = abs(closes[i] - opens[i])
         if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
@@ -209,8 +206,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         else: box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
 
         box_length = i - box_start_idx
-        if box_start_idx >= i or box_length < CONFIG["BOX_MIN_CANDLES"] or box_length > CONFIG.get("BOX_MAX_CANDLES", 60): 
-            continue
+        if box_start_idx >= i or box_length < CONFIG["BOX_MIN_CANDLES"] or box_length > CONFIG.get("BOX_MAX_CANDLES", 60): continue
 
         box_highs = highs[box_start_idx:i]
         box_lows = lows[box_start_idx:i]
@@ -227,16 +223,12 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         actual_entry_price = closes[i]
         structural_sl = lows[i] if is_bull_breakout else highs[i]
 
-        # ⬇️ تطبيق فلتر RSI المحدث ⬇️
+        # ⬇️ تطبيق شرط RSI كما طلبت ⬇️
         if CONFIG.get("USE_RSI_FILTER", True):
             current_rsi = rsi_vals[i]
-            
-            # شرط الشراء: 30 < RSI < 75
             if is_bull_breakout and not (CONFIG["RSI_BUY_MIN"] < current_rsi < CONFIG["RSI_BUY_MAX"]): 
                 stats["rejected_rsi"] += 1
                 continue
-                
-            # شرط البيع: 25 < RSI < 50
             if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
                 stats["rejected_rsi"] += 1
                 continue
