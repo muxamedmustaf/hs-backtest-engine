@@ -7,11 +7,12 @@ import pandas as pd
 import numpy as np
 from data_provider import fetch_data, get_github_repo
 
-# ⬇️⬇️ استيراد آمن للمحرك ⬇️⬇️
+# ⬇️ استيراد المحرك ⬇️
 try:
     from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals, diagnose_filters
 except ImportError:
-    diagnose_filters = None
+    st.error("تأكد من وجود ملف engine.py")
+    st.stop()
 
 try:
     from ffff import get_symbols_from_sheet
@@ -20,7 +21,6 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter Pro - Smart", page_icon="📦", layout="wide")
 
-# ⬇️⬇️ تحسينات CSS للموبايل وإخفاء القوائم الجانبية ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -67,6 +67,42 @@ def get_available_symbols():
     except Exception: pass
     return sorted(s)
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_fetch(symbol, interval, start_date=None, end_date=None, period=None, force_download=False):
+    try:
+        if start_date and end_date: return fetch_data(symbol, interval=interval, start_date=start_date, end_date=end_date, force_download=force_download)
+        return fetch_data(symbol, interval=interval, period=period)
+    except Exception as e: 
+        return None
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_backtest(symbol, interval, start_date, end_date, force_download=False):
+    df = _cached_fetch(symbol, interval, start_date, end_date, None, force_download)
+    if df is None or df.empty: 
+        return None, None, "فشل جلب البيانات أو لا توجد بيانات في هذه الفترة.", {}
+    try: 
+        trades, stats = backtest_strategy(df, interval=interval, symbol=symbol)
+    except Exception as e: 
+        return df, None, f"خطأ داخل محرك البحث (engine.py): {str(e)}", {}
+    return df, trades, None, stats
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_live(symbol, interval, period):
+    df = _cached_fetch(symbol, interval, None, None, period)
+    if df is None or df.empty: return None, None
+    try: res = run_full_analysis(df, interval=interval, symbol=symbol)
+    except Exception: return df, None
+    return df, res
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _prepare_chart_data(symbol, interval, start_date, end_date):
+    df = _cached_fetch(symbol, interval, start_date, end_date, None)
+    if df is None or df.empty: return None
+    df = df.copy()
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    return df
+
 def compute_pips(df):
     if df is None or df.empty: return df
     df = df.copy()
@@ -97,56 +133,6 @@ def compute_dollar_pnl(df, lot=0.01):
         else: pnl = move * lot * 100000 / x if x else None
         usd.append(round(pnl, 2) if pnl is not None else None)
     df["PnL_USD"] = usd
-    return df
-
-# ⬇️⬇️ دالة جلب البيانات الذكية (مع دعم force_download للـ GitHub) ⬇️⬇️
-def smart_fetch(symbol, interval, source_choice, force_download=False, start_date=None, end_date=None, period=None):
-    logs = []
-    df = None
-    source_used = ""
-    
-    # 1. إذا اختار المستخدم GitHub أو الإنترنت المباشر (Twelve Data)
-    if "GitHub" in source_choice or "الإنترنت" in source_choice:
-        try:
-            if start_date and end_date: 
-                df = fetch_data(symbol, interval=interval, start_date=start_date, end_date=end_date, force_download=force_download)
-            else: 
-                df = fetch_data(symbol, interval=interval, period=period, force_download=force_download)
-                
-            if df is None or df.empty:
-                raise ValueError("المصدر المدمج أرجع بيانات فارغة (0 شمعة).")
-            source_used = "GitHub / API"
-        except Exception as e:
-            logs.append(f"⚠️ فشل الجلب من ({source_choice}): {str(e)}")
-            df = None
-            
-    # 2. إذا فشل، أو إذا اختار المستخدم Yahoo Finance
-    if df is None:
-        try:
-            if start_date and end_date:
-                df = yf.download(fix_symbol(symbol), start=start_date, end=end_date, interval=interval, progress=False, auto_adjust=False)
-            else:
-                df = yf.download(fix_symbol(symbol), period=period, interval=interval, progress=False, auto_adjust=False)
-            if df is None or df.empty:
-                raise ValueError("Yahoo Finance أرجع بيانات فارغة (0 شمعة).")
-            source_used = "Yahoo Finance (احتياطي)"
-            logs.append("✅ تم التبديل التلقائي إلى Yahoo Finance.")
-        except Exception as e:
-            logs.append(f"❌ فشل الجلب من Yahoo Finance: {str(e)}")
-            df = None
-            
-    if df is not None and isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
-    return df, source_used, logs
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _prepare_chart_data(symbol, interval, start_date, end_date):
-    df = fetch_data(fix_symbol(symbol), interval, start_date, end_date, None)
-    if df is None or df.empty: return None
-    df = df.copy()
-    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
     return df
 
 def draw_box_pattern(fig, source):
@@ -210,41 +196,71 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-# ⬇️⬇️ إدارة الجلسة ⬇️⬇️
-for k, v in [
-    ("bt_results", []), ("bt_dfs", {}), ("bt_sd", ""), ("bt_ed", ""), ("bt_int", "1h"),
-    ("live_signals", []), ("global_error_logs", [])
-]:
-    if k not in st.session_state: st.session_state[k] = v
-
-with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح"):
+# ⬇️⬇️ قسم إدارة البيانات (تم تحديثه بالكامل) ⬇️⬇️
+with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
     repo = get_github_repo()
     if repo:
         st.success(f"✅ متصل بـ: {repo.full_name}")
-        if st.button("📥 تحديث وحفظ البيانات (الكل)", use_container_width=True):
-            av = get_available_symbols()[:10]
-            intervals = ["1h", "4h"]
-            with st.status("جاري تحديث البيانات وحفظها...", expanded=True) as status:
-                for i, sym in enumerate(av):
-                    st.write(f"تحديث {sym}...")
-                    for intv in intervals:
-                        fetch_data(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
-                st.cache_data.clear()
-                status.update(label="✅ تم التحديث والحفظ في GitHub!", state="complete", expanded=False)
+        
+        # اختيار طريقة التنزيل
+        dl_mode = st.radio(
+            "طريقة التنزيل:", 
+            ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], 
+            horizontal=True, 
+            key="dl_mode"
+        )
+        
+        # اختيار الأطُر الزمنية
+        intvs_to_dl = st.multiselect(
+            "اختر الأطُر الزمنية للتنزيل:", 
+            ["1h", "4h", "1d"], 
+            default=["1h", "4h"], 
+            key="dl_intvs"
+        )
+        
+        if dl_mode == "الكل (شيت)":
+            st.info("سيتم تنزيل جميع العملات الموجودة في الشيت (قد يستغرق بعض الوقت).")
+            if st.button("📥 تنزيل وحفظ الكل", use_container_width=True):
+                av = get_available_symbols()
+                with st.status("جاري تحديث البيانات وحفظها...", expanded=True) as status:
+                    for i, sym in enumerate(av):
+                        st.write(f"[{i+1}/{len(av)}] تحديث {sym}...")
+                        for intv in intvs_to_dl:
+                            _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                    st.cache_data.clear()
+                    status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
+                    
+        elif dl_mode == "مجموعة محددة":
+            av = get_available_symbols()
+            selected_syms = st.multiselect("اختر العملات المراد تنزيلها:", av, default=av[:5], key="dl_selected_syms")
+            if st.button("📥 تنزيل وحفظ المحدد", use_container_width=True) and selected_syms:
+                with st.status(f"جاري تحديث {len(selected_syms)} عملات...", expanded=True) as status:
+                    for i, sym in enumerate(selected_syms):
+                        st.write(f"[{i+1}/{len(selected_syms)}] تحديث {sym}...")
+                        for intv in intvs_to_dl:
+                            _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                    st.cache_data.clear()
+                    status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
+                    
+        elif dl_mode == "عملة واحدة":
+            single_sym = st.text_input("أدخل رمز العملة (مثال: XAUUSD أو EURUSD):", value="BTC-USD", key="single_dl_sym")
+            if st.button("📥 تنزيل وحفظ العملة", use_container_width=True) and single_sym:
+                with st.status(f"جاري تحديث {single_sym}...", expanded=True) as status:
+                    for intv in intvs_to_dl:
+                        st.write(f"تحديث {single_sym} للإطار {intv}...")
+                        _cached_fetch(fix_symbol(single_sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
+                    st.cache_data.clear()
+                    status.update(label=f"✅ تم تحديث {single_sym}!", state="complete", expanded=False)
     else:
         st.warning("⚠️ لم يتم ربط GitHub. يرجى إضافة التوكن في الإعدادات.")
 
 app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "🧪 مختبر الاختبار الرجعي"], horizontal=True)
-st.markdown("---")
 
-# ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
-    
-    # ⬇️⬇️ خيار مصدر البيانات (كما كان في كودك الأصلي) ⬇️⬇️
     bt_data_source = st.radio(
         "📁 مصدر البيانات للمحاكاة:",
-        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
+        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)"],
         horizontal=True,
         help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
     )
@@ -270,28 +286,27 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
     interval = c3.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
 
     if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols:
-        results, dfs = [], {}
-        st.session_state.global_error_logs = []
+        results, dfs, all_stats = [], {}, []
         
         with st.status(f"جاري محاكاة {len(bt_symbols)} رموز...", expanded=True) as status:
             for i, sym in enumerate(bt_symbols):
                 st.write(f"⏳ **جاري معالجة {sym}** (خطوة {i+1}/{len(bt_symbols)})...")
+                df, trades, error_msg, stats = _cached_backtest(fix_symbol(sym), interval, sd, ed, force_download=force_dl)
                 
-                df, source_used, logs = smart_fetch(fix_symbol(sym), interval, bt_data_source, force_download=force_dl, start_date=sd, end_date=ed)
-                for log in logs: st.session_state.global_error_logs.append(f"[{sym}] {log}")
-                
-                if df is not None and not df.empty:
-                    try:
-                        trades = backtest_strategy(df, interval=interval, symbol=sym)
-                        if trades:
-                            tdf = pd.DataFrame(trades)
-                            results.append({"symbol": sym, "trades_df": tdf, "total": len(tdf)})
-                            st.success(f"✅ تم العثور على {len(tdf)} صفقة لـ {sym}.")
-                        else:
-                            st.warning(f"⚠️ **{sym}:** لم يتم العثور على أي نماذج.")
-                        dfs[sym] = df
-                    except Exception as e:
-                        st.session_state.global_error_logs.append(f"[{sym}] ❌ خطأ في المحرك: {str(e)}")
+                if error_msg:
+                    st.error(f"❌ **{sym}:** {error_msg}")
+                    continue 
+                    
+                if df is not None:
+                    dfs[sym] = df
+                    if stats: stats["symbol"] = sym; all_stats.append(stats)
+                    
+                    if trades:
+                        tdf = pd.DataFrame(trades)
+                        results.append({"symbol": sym, "trades_df": tdf, "total": len(tdf)})
+                        st.success(f"✅ تم العثور على {len(tdf)} صفقة لـ {sym}.")
+                    else:
+                        st.warning(f"⚠️ **{sym}:** لم يتم العثور على أي نماذج تتطابق مع شروط 'الصناديق' في هذه الفترة.")
             
             if results:
                 status.update(label=f"✅ اكتملت المحاكاة. تم العثور على صفقات في {len(results)} أصول.", state="complete", expanded=False)
@@ -300,21 +315,17 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
 
         st.session_state["bt_results"] = results
         st.session_state["bt_dfs"] = dfs
+        st.session_state["bt_stats"] = all_stats
         st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_int"] = sd, ed, interval
 
-    # سجل التشخيص الذكي
-    if st.session_state.global_error_logs:
-        with st.expander("🚨 سجل التشخيص الذكي (أخطاء المصادر والحدود)", expanded=True):
-            for log in st.session_state.global_error_logs:
-                if "❌" in log or "⚠️" in log: st.error(log)
-                else: st.info(log)
-
-    if st.session_state["bt_results"]:
+    if "bt_results" in st.session_state and st.session_state["bt_results"]:
         rl = st.session_state["bt_results"]
+        all_stats = st.session_state.get("bt_stats", [])
         all_dfs = [r["trades_df"] for r in rl if not r["trades_df"].empty]
         
         if all_dfs:
-            tab1, tab2 = st.tabs(["📉 الرسوم البيانية", "🧠 التشخيص الذكي"])
+            tab1, tab2, tab3 = st.tabs(["📉 الرسوم البيانية", "🧠 التشخيص الذكي", "🛡️ تقرير الفلاتر (لماذا رُفضت الصفقات؟)"])
+            
             with tab2:
                 st.subheader("📊 تحليل النتائج وخطة التطوير الذاتي")
                 combined_df = pd.concat(all_dfs, ignore_index=True)
@@ -334,14 +345,30 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     for cat, count in loss_counts.items():
                         cat_ar = REASON_MAP.get(cat, {}).get("reason", cat)
                         st.write(f"- **{cat_ar}**: {count} صفقة ({round(count/losses*100, 1)}%)")
-                    
-                    if loss_counts.get("early_reversal", 0) / len(closed) > 0.15:
-                        st.warning("⚠️ **انعكاس مبكر:** السعر يرفض الكسر فوراً. **الحل:** قم بزيادة `RETEST_STRONG_CLOSE_RATIO` إلى 0.6 في `engine.py`.")
-                    if loss_counts.get("mid_reversal", 0) / len(closed) > 0.15:
-                        st.warning("⚠️ **انعكاس متوسط:** السعر يصل لمنتصف الهدف ثم يرتد. **الحل:** قم بتعديل `TRAILING_LEVELS_HEAD` لتأمين الربح مبكراً.")
-                    if wr < 40:
-                        st.warning("📉 **أداء ضعيف:** جرب تفعيل فلتر الاتجاه العام `USE_TREND_FILTER=True` في `engine.py`.")
             
+            with tab3:
+                st.subheader("🛡️ تقرير الفلاتر (Filter Diagnostics)")
+                st.markdown("هذا التقرير يوضح لك عدد النماذج التي تم اكتشافها وعدد التي تم رفضها بسبب الفلاتر الصارمة (مثل فلتر الدعوم والمقاومات أو إعادة الاختبار).")
+                
+                if all_stats:
+                    for st_item in all_stats:
+                        sym = st_item["symbol"]
+                        raw = st_item.get("raw_breakouts", 0)
+                        rej_retest = st_item.get("rejected_retest", 0)
+                        rej_sr = st_item.get("rejected_sr", 0)
+                        accepted = raw - rej_retest - rej_sr
+                        
+                        st.markdown(f"#### {sym}")
+                        sc1, sc2, sc3, sc4 = st.columns(4)
+                        sc1.metric("كسرات خام (Raw)", raw)
+                        sc2.metric("مرفوضة (إعادة اختبار)", rej_retest)
+                        sc3.metric("مرفوضة (دعوم/مقاومات)", rej_sr)
+                        sc4.metric("مقبولة (ناجحة)", accepted)
+                        
+                        if accepted == 0 and raw > 0:
+                            st.warning(f"⚠️ المحرك وجد {raw} كسر صندوق، لكن الفلاتر رفضتها كلها! جرب إيقاف `USE_SR_FILTER` في `engine.py` لمعرفة الفرق.")
+                        st.markdown("---")
+
             with tab1:
                 opts = [f"{r['symbol']} ({r['total']})" for r in rl]
                 ai = rl[opts.index(st.selectbox("اختر الأصل:", opts))]
@@ -352,8 +379,10 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     chart_mode = "adaptive" if "المتكيف" in chart_mode_label else "full"
                     
                     si = st.session_state.get(f"signal_index_{sym}", len(tdf)-1)
-                    
-                    # أزرار علوية
+                    if si >= len(tdf) or si < 0:
+                        si = len(tdf) - 1
+                        st.session_state[f"signal_index_{sym}"] = si
+
                     n1, n2, n3 = st.columns([1, 2, 1])
                     with n1:
                         if st.button("⬅️ السابق", use_container_width=True, key="bt_prev_top"): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
@@ -367,26 +396,19 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"])
                     render_chart_fast(sym, cur, df_chart, chart_mode)
                     
-                    # أزرار سفلية
                     st.markdown("<br>", unsafe_allow_html=True)
                     n4, n5, n6 = st.columns([1, 2, 1])
                     with n4:
                         if st.button("⬅️ السابق", key="bt_prev_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
                     with n6:
                         if st.button("التالي ➡️", key="bt_next_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
-    else:
-        if st.session_state.get("bt_results") == []:
-             st.error("🔍 **لماذا لا تظهر نتائج؟** محرك البحث (`engine.py`) يعتمد على شروط صارمة جداً (موجة حافزة -> صندوق تجميع -> كسر -> إعادة اختبار). جرب تغيير الإطار الزمني إلى (4h) أو (1d)، أو قم بتوسيع الفترة الزمنية.")
 
-# ================= LIVE SCAN MODE =================
 else:
     st.markdown("### 🚀 الماسح الحي")
-    
     live_data_source = st.radio(
         "📡 مصدر البيانات:",
-        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
-        horizontal=True,
-        help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
+        ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)"],
+        horizontal=True
     )
     force_dl = True if "الإنترنت" in live_data_source else False
 
@@ -408,52 +430,34 @@ else:
     
     if st.button("🚀 بدء المسح", use_container_width=True) and symbols:
         valid = []
-        st.session_state.global_error_logs = []
-        
         for sym in symbols:
-            df, source_used, logs = smart_fetch(fix_symbol(sym), interval, live_data_source, force_download=force_dl, period=period)
-            for log in logs: st.session_state.global_error_logs.append(f"[{sym}] {log}")
+            df, res = _cached_live(fix_symbol(sym), interval, period)
+            if res and res.get("signal") in ("STRONG BUY", "STRONG SELL"):
+                valid.append({"symbol": sym, "result": res})
+        if valid:
+            st.success(f"تم العثور على {len(valid)} إشارة")
             
-            if df is not None and not df.empty:
-                try:
-                    res = run_full_analysis(df, interval=interval, symbol=sym)
-                    if res and res.get("signal") in ("STRONG BUY", "STRONG SELL"):
-                        valid.append({"symbol": sym, "result": res})
-                except Exception as e:
-                    st.session_state.global_error_logs.append(f"[{sym}] ❌ خطأ: {str(e)}")
-                    
-        st.session_state["live_signals"] = valid
+            si = st.session_state.get("live_signal_index", 0)
+            if si >= len(valid) or si < 0:
+                si = 0
+                st.session_state["live_signal_index"] = si
+                
+            n1, n2, n3 = st.columns([1, 2, 1])
+            with n1:
+                if st.button("⬅️ السابق", use_container_width=True, key="live_prev_top"): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
+            with n2:
+                st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(valid)}</div>", unsafe_allow_html=True)
+            with n3:
+                if st.button("التالي ➡️", use_container_width=True, key="live_next_top"): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
 
-    if st.session_state.global_error_logs:
-        with st.expander("🚨 سجل التشخيص الذكي (أخطاء المصادر والحدود)", expanded=True):
-            for log in st.session_state.global_error_logs:
-                if "❌" in log or "⚠️" in log: st.error(log)
-                else: st.info(log)
-
-    if st.session_state["live_signals"]:
-        valid = st.session_state["live_signals"]
-        st.success(f"تم العثور على {len(valid)} إشارة")
-        si = st.session_state.get("live_signal_index", 0)
-        
-        # أزرار علوية
-        n1, n2, n3 = st.columns([1, 2, 1])
-        with n1:
-            if st.button("⬅️ السابق", use_container_width=True, key="live_prev_top"): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
-        with n2:
-            st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(valid)}</div>", unsafe_allow_html=True)
-        with n3:
-            if st.button("التالي ➡️", use_container_width=True, key="live_next_top"): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
-
-        ar, sym = valid[si]["result"], valid[si]["symbol"]
-        st.write(f"**{sym}** - {ar['signal']}")
-        
-        df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
-        if df_chart is not None: render_chart_fast(sym, ar, df_chart, "adaptive")
-        
-        # أزرار سفلية
-        st.markdown("<br>", unsafe_allow_html=True)
-        n4, n5, n6 = st.columns([1, 2, 1])
-        with n4:
-            if st.button("⬅️ السابق", key="live_prev_bottom", use_container_width=True): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
-        with n6:
-            if st.button("التالي ➡️", key="live_next_bottom", use_container_width=True): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
+            ar, sym = valid[si]["result"], valid[si]["symbol"]
+            st.write(f"**{sym}** - {ar['signal']}")
+            df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None)
+            if df_chart is not None: render_chart_fast(sym, ar, df_chart, "adaptive")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            n4, n5, n6 = st.columns([1, 2, 1])
+            with n4:
+                if st.button("⬅️ السابق", key="live_prev_bottom", use_container_width=True): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
+            with n6:
+                if st.button("التالي ➡️", key="live_next_bottom", use_container_width=True): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
