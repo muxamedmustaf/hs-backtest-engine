@@ -15,7 +15,7 @@ CONFIG = {
     "RETEST_STRONG_CLOSE_RATIO": 0.5, 
     "LIVE_MAX_BREAKOUT_CANDLES": 10, 
     
-    # ⬇️ تعديل الهدف ليكون ضعف الوقف 1:2 (مستويات التريلينج تتناسب مع ذلك) ⬇️
+    # ⬇️ تعديل الهدف ليكون ضعف الوقف 1:2 ⬇️
     "TRAILING_LEVELS_HEAD": [(0.50, 0.0), (0.75, 0.5), (1.00, 0.8)],
     
     "SAFE_SL_MARGIN": 0.05,        
@@ -59,51 +59,41 @@ def calculate_indicators(df, cfg=None):
     return df
 
 def get_major_levels(df, current_idx, lookback=150, window=5):
-    """اكتشاف القمم والقيعان التاريخية الكبيرة (الدعوم والمقاومات)"""
     start_idx = max(0, current_idx - lookback)
     df_sub = df.iloc[start_idx:current_idx]
     if len(df_sub) < window * 2: return []
-    
     highs = df_sub['High'].values
     lows = df_sub['Low'].values
     levels = []
-    
     for i in range(window, len(df_sub) - window):
-        if highs[i] == max(highs[i-window:i+window+1]):
-            levels.append(highs[i])
-        if lows[i] == min(lows[i-window:i+window+1]):
-            levels.append(lows[i])
-            
+        if highs[i] == max(highs[i-window:i+window+1]): levels.append(highs[i])
+        if lows[i] == min(lows[i-window:i+window+1]): levels.append(lows[i])
     if not levels: return []
-    
     levels = sorted(list(set(levels)))
     clustered = []
     current_cluster = [levels[0]]
     for l in levels[1:]:
-        if (l - current_cluster[0]) / current_cluster[0] < 0.005:
-            current_cluster.append(l)
+        if (l - current_cluster[0]) / current_cluster[0] < 0.005: current_cluster.append(l)
         else:
             clustered.append(sum(current_cluster)/len(current_cluster))
             current_cluster = [l]
     clustered.append(sum(current_cluster)/len(current_cluster))
-    
     return clustered
 
+# ⬇️⬇️ هنا دالة تحديد الهدف (نسبة 1:2) ⬇️⬇️
 def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     structural_risk = abs(entry - structural_sl)
     if structural_risk == 0: structural_risk = 1e-5
-    
     if bias == "Bullish": safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
     else: safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
-    
     final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
     
-    # ⬇️ الهدف ضعف الوقف 1:2 ⬇️
+    # ⬇️ هذا هو السطر الذي يحدد الهدف (غيّر 2.0 إلى 3.0 إذا أردت 1:3) ⬇️
     risk_distance = abs(entry - final_sl)
     if risk_distance == 0: risk_distance = 1e-5
-    target = risk_distance * 1.5.0
-    tp = entry + target if bias == "Bullish" else entry - target
+    target = risk_distance * 2.0  
     
+    tp = entry + target if bias == "Bullish" else entry - target
     return final_sl, tp, safe_sl, structural_sl
 
 def simulate_trade(pattern, df, cfg=None):
@@ -127,7 +117,6 @@ def simulate_trade(pattern, df, cfg=None):
         h, l = float(row["High"]), float(row["Low"])
         fav = max(0.0, entry - l) if bias == "Bearish" else max(0.0, h - entry)
         adv = max(0.0, h - entry) if bias == "Bearish" else max(0.0, entry - l)
-        
         prog = (fav / total_tp_dist) if total_tp_dist > 0 else 0.0
         prog_h = (fav / head_size) if head_size > 0 else 0.0
 
@@ -167,18 +156,14 @@ def simulate_trade(pattern, df, cfg=None):
 def detect_box_breakouts(df, symbol=None, is_backtest=True):
     patterns = []
     n = len(df)
-    if n < 100: return patterns
+    if n < 100: return patterns, {}
 
     highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
-    
-    # ⬇️ متغير لتتبع آخر صفقة ومنع التداخل ⬇️
     last_entry_idx = -1000
+    stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0}
     
     for i in range(60, n):
-        # منع فتح صفقة جديدة إذا كانت الصفقة السابقة قريبة جداً
-        if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]:
-            continue
-            
+        if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]: continue
         candle_body = abs(closes[i] - opens[i])
         if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
         
@@ -212,6 +197,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
         if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
 
+        stats["raw_breakouts"] += 1
         actual_entry_idx = i
         actual_entry_price = closes[i]
         structural_sl = lows[i] if is_bull_breakout else highs[i]
@@ -229,7 +215,9 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                         candle_range = highs[j] - lows[j]
                         if candle_range > 0 and (highs[j] - closes[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
                             retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; structural_sl = highs[j]; break
-            if not retest_found: continue
+            if not retest_found: 
+                stats["rejected_retest"] += 1
+                continue
 
         box_nodes = [(df.index[box_start_idx], box_top), (df.index[actual_entry_idx], box_top), (df.index[box_start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)]
         trend_nodes = [(df.index[impulse_start_idx], impulse_start_price), (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), (df.index[actual_entry_idx], actual_entry_price)]
@@ -237,7 +225,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         if is_bull_breakout and actual_entry_price > box_top:
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, impulse_move)
             
-            # فلتر الدعوم والمقاومات التاريخية (Bullish)
             if CONFIG.get("USE_SR_FILTER", True):
                 major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
                 sr_blocked = False
@@ -246,20 +233,18 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                         sr_blocked = True
                         break
                 if sr_blocked:
+                    stats["rejected_sr"] += 1
                     continue
 
             pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bullish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"}
             pattern.update(simulate_trade(pattern, df))
             pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
             patterns.append(pattern)
-            
-            # تحديث آخر صفقة (تم إزالة break)
             last_entry_idx = actual_entry_idx
             
         elif is_bear_breakout and actual_entry_price < box_bottom:
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, impulse_move)
             
-            # فلتر الدعوم والمقاومات التاريخية (Bearish)
             if CONFIG.get("USE_SR_FILTER", True):
                 major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
                 sr_blocked = False
@@ -268,21 +253,20 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                         sr_blocked = True
                         break
                 if sr_blocked:
+                    stats["rejected_sr"] += 1
                     continue
 
             pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bearish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"}
             pattern.update(simulate_trade(pattern, df))
             pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
             patterns.append(pattern)
-            
-            # تحديث آخر صفقة (تم إزالة break)
             last_entry_idx = actual_entry_idx
             
-    return patterns
+    return patterns, stats
 
 def run_full_analysis(df, interval="1h", symbol=None):
     df = calculate_indicators(df)
-    patterns = detect_box_breakouts(df, symbol, is_backtest=False)
+    patterns, _ = detect_box_breakouts(df, symbol, is_backtest=False)
     if not patterns: return {"signal": "WAITING", "pattern": "NO PATTERN", "bias": "Neutral", "df": df}
     
     recent_patterns = []
@@ -300,17 +284,17 @@ def run_full_analysis(df, interval="1h", symbol=None):
 
 def backtest_strategy(df, interval="1h", symbol=None):
     df = calculate_indicators(df)
-    patterns = detect_box_breakouts(df, symbol, is_backtest=True)
+    patterns, stats = detect_box_breakouts(df, symbol, is_backtest=True)
     trades = []
     for p in patterns:
         p["Symbol"] = symbol; p["Entry Price"] = p["entry"]; p["Stop Loss"] = p["sl"]; p["Take Profit"] = p["tp"]
         trades.append(p)
-    return trades
+    return trades, stats
 
 def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): return {}
 
 def diagnose_filters(df, interval="1h", symbol=None):
-    trades = backtest_strategy(df, interval, symbol)
+    trades, _ = backtest_strategy(df, interval, symbol)
     wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
     losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
     total = len(wins) + len(losses)
