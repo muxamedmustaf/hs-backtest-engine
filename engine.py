@@ -26,7 +26,10 @@ CONFIG = {
     # ⬇️ فلتر الدعوم والمقاومات التاريخية ⬇️
     "USE_SR_FILTER": True,
     "SR_LOOKBACK": 150,
-    "SR_WINDOW": 5
+    "SR_WINDOW": 5,
+    
+    # ⬇️ منع تداخل الصفقات ⬇️
+    "MIN_GAP_BETWEEN_TRADES": 5
 }
 
 REASON_MAP = {
@@ -65,7 +68,6 @@ def get_major_levels(df, current_idx, lookback=150, window=5):
     lows = df_sub['Low'].values
     levels = []
     
-    # استخراج القمم والقيعان
     for i in range(window, len(df_sub) - window):
         if highs[i] == max(highs[i-window:i+window+1]):
             levels.append(highs[i])
@@ -74,7 +76,6 @@ def get_major_levels(df, current_idx, lookback=150, window=5):
             
     if not levels: return []
     
-    # تجميع المستويات المتقاربة جداً (أقل من 0.5%) لمنع التكرار
     levels = sorted(list(set(levels)))
     clustered = []
     current_cluster = [levels[0]]
@@ -170,7 +171,14 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
     highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
     
+    # ⬇️ متغير لتتبع آخر صفقة ومنع التداخل ⬇️
+    last_entry_idx = -1000
+    
     for i in range(60, n):
+        # منع فتح صفقة جديدة إذا كانت الصفقة السابقة قريبة جداً
+        if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]:
+            continue
+            
         candle_body = abs(closes[i] - opens[i])
         if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
         
@@ -229,7 +237,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         if is_bull_breakout and actual_entry_price > box_top:
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, impulse_move)
             
-            # ⬇️ فلتر الدعوم والمقاومات التاريخية (Bullish) ⬇️
+            # فلتر الدعوم والمقاومات التاريخية (Bullish)
             if CONFIG.get("USE_SR_FILTER", True):
                 major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
                 sr_blocked = False
@@ -243,12 +251,15 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bullish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"}
             pattern.update(simulate_trade(pattern, df))
             pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
-            patterns.append(pattern); break
+            patterns.append(pattern)
+            
+            # تحديث آخر صفقة (تم إزالة break)
+            last_entry_idx = actual_entry_idx
             
         elif is_bear_breakout and actual_entry_price < box_bottom:
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, impulse_move)
             
-            # ⬇️ فلتر الدعوم والمقاومات التاريخية (Bearish) ⬇️
+            # فلتر الدعوم والمقاومات التاريخية (Bearish)
             if CONFIG.get("USE_SR_FILTER", True):
                 major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
                 sr_blocked = False
@@ -262,7 +273,10 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bearish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"}
             pattern.update(simulate_trade(pattern, df))
             pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}"
-            patterns.append(pattern); break
+            patterns.append(pattern)
+            
+            # تحديث آخر صفقة (تم إزالة break)
+            last_entry_idx = actual_entry_idx
             
     return patterns
 
