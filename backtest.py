@@ -205,12 +205,37 @@ def compute_dollar_pnl(trades_df, lot=0.01):
     df["PnL_Pct"] = pct_list
     return df
 
+def calculate_trade_risk_usd(entry, sl, lot, symbol):
+    try: entry_f = float(entry); sl_f = float(sl); lot_f = float(lot)
+    except (TypeError, ValueError): return None
+    if entry_f == 0: return None
+    price_move = abs(entry_f - sl_f)
+    s = str(symbol).upper()
+    if any(x in s for x in ["BTC", "ETH"]): return price_move * lot_f * 1
+    if any(x in s for x in ["US30", "NAS", "SPX"]): return price_move * lot_f * 1
+    if "XAU" in s or "GC=F" in s: return price_move * lot_f * 100
+    if "XAG" in s or "SI=F" in s: return price_move * lot_f * 5000
+    if s.endswith("USD"): return price_move * lot_f * 100000
+    else:
+        if entry_f == 0: return None
+        return price_move * lot_f * 100000 / entry_f
+
+def check_risk_limit(entry, sl, lot, symbol, capital, risk_pct):
+    risk_usd = calculate_trade_risk_usd(entry, sl, lot, symbol)
+    if risk_usd is None:
+        return {"allowed": False, "risk_usd": None, "max_risk_usd": None, "risk_pct_actual": None, "message": "⚠️ لا يمكن حساب المخاطرة — بيانات ناقصة"}
+    max_risk_usd = capital * (risk_pct / 100)
+    risk_pct_actual = (risk_usd / capital * 100) if capital > 0 else 0
+    allowed = risk_usd <= max_risk_usd
+    if allowed: message = f"✅ مقبولة — المخاطرة {risk_usd:.2f}$ ({risk_pct_actual:.2f}%) ≤ الحد {max_risk_usd:.2f}$"
+    else: message = f"❌ مرفوضة — المخاطرة {risk_usd:.2f}$ ({risk_pct_actual:.2f}%) > الحد {max_risk_usd:.2f}$"
+    return {"allowed": allowed, "risk_usd": round(risk_usd, 2), "max_risk_usd": round(max_risk_usd, 2), "risk_pct_actual": round(risk_pct_actual, 2), "message": message}
+
 def get_available_symbols():
     symbols_set = set(IC_MARKETS_SPECS.keys())
     try:
         sheet_symbols = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]
-        for s in sheet_symbols:
-            symbols_set.add(str(s).strip())
+        for s in sheet_symbols: symbols_set.add(str(s).strip())
     except Exception: pass
     if "backtest_scanned_signals" in st.session_state:
         for item in st.session_state.backtest_scanned_signals:
@@ -249,79 +274,202 @@ def get_near_symbols():
         for item in st.session_state.near_signals: near.add(item["symbol"])
     return sorted(list(near))
 
+def render_realtime_actions(trades_df, is_live=False, live_prices=None):
+    st.markdown("### 🎯 التصرفات المطلوبة الآن")
+    st.caption("إجراءات محدّدة لصفقاتك")
+    if trades_df is None or trades_df.empty:
+        st.info("ℹ️ لا توجد صفقات للتحليل")
+        return []
+        
+    actions = []
+    relevant = trades_df.tail(5).index.tolist() if len(trades_df) > 5 else trades_df.index.tolist()
+    for idx in relevant:
+        row = trades_df.loc[idx]
+        sym = row.get("symbol") or row.get("Symbol") or "?"
+        result = str(row.get("Result", "")).upper()
+        if not is_live and result in ["WIN", "LOSS", "TIMEOUT", "BREAKEVEN"]: continue
+        try:
+            entry_f = float(row.get("Entry Price") or row.get("Entry") or 0)
+            sl_f = float(row.get("Stop Loss") or row.get("SL") or 0)
+            tp_f = float(row.get("Take Profit") or row.get("TP") or 0)
+        except (TypeError, ValueError): continue
+        if entry_f == 0 or sl_f == 0 or tp_f == 0: continue
+        bias = str(row.get("bias") or row.get("Bias") or "").upper()
+        is_bearish = "BEAR" in bias or "SELL" in bias
+        progress = row.get("Max Reach %", 0) or 0
+        
+        if is_live and live_prices and sym in live_prices:
+            current_price = live_prices[sym]
+            progress = ((entry_f - current_price) if is_bearish else (current_price - entry_f)) / abs(tp_f - entry_f) * 100
+            progress = max(0, min(progress, 200))
+        if progress < 15: continue
+        
+        total_tp = abs(tp_f - entry_f)
+        if progress >= 80:
+            priority = "🔴 عاجل"; action = "إغلاق 50% + Trailing 60%"; new_sl = entry_f + (0.6 * total_tp * (-1 if is_bearish else 1)); guaranteed = "60%"
+        elif progress >= 50:
+            priority = "🟠 عالي"; action = "تفعيل Trailing 30%"; new_sl = entry_f + (0.3 * total_tp * (-1 if is_bearish else 1)); guaranteed = "30%"
+        elif progress >= 25:
+            priority = "🟡 متوسط"; action = "نقل SL إلى التعادل"; new_sl = entry_f; guaranteed = "0%"
+        else: continue
+        
+        try:
+            lot = row.get("Lot") or 0.01
+            if any(x in sym.upper() for x in ["BTC", "ETH"]): dollar_profit = abs(entry_f - new_sl) * float(lot)
+            elif is_bearish: dollar_profit = (entry_f - new_sl) * float(lot) * 100000 / entry_f
+            else: dollar_profit = (new_sl - entry_f) * float(lot) * 100000 / entry_f
+        except Exception: dollar_profit = None
+        
+        actions.append({
+            "الأولوية": priority, "الزوج": sym, "الوصول": f"{progress:.1f}%", "الإجراء": action,
+            "SL الحالي": f"{sl_f:.5f}", "SL الجديد": f"{new_sl:.5f}", "الربح المضمون": guaranteed,
+            "بالدولار": f"+${dollar_profit:.2f}" if dollar_profit else "—",
+            "_priority": {"🔴 عاجل": 0, "🟠 عالي": 1, "🟡 متوسط": 2}.get(priority, 99),
+        })
+        
+    if not actions:
+        st.success("✅ لا توجد صفقات تحتاج تصرفًا الآن")
+        return []
+        
+    actions.sort(key=lambda x: x["_priority"])
+    for action in actions:
+        msg = f"""**{action['الأولوية']} | {action['الزوج']}**\n🎯 **الإجراء:** {action['الإجراء']}\n📊 **الوصول:** {action['الوصول']} من الهدف\n🛑 **SL:** `{action['SL الحالي']}` ← **`{action['SL الجديد']}`**\n💰 **الربح المضمون:** {action['الربح المضمون']} ({action['بالدولار']})"""
+        if action['الأولوية'] == "🔴 عاجل": st.error(msg)
+        elif action['الأولوية'] == "🟠 عالي": st.warning(msg)
+        else: st.info(msg)
+    return actions
+
+def detect_near_signals(df, interval="5m", symbol=None, proximity_pct=2.0):
+    try:
+        from engine import calculate_indicators, calculate_zigzag, get_chronological_pivots, detect_all_head_shoulders, CONFIG, _get_max_gap, _get_max_pattern_duration
+    except ImportError: return []
+    if df is None or df.empty or len(df) < 30: return []
+    df = df.copy()
+    for col in ["Open", "High", "Low", "Close"]:
+        if col not in df.columns: return []
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    if len(df) < 30: return []
+    try:
+        df = calculate_indicators(df)
+        df = calculate_zigzag(df, CONFIG["ZIGZAG_DEPTH"], CONFIG["ZIGZAG_BACKSTEP"])
+        pivots = get_chronological_pivots(df)
+        max_gap = _get_max_gap(interval)
+        max_pattern_dur = _get_max_pattern_duration(interval)
+        all_patterns = detect_all_head_shoulders(pivots, df, is_backtest=True, max_gap=max_gap, max_pattern_duration=max_pattern_dur)
+    except Exception: return []
+    
+    if not all_patterns: return []
+    current_price = float(df["Close"].iloc[-1])
+    last_pos = len(df) - 1
+    near_signals = []
+    for p in all_patterns[-50:]:
+        end_pos = p.get("end_pos", 0)
+        if (last_pos - end_pos) > 60 or (last_pos - end_pos) < 0: continue
+        entry = p.get("entry"); sl = p.get("sl"); tp = p.get("tp"); bias = str(p.get("bias", ""))
+        if entry is None or entry == 0: continue
+        distance_pct = (current_price - entry) / entry * 100 if "Bear" in bias else (entry - current_price) / entry * 100
+        if 0 <= distance_pct <= proximity_pct:
+            near_signals.append({
+                "symbol": symbol, "pattern": p.get("pattern", "H&S"), "bias": bias,
+                "neckline": round(entry, 5), "current_price": round(current_price, 5),
+                "distance_pct": round(distance_pct, 2), "sl": round(sl, 5) if sl else None,
+                "tp": round(tp, 5) if tp else None, "candles_since": last_pos - end_pos,
+            })
+    near_signals.sort(key=lambda x: x["distance_pct"])
+    return near_signals
+
+def render_near_signals(near_signals):
+    if not near_signals:
+        st.info("ℹ️ لا توجد إشارات قريبة من الكسر — انتظر تحديث البيانات")
+        return
+    st.warning(f"⚠️ **{len(near_signals)}** إشارة قريبة من الكسر")
+    df_disp = pd.DataFrame([{
+        "الزوج": s["symbol"], "النمط": s["pattern"], "الاتجاه": s["bias"],
+        "خط العنق": s["neckline"], "السعر": s["current_price"], "المسافة %": f"{s['distance_pct']:.2f}%",
+        "SL": s["sl"], "TP": s["tp"], "الشموع": s["candles_since"],
+    } for s in near_signals])
+    st.dataframe(df_disp, use_container_width=True, hide_index=True)
+    
+    if st.button("🔗 تحميل الإشارة الأولى إلى الحاسبة", key="load_near_sig", use_container_width=True):
+        first = near_signals[0]
+        st.session_state["active_signal_symbol"] = first["symbol"]
+        st.session_state["active_signal_entry"] = first["neckline"]
+        st.session_state["active_signal_sl"] = first["sl"]
+        st.session_state["active_signal_tp"] = first["tp"]
+        st.session_state["active_signal_bias"] = first["bias"]
+        st.success(f"✅ تم التحميل: {first['symbol']}")
+
+def render_advanced_risk_calculator(unique_id="main"):
+    st.markdown("### 💰 حاسبة المخاطرة المتقدمة")
+    c1, c2, c3 = st.columns(3)
+    with c1: capital = st.number_input("💵 رأس المال ($):", min_value=10.0, max_value=10_000_000.0, value=1000.0, step=100.0, key=f"{unique_id}_cap")
+    with c2: risk_pct = st.selectbox("📊 نسبة المخاطرة (%):", options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], index=4, key=f"{unique_id}_pct")
+    with c3: st.metric("🛑 الحد الأقصى للمخاطرة", f"${capital * (risk_pct / 100):,.2f}")
+    
+    active_sym = st.session_state.get("active_signal_symbol")
+    active_entry = st.session_state.get("active_signal_entry")
+    active_sl = st.session_state.get("active_signal_sl")
+    active_tp = st.session_state.get("active_signal_tp")
+    
+    default_entry = float(active_entry) if active_entry else 1.0
+    default_sl = float(active_sl) if active_sl else default_entry * 1.01
+    default_tp = float(active_tp) if active_tp else default_entry * 0.98
+    
+    c_sym, c_lot = st.columns([2, 1])
+    with c_sym: selected_symbol = st.text_input("🔽 العملة:", value=active_sym if active_sym else "EURUSD=X", key=f"{unique_id}_sym")
+    with c_lot: custom_lot = st.number_input("💵 اللوت:", min_value=0.0001, max_value=100.0, value=get_default_lot_for_symbol(selected_symbol), step=0.01, key=f"{unique_id}_lot")
+    
+    c_e, c_s, c_t = st.columns(3)
+    with c_e: entry_price = st.number_input("📈 سعر الدخول:", value=default_entry, format="%.5f", key=f"{unique_id}_e")
+    with c_s: sl_price = st.number_input("🛑 وقف الخسارة:", value=default_sl, format="%.5f", key=f"{unique_id}_s")
+    with c_t: tp_price = st.number_input("🎯 الهدف:", value=default_tp, format="%.5f", key=f"{unique_id}_t")
+    
+    check = check_risk_limit(entry_price, sl_price, custom_lot, selected_symbol, capital, risk_pct)
+    if check["allowed"]: st.success(check["message"])
+    else: st.error(check["message"])
+
 # ⬇️⬇️ إدارة الجلسة ⬇️⬇️
 for k, v in [
-    ("current_symbol", "NZDCAD=X"),
-    ("status_summary", "⚡ Live Scan & Backtest Lab • جاهز"),
-    ("scanned_signals", []),
-    ("backtest_scanned_signals", []),
-    ("backtest_dfs", {}),
-    ("backtest_period", ""),
-    ("backtest_start", ""),
-    ("backtest_end", ""),
-    ("active_signal_symbol", None),
-    ("active_signal_entry", None),
-    ("active_signal_sl", None),
-    ("active_signal_tp", None),
-    ("active_signal_bias", None),
-    ("near_signals", []),
+    ("current_symbol", "NZDCAD=X"), ("status_summary", "⚡ Live Scan & Backtest Lab • جاهز"),
+    ("scanned_signals", []), ("backtest_scanned_signals", []), ("backtest_dfs", {}),
+    ("backtest_period", ""), ("backtest_start", ""), ("backtest_end", ""),
+    ("active_signal_symbol", None), ("active_signal_entry", None), ("active_signal_sl", None),
+    ("active_signal_tp", None), ("active_signal_bias", None), ("near_signals", []),
 ]:
     if k not in st.session_state: st.session_state[k] = v
 
-# ⬇️⬇️ الشريط العلوي ⬇️⬇️
 st.markdown(f'''<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;direction:rtl;">
 <div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📈 {st.session_state.current_symbol}</div>
 <div style="border:1px solid #DADCE0;background:#FFF;border-radius:30px;padding:8px 14px;font-weight:700;color:#0B57D0;">{st.session_state.status_summary}</div>
 </div>''', unsafe_allow_html=True)
 
-# ⬇️⬇️ اختيار الوضع ⬇️⬇️
-app_mode = st.radio(
-    "وضع التطبيق:",
-    ["🚀 الماسح الحي للأسواق", "🧪 مختبر الاختبار الرجعي (Backtest)"],
-    horizontal=True
-)
+app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي للأسواق", "🧪 مختبر الاختبار الرجعي (Backtest)"], horizontal=True)
 st.markdown("---")
 
 # ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     st.markdown("### 🧪 مختبر تحليل الأداء التاريخي")
-    
-    bt_scan_mode = st.radio(
-        "طريقة فحص الاختبار الرجعي:",
-        ["سهم فردي", "مسح كلي لشيت الأصول"],
-        horizontal=True,
-        key="bt_scan_mode"
-    )
+    bt_scan_mode = st.radio("طريقة فحص الاختبار الرجعي:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True, key="bt_scan_mode")
     
     if bt_scan_mode == "سهم فردي":
         bt_symbols = [st.text_input("رمز الأصل", value="EURUSD=X", key="bt_single_symbol")]
     else:
         all_sheet_symbols = get_available_symbols()
-        
-        # ⬇️⬇️ أزرار تحديد الكل (جديد) ⬇️⬇️
         c_sel1, c_sel2 = st.columns(2)
         if c_sel1.button("✅ تحديد كل عملات الشيت", use_container_width=True, key="bt_sel_all"):
-            st.session_state["bt_selected_symbols"] = all_sheet_symbols
-            st.rerun()
+            st.session_state["bt_selected_symbols"] = all_sheet_symbols; st.rerun()
         if c_sel2.button("❌ إلغاء التحديد", use_container_width=True, key="bt_clr_all"):
-            st.session_state["bt_selected_symbols"] = []
-            st.rerun()
-            
-        if "bt_selected_symbols" not in st.session_state:
-            st.session_state["bt_selected_symbols"] = ["EURUSD=X"]
-            
+            st.session_state["bt_selected_symbols"] = []; st.rerun()
+        if "bt_selected_symbols" not in st.session_state: st.session_state["bt_selected_symbols"] = ["EURUSD=X"]
         bt_symbols = st.multiselect("اختر الأصول للفحص:", all_sheet_symbols, key="bt_selected_symbols")
 
     now = datetime.datetime.now()
     available_years = [now.year, now.year - 1, now.year - 2]
-    
     st.markdown("#### 📅 اختيار الفترة الزمنية")
-    period_mode = st.radio(
-        "نمط الفترة:", ["📆 شهر واحد", "🗓️ نطاق مخصص", "📊 أشهر متعددة", "🗓️ سنة كاملة"],
-        horizontal=True, key="bt_period_mode"
-    )
-    start_date = None; end_date = None; period_label = ""
+    period_mode = st.radio("نمط الفترة:", ["📆 شهر واحد", "🗓️ نطاق مخصص", "📊 أشهر متعددة", "🗓️ سنة كاملة"], horizontal=True, key="bt_period_mode")
     
+    start_date = None; end_date = None; period_label = ""
     months_dict = {1: "01 - يناير", 2: "02 - فبراير", 3: "03 - مارس", 4: "04 - إبريل", 5: "05 - مايو", 6: "06 - يونيو", 7: "07 - يوليو", 8: "08 - أغسطس", 9: "09 - سبتمبر", 10: "10 - أكتوبر", 11: "11 - نوفمبر", 12: "12 - ديسمبر"}
 
     if period_mode == "📆 شهر واحد":
@@ -329,36 +477,29 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         selected_year = c_yr.selectbox("📅 السنة:", available_years, index=0, key="bt_single_year")
         selected_month = c_mo.selectbox("🗓️ الشهر:", list(months_dict.keys()), format_func=lambda x: months_dict[x], index=now.month - 1, key="bt_single_month")
         _, last_day = calendar.monthrange(selected_year, selected_month)
-        start_date = f"{selected_year}-{selected_month:02d}-01"
-        end_date = f"{selected_year}-{selected_month:02d}-{last_day:02d}"
+        start_date = f"{selected_year}-{selected_month:02d}-01"; end_date = f"{selected_year}-{selected_month:02d}-{last_day:02d}"
         period_label = f"{months_dict[selected_month]} {selected_year}"
     elif period_mode == "🗓️ نطاق مخصص":
         c1, c2 = st.columns(2)
         start_pick = c1.date_input("📅 من تاريخ:", value=datetime.date(now.year, max(1, now.month - 1), 1), key="bt_custom_start")
         end_pick = c2.date_input("📅 إلى تاريخ:", value=datetime.date.today(), key="bt_custom_end")
-        if start_pick >= end_pick:
-            st.error("⚠️ تاريخ البداية يجب أن يكون قبل تاريخ النهاية")
-        else:
-            start_date = start_pick.strftime("%Y-%m-%d")
-            end_date = end_pick.strftime("%Y-%m-%d")
-            period_label = f"من {start_date} إلى {end_date} ({(end_pick-start_pick).days} يوم)"
+        if start_pick < end_pick:
+            start_date = start_pick.strftime("%Y-%m-%d"); end_date = end_pick.strftime("%Y-%m-%d")
+            period_label = f"من {start_date} إلى {end_date}"
+        else: st.error("⚠️ تاريخ البداية يجب أن يكون قبل تاريخ النهاية")
     elif period_mode == "📊 أشهر متعددة":
         c_yr, c_months = st.columns([1, 2])
         multi_year = c_yr.selectbox("📅 السنة:", available_years, index=0, key="bt_multi_year")
         selected_months = c_months.multiselect("🗓️ اختر الأشهر:", options=list(months_dict.keys()), format_func=lambda x: months_dict[x], default=[now.month], key="bt_multi_months")
-        if not selected_months:
-            st.warning("⚠️ اختر شهراً واحداً على الأقل")
-        else:
+        if selected_months:
             sm = sorted(selected_months)
-            first_m, last_m = sm[0], sm[-1]
-            _, last_last = calendar.monthrange(multi_year, last_m)
-            start_date = f"{multi_year}-{first_m:02d}-01"
-            end_date = f"{multi_year}-{last_m:02d}-{last_last:02d}"
+            _, last_last = calendar.monthrange(multi_year, sm[-1])
+            start_date = f"{multi_year}-{sm[0]:02d}-01"; end_date = f"{multi_year}-{sm[-1]:02d}-{last_last:02d}"
             period_label = f"{' + '.join([months_dict[m] for m in sm])} {multi_year}"
+        else: st.warning("⚠️ اختر شهراً واحداً على الأقل")
     elif period_mode == "🗓️ سنة كاملة":
         year_pick = st.selectbox("📅 السنة:", available_years, index=0, key="bt_full_year")
-        start_date = f"{year_pick}-01-01"
-        end_date = f"{year_pick}-12-31"
+        start_date = f"{year_pick}-01-01"; end_date = f"{year_pick}-12-31"
         period_label = f"السنة {year_pick} كاملة"
 
     selected_interval = st.selectbox("⏱️ الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=9, key="bt_interval")
@@ -366,7 +507,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
 
     if start_date and end_date:
         st.success(f"✅ الفترة: **{period_label}**")
-        
         if st.button("📊 بدء محاكاة الاختبار الرجعي", use_container_width=True) and bt_symbols:
             results, dfs = [], {}
             dl_int = selected_interval if selected_interval in ["1m","5m","15m","30m","1h","1d","1wk","1mo"] else "1h"
@@ -376,19 +516,17 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 s_txt.text(f"محاكاة ({idx+1}/{len(bt_symbols)}): {sym}...")
                 p_bar.progress((idx + 1) / len(bt_symbols))
                 try:
-                    sym_fixed = fix_symbol(sym)
-                    df = yf.download(sym_fixed, start=start_date, end=end_date, interval=dl_int, progress=False, auto_adjust=False)
+                    df = yf.download(fix_symbol(sym), start=start_date, end=end_date, interval=dl_int, progress=False, auto_adjust=False)
                     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                    if df is None or df.empty:
-                        error_log.append(f"⚠️ {sym}: لا توجد بيانات"); continue
-                    trades = backtest_strategy(df, interval=selected_interval, symbol=sym)
-                    if trades:
-                        tdf = pd.DataFrame(trades)
-                        if "symbol" not in tdf.columns: tdf["symbol"] = sym
-                        results.append({"symbol": sym, "trades_df": tdf, "total_signals": len(tdf)})
-                    dfs[sym] = df
-                except Exception as e:
-                    error_log.append(f"❌ {sym}: {type(e).__name__}: {e}")
+                    if df is not None and not df.empty:
+                        trades = backtest_strategy(df, interval=selected_interval, symbol=sym)
+                        if trades:
+                            tdf = pd.DataFrame(trades)
+                            if "symbol" not in tdf.columns: tdf["symbol"] = sym
+                            results.append({"symbol": sym, "trades_df": tdf, "total_signals": len(tdf)})
+                        dfs[sym] = df
+                    else: error_log.append(f"⚠️ {sym}: لا توجد بيانات")
+                except Exception as e: error_log.append(f"❌ {sym}: {type(e).__name__}: {e}")
             s_txt.empty(); p_bar.empty()
             
             st.session_state.backtest_scanned_signals = results
@@ -412,144 +550,98 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             combined_df = compute_pips(combined_df)
             combined_df = compute_dollar_pnl(combined_df, lot=lot_size)
             
-            g_res_col = None
-            for col in ["Result", "Head Result"]:
-                if col in combined_df.columns: g_res_col = col; break
-            
+            g_res_col = "Result" if "Result" in combined_df.columns else "Head Result" if "Head Result" in combined_df.columns else None
             if g_res_col:
                 g_series = combined_df[g_res_col].astype(str).str.upper()
-                g_wins = len(combined_df[g_series.str.contains("WIN")])
-                g_losses = len(combined_df[g_series.str.contains("LOSS")])
-                g_opens = len(combined_df[g_series.str.contains("OPEN")])
-            else:
-                g_wins = g_losses = g_opens = 0
+                g_wins, g_losses, g_opens = len(combined_df[g_series.str.contains("WIN")]), len(combined_df[g_series.str.contains("LOSS")]), len(combined_df[g_series.str.contains("OPEN")])
+            else: g_wins = g_losses = g_opens = 0
                 
             g_closed = g_wins + g_losses
             g_win_rate = round((g_wins / g_closed) * 100, 1) if g_closed > 0 else 0.0
             g_loss_rate = round((g_losses / g_closed) * 100, 1) if g_closed > 0 else 0.0
-            g_total = len(combined_df)
             total_pips = combined_df["Pips"].dropna().sum()
-            avg_pips = combined_df["Pips"].dropna().mean()
             total_usd = combined_df["PnL_USD"].dropna().sum()
-            
             wins_usd = combined_df.loc[g_series.str.contains("WIN"), "PnL_USD"].dropna().sum() if g_res_col else 0
             losses_usd = combined_df.loc[g_series.str.contains("LOSS"), "PnL_USD"].dropna().sum() if g_res_col else 0
             profit_factor = round(abs(wins_usd / losses_usd), 2) if losses_usd != 0 else float("inf")
             
             st.markdown(f"#### 🌐 الملخص الإجمالي — **{period_display}**")
             gm1, gm2, gm3, gm4 = st.columns(4)
-            gm1.metric("📊 إجمالي الصفقات", g_total)
+            gm1.metric("📊 إجمالي الصفقات", len(combined_df))
             gm2.metric("✅ ناجحة", g_wins, delta=f"{g_win_rate}%")
             gm3.metric("❌ خاسرة", g_losses, delta=f"{g_loss_rate}%", delta_color="inverse")
             gm4.metric("⏳ مفتوحة", g_opens)
-            
             gm5, gm6, gm7, gm8 = st.columns(4)
             gm5.metric("📉 إجمالي النقاط", f"{total_pips:+.1f}")
-            gm6.metric("📊 متوسط النقاط", f"{avg_pips:+.1f}" if pd.notna(avg_pips) else "—")
+            gm6.metric("📊 متوسط النقاط", f"{combined_df['Pips'].dropna().mean():+.1f}")
             gm7.metric(f"💵 صافي الربح (لوت {lot_size})", f"{total_usd:+.2f} $")
             gm8.metric("⚖️ Profit Factor", f"{profit_factor:.2f}" if profit_factor != float("inf") else "∞")
             
             st.markdown("---")
-            
-            # ⬇️⬇️ اختيار الأصل ⬇️⬇️
             if bt_scan_mode == "مسح كلي لشيت الأصول":
                 opts = [f"{i['symbol']} | الصفقات: {i['total_signals']}" for i in res_list]
                 active_item = res_list[opts.index(st.selectbox("👇 اختر الأصل:", opts))]
-            else:
-                active_item = res_list[0]
+            else: active_item = res_list[0]
                 
             active_sym = active_item["symbol"]
-            trades_df = active_item["trades_df"]
-            trades_df = compute_pips(trades_df)
-            trades_df = compute_dollar_pnl(trades_df, lot=lot_size)
+            trades_df = compute_dollar_pnl(compute_pips(active_item["trades_df"]), lot=lot_size)
             st.session_state.current_symbol = active_sym
             
             if len(trades_df) > 0:
                 last_row = trades_df.iloc[-1]
-                st.session_state["active_signal_symbol"] = active_sym
-                st.session_state["active_signal_entry"] = last_row.get("Entry Price") or last_row.get("Entry")
-                st.session_state["active_signal_sl"] = last_row.get("Stop Loss") or last_row.get("SL")
-                st.session_state["active_signal_tp"] = last_row.get("Take Profit") or last_row.get("TP")
-                st.session_state["active_signal_bias"] = last_row.get("bias") or last_row.get("Bias")
+                st.session_state.update({
+                    "active_signal_symbol": active_sym, "active_signal_entry": last_row.get("Entry Price") or last_row.get("Entry"),
+                    "active_signal_sl": last_row.get("Stop Loss") or last_row.get("SL"),
+                    "active_signal_tp": last_row.get("Take Profit") or last_row.get("TP"),
+                    "active_signal_bias": last_row.get("bias") or last_row.get("Bias")
+                })
                 
-            res_col = None
-            for col in ["Result", "Head Result"]:
-                if col in trades_df.columns: res_col = col; break
-                
+            res_col = "Result" if "Result" in trades_df.columns else "Head Result" if "Head Result" in trades_df.columns else None
             if res_col:
                 res_series = trades_df[res_col].astype(str).str.upper()
-                wins = len(trades_df[res_series.str.contains("WIN")])
-                losses = len(trades_df[res_series.str.contains("LOSS")])
-                opens = len(trades_df[res_series.str.contains("OPEN")])
-            else:
-                wins = losses = opens = 0
+                wins, losses, opens = len(trades_df[res_series.str.contains("WIN")]), len(trades_df[res_series.str.contains("LOSS")]), len(trades_df[res_series.str.contains("OPEN")])
+            else: wins = losses = opens = 0
                 
             closed_trades = wins + losses
             win_rate = round((wins / closed_trades) * 100, 1) if closed_trades > 0 else 0.0
             loss_rate = round((losses / closed_trades) * 100, 1) if closed_trades > 0 else 0.0
-            sym_total_pips = trades_df["Pips"].dropna().sum()
-            sym_total_usd = trades_df["PnL_USD"].dropna().sum()
             
             st.markdown(f"### 📊 نتائج **{active_sym}** — {period_display}")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("✅ أ. ناجحة", wins, delta=f"{win_rate}%")
             m2.metric("❌ ب. خاسرة", losses, delta=f"{loss_rate}%", delta_color="inverse")
             m3.metric("⏳ ج. مفتوحة", opens)
-            m4.metric("📉 إجمالي النقاط", f"{sym_total_pips:+.1f}")
+            m4.metric("📉 إجمالي النقاط", f"{trades_df['Pips'].dropna().sum():+.1f}")
             
-            st.info(f"💵 **صافي الربح للرمز:** {sym_total_usd:+.2f} $ | **إجمالي الصفقات:** {len(trades_df)}")
+            st.download_button("📥 تنزيل صفقات الأصل (CSV)", trades_df.to_csv(index=False).encode('utf-8-sig'), f"backtest_{active_sym}.csv", "text/csv", use_container_width=True)
             
-            csv_symbol = trades_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label=f"📥 تنزيل صفقات {active_sym} (CSV)",
-                data=csv_symbol,
-                file_name=f"backtest_{active_sym.replace('=', '_')}_{period_display.replace(' ', '_')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            
-            # ⬇️⬇️ الشارت مع أزرار التنقل العلوية والسفلية ⬇️⬇️
             if active_sym in dfs_dict and not dfs_dict[active_sym].empty:
                 df_res = dfs_dict[active_sym].copy()
                 df_res['EMA50'] = df_res['Close'].ewm(span=50, adjust=False).mean()
                 df_res['EMA200'] = df_res['Close'].ewm(span=200, adjust=False).mean()
                 
                 si = st.session_state.get(f"signal_index_{active_sym}", len(trades_df)-1)
-                
-                # أزرار علوية
                 n1, n2, n3 = st.columns([1, 2, 1])
                 with n1:
                     if st.button("⬅️ السابق", use_container_width=True, key="bt_prev_top"): st.session_state[f"signal_index_{active_sym}"] = max(0, si - 1); st.rerun()
-                with n2:
-                    st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(trades_df)}</div>", unsafe_allow_html=True)
+                with n2: st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(trades_df)}</div>", unsafe_allow_html=True)
                 with n3:
                     if st.button("التالي ➡️", use_container_width=True, key="bt_next_top"): st.session_state[f"signal_index_{active_sym}"] = min(len(trades_df)-1, si + 1); st.rerun()
                 
                 cur_trade = trades_df.iloc[si]
-                
-                fig = go.Figure(data=[go.Candlestick(
-                    x=df_res.index, open=df_res["Open"], high=df_res["High"], low=df_res["Low"], close=df_res["Close"], name="السعر"
-                )])
+                fig = go.Figure(data=[go.Candlestick(x=df_res.index, open=df_res["Open"], high=df_res["High"], low=df_res["Low"], close=df_res["Close"], name="السعر")])
                 fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA50'], line=dict(color='orange', width=1.2), name="EMA 50"))
                 fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA200'], line=dict(color='blue', width=1.2), name="EMA 200"))
                 
                 if "nodes" in cur_trade and isinstance(cur_trade['nodes'], list):
                     sn = sorted(cur_trade['nodes'], key=lambda x: pd.to_datetime(x[0]))
-                    fig.add_trace(go.Scatter(
-                        x=[n[0] for n in sn], y=[n[1] for n in sn], mode="lines+markers", name=f"النمط #{si+1}", line=dict(color="#9C27B0", width=2)
-                    ))
-                
+                    fig.add_trace(go.Scatter(x=[n[0] for n in sn], y=[n[1] for n in sn], mode="lines+markers", name=f"النمط #{si+1}", line=dict(color="#9C27B0", width=2)))
                 for val, col, txt in [(cur_trade.get('Entry Price'), "#2196F3", "دخول"), (cur_trade.get('Stop Loss'), "#F44336", "وقف"), (cur_trade.get('Take Profit'), "#4CAF50", "هدف")]:
                     if val: fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
                     
-                fig.update_layout(
-                    template="plotly_white", height=500, autosize=True, margin=dict(l=10, r=10, t=30, b=30),
-                    xaxis_rangeslider_visible=False, yaxis=dict(side="right", automargin=True),
-                    xaxis=dict(automargin=True), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
+                fig.update_layout(template="plotly_white", height=500, autosize=True, margin=dict(l=10, r=10, t=30, b=30), xaxis_rangeslider_visible=False, yaxis=dict(side="right", automargin=True), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig, use_container_width=True, config={'responsive': True, 'scrollZoom': True, 'displayModeBar': False})
                 
-                # أزرار سفلية (للموبايل)
                 st.markdown("<br>", unsafe_allow_html=True)
                 n4, n5, n6 = st.columns([1, 2, 1])
                 with n4:
@@ -559,10 +651,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 
                 st.dataframe(cur_trade.to_frame().T, use_container_width=True)
 
-            # ⬇️⬇️ التقرير التشخيصي الذكي (Action Plan) ⬇️⬇️
             with st.expander("🔬 التقرير التشخيصي الذكي (تطوير ذاتي)", expanded=True):
-                if diagnose_filters is None:
-                    st.error("⚠️ `diagnose_filters` غير موجودة في `engine.py`")
+                if diagnose_filters is None: st.error("⚠️ `diagnose_filters` غير موجودة")
                 else:
                     df_for_diag = dfs_dict.get(active_sym)
                     if df_for_diag is not None and not df_for_diag.empty:
@@ -578,15 +668,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                                 dc2.metric("الصفقات الرابحة", stats.get("wins", 0), stats.get("win_rate", "0%"))
                                 dc3.metric("الصفقات الخاسرة", stats.get("losses", 0), stats.get("loss_rate", "0%"), delta_color="inverse")
                             
-                            lb = smart.get("loss_breakdown", {})
-                            if any(v > 0 for v in lb.values()):
-                                st.markdown("#### ❌ تحليل أسباب الخسارة")
-                                f1, f2, f3, f4 = st.columns(4)
-                                f1.metric("رفض فوري", lb.get("immediate_rejection", 0))
-                                f2.metric("انعكاس مبكر", lb.get("early_reversal", 0))
-                                f3.metric("انعكاس متوسط", lb.get("mid_reversal", 0))
-                                f4.metric("انعكاس متأخر", lb.get("late_reversal", 0))
-                                
                             if smart.get("action_plan"):
                                 st.markdown("#### 💡 خطة التطوير الذاتي (توصيات المحرك)")
                                 for item in smart["action_plan"]:
@@ -603,19 +684,12 @@ else:
         symbols = [st.text_input("رمز الأصل", value="NZDCAD=X", key="live_single_symbol")]
     else:
         all_sheet_symbols = get_available_symbols()
-        
-        # ⬇️⬇️ أزرار تحديد الكل (جديد) ⬇️⬇️
         c_sel1, c_sel2 = st.columns(2)
         if c_sel1.button("✅ تحديد كل عملات الشيت", use_container_width=True, key="live_sel_all"):
-            st.session_state["live_selected_symbols"] = all_sheet_symbols
-            st.rerun()
+            st.session_state["live_selected_symbols"] = all_sheet_symbols; st.rerun()
         if c_sel2.button("❌ إلغاء التحديد", use_container_width=True, key="live_clr_all"):
-            st.session_state["live_selected_symbols"] = []
-            st.rerun()
-            
-        if "live_selected_symbols" not in st.session_state:
-            st.session_state["live_selected_symbols"] = ["NZDCAD=X"]
-            
+            st.session_state["live_selected_symbols"] = []; st.rerun()
+        if "live_selected_symbols" not in st.session_state: st.session_state["live_selected_symbols"] = ["NZDCAD=X"]
         symbols = st.multiselect("اختر الأصول للفحص:", all_sheet_symbols, key="live_selected_symbols")
 
     c1, c2 = st.columns(2)
@@ -630,19 +704,13 @@ else:
             s_txt.text(f"فحص ({idx+1}/{len(symbols)}): {sym}...")
             p_bar.progress((idx + 1) / len(symbols))
             try:
-                sym_fixed = fix_symbol(sym)
-                df = yf.download(sym_fixed, period=selected_period, interval=dl_int, progress=False, auto_adjust=False)
+                df = yf.download(fix_symbol(sym), period=selected_period, interval=dl_int, progress=False, auto_adjust=False)
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                if df is None or df.empty:
-                    error_log.append(f"⚠️ {sym}: لا توجد بيانات"); continue
-                if len(df) >= 20:
+                if df is not None and not df.empty and len(df) >= 20:
                     res = run_full_analysis(df, interval=selected_interval, symbol=sym)
-                    if res["signal"] in ["STRONG BUY", "STRONG SELL"] or scan_mode == "سهم فردي":
-                        valid.append({"symbol": sym, "result": res})
-                    else:
-                        if scan_mode == "سهم فردي": st.info(f"ℹ️ {sym}: لا يوجد نمط حالياً (Signal: {res['signal']})")
-            except Exception as e:
-                error_log.append(f"❌ {sym}: {type(e).__name__}: {e}")
+                    if res["signal"] in ["STRONG BUY", "STRONG SELL"] or scan_mode == "سهم فردي": valid.append({"symbol": sym, "result": res})
+                else: error_log.append(f"⚠️ {sym}: لا توجد بيانات")
+            except Exception as e: error_log.append(f"❌ {sym}: {type(e).__name__}: {e}")
         s_txt.empty(); p_bar.empty()
         st.session_state.scanned_signals = valid
         
@@ -655,38 +723,30 @@ else:
         if scan_mode == "مسح كلي لشيت الأصول":
             opts = [f"{i['symbol']} | {i['result']['signal']}" for i in sigs]
             active_idx = opts.index(st.selectbox("👇 اختر الأصل:", opts))
-            active_res = sigs[active_idx]['result']
-        else:
-            active_idx = 0
-            active_res = sigs[0]['result']
+        else: active_idx = 0
             
-        active_sym = active_res.get("symbol", symbols[0] if symbols else "N/A")
+        si = st.session_state.get("live_si", active_idx)
+        n1, n2, n3 = st.columns([1, 2, 1])
+        with n1:
+            if st.button("⬅️ السابق", use_container_width=True, key="live_prev_top"): st.session_state["live_si"] = max(0, si - 1); st.rerun()
+        with n2: st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(sigs)}</div>", unsafe_allow_html=True)
+        with n3:
+            if st.button("التالي ➡️", use_container_width=True, key="live_next_top"): st.session_state["live_si"] = min(len(sigs)-1, si + 1); st.rerun()
+
+        active_res = sigs[si]['result']
+        active_sym = active_res.get("symbol", "N/A")
         st.session_state.current_symbol = active_sym
         
-        st.session_state["active_signal_symbol"] = active_sym
-        st.session_state["active_signal_entry"] = active_res.get("entry")
-        st.session_state["active_signal_sl"] = active_res.get("sl")
-        st.session_state["active_signal_tp"] = active_res.get("tp")
-        st.session_state["active_signal_bias"] = active_res.get("bias")
+        st.session_state.update({
+            "active_signal_symbol": active_sym, "active_signal_entry": active_res.get("entry"),
+            "active_signal_sl": active_res.get("sl"), "active_signal_tp": active_res.get("tp"),
+            "active_signal_bias": active_res.get("bias")
+        })
         
         e1, e2, e3 = st.columns(3)
         e1.metric("🎯 سعر الدخول", f"{active_res.get('entry', 0)}")
         e2.metric("🛑 وقف الخسارة", f"{active_res.get('sl', 0)}")
         e3.metric("🎯 الهدف", f"{active_res.get('tp', 0)}")
-        
-        # أزرار التنقل العلوية للحي
-        si = st.session_state.get("live_si", active_idx)
-        n1, n2, n3 = st.columns([1, 2, 1])
-        with n1:
-            if st.button("⬅️ السابق", use_container_width=True, key="live_prev_top"): st.session_state["live_si"] = max(0, si - 1); st.rerun()
-        with n2:
-            st.markdown(f"<div style='text-align:center;padding-top:8px;font-weight:bold;'>إشارة {si+1} من {len(sigs)}</div>", unsafe_allow_html=True)
-        with n3:
-            if st.button("التالي ➡️", use_container_width=True, key="live_next_top"): st.session_state["live_si"] = min(len(sigs)-1, si + 1); st.rerun()
-
-        # تحديث الإشارة النشطة بناءً على التنقل
-        active_res = sigs[si]['result']
-        active_sym = active_res.get("symbol", "N/A")
         
         df_res = active_res.get("df")
         if df_res is not None and not df_res.empty:
@@ -705,10 +765,9 @@ else:
             for val, col, txt in [(active_res.get('entry'), "#2196F3", "دخول"), (active_res.get('sl'), "#F44336", "وقف"), (active_res.get('tp'), "#4CAF50", "هدف")]:
                 if val: fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
                 
-            fig.update_layout(template="plotly_white", height=500, autosize=True, margin=dict(l=10, r=10, t=30, b=30), xaxis_rangeslider_visible=False, yaxis=dict(side="right", automargin=True), xaxis=dict(automargin=True), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            fig.update_layout(template="plotly_white", height=500, autosize=True, margin=dict(l=10, r=10, t=30, b=30), xaxis_rangeslider_visible=False, yaxis=dict(side="right", automargin=True), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig, use_container_width=True, config={'responsive': True, 'scrollZoom': True, 'displayModeBar': False})
 
-            # أزرار التنقل السفلية للحي (للموبايل)
             st.markdown("<br>", unsafe_allow_html=True)
             n4, n5, n6 = st.columns([1, 2, 1])
             with n4:
@@ -716,15 +775,38 @@ else:
             with n6:
                 if st.button("التالي ➡️", use_container_width=True, key="live_next_bottom"): st.session_state["live_si"] = min(len(sigs)-1, si + 1); st.rerun()
 
-        # Near Signals
+        # ⬇️⬇️ الإشارات القريبة (Near Signals) ⬇️⬇️
         st.markdown("---")
         st.markdown("#### ⏳ مراقبة الإشارات القريبة (Near Signals)")
         col_prox, col_limit = st.columns([3, 1])
-        with col_prox:
-            proximity_pct = st.slider("المسافة القريبة (%):", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-        with col_limit:
-            max_near_check = st.number_input("حد الفحص:", min_value=5, max_value=50, value=20, step=5)
+        with col_prox: proximity_pct = st.slider("المسافة القريبة (%):", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
+        with col_limit: max_near_check = st.number_input("حد الفحص:", min_value=5, max_value=50, value=20, step=5)
             
         if st.button("⏳ بحث عن الإشارات القريبة", use_container_width=True):
-            # Near signals logic...
-            pass
+            near = []; p_bar2 = st.progress(0); s_txt2 = st.empty()
+            check_list = symbols[:int(max_near_check)]
+            
+            for idx, sym in enumerate(check_list):
+                s_txt2.text(f"بحث ({idx+1}/{len(check_list)}): {sym}...")
+                p_bar2.progress((idx + 1) / len(check_list))
+                try:
+                    df_n = yf.download(fix_symbol(sym), period=selected_period, interval=dl_int, progress=False, auto_adjust=False)
+                    if isinstance(df_n.columns, pd.MultiIndex): df_n.columns = df_n.columns.get_level_values(0)
+                    if df_n is not None and not df_n.empty and len(df_n) >= 30:
+                        ns = detect_near_signals(df_n, interval=selected_interval, symbol=sym, proximity_pct=proximity_pct)
+                        if ns: near.extend(ns)
+                except Exception: continue
+            s_txt2.empty(); p_bar2.empty()
+            st.session_state.near_signals = near
+            
+            if near: st.success(f"✅ تم العثور على **{len(near)}** إشارة قريبة")
+            else: st.info(f"ℹ️ لا توجد إشارات قريبة (proximity = {proximity_pct}%).")
+
+    if st.session_state.get("near_signals"):
+        with st.expander("⏳ قائمة المراقبة — إشارات قريبة من الكسر", expanded=True):
+            render_near_signals(st.session_state.near_signals)
+
+# ⬇️⬇️ حاسبة المخاطر ⬇️⬇️
+st.markdown("---")
+with st.expander("💰 حاسبة المخاطرة المتقدمة", expanded=False):
+    render_advanced_risk_calculator(unique_id="end")
