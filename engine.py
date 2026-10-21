@@ -5,8 +5,12 @@ import numpy as np
 CONFIG = {
     "IMPULSE_MIN_PCT": 0.025,      
     "IMPULSE_MAX_LOOKBACK": 40,    
-    "BOX_MIN_CANDLES": 30,         
-    "BOX_MAX_HEIGHT_PCT": 0.05,    
+    
+    # ⬇️ التعديلات الجديدة التي طلبتها ⬇️
+    "BOX_MIN_CANDLES": 8,          # أقل عدد شمعات للتصحيح (8)
+    "BOX_MAX_CANDLES": 60,         # أقصى عدد شمعات للتصحيح (60)
+    "BOX_MAX_HEIGHT_PCT": 0.015,   # أقصى مسافة بين القمة والقاع (1.5%)
+    
     "MAX_RETRACEMENT_PCT": 0.50,   
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
     "REQUIRE_RETEST": True,        
@@ -80,7 +84,6 @@ def get_major_levels(df, current_idx, lookback=150, window=5):
     clustered.append(sum(current_cluster)/len(current_cluster))
     return clustered
 
-# ⬇️⬇️ هنا دالة تحديد الهدف (نسبة 1:2) ⬇️⬇️
 def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     structural_risk = abs(entry - structural_sl)
     if structural_risk == 0: structural_risk = 1e-5
@@ -88,7 +91,7 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     else: safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
     final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
     
-    # ⬇️ هذا هو السطر الذي يحدد الهدف (غيّر 2.0 إلى 3.0 إذا أردت 1:3) ⬇️
+    # ⬇️ نسبة الهدف 1:2 ⬇️
     risk_distance = abs(entry - final_sl)
     if risk_distance == 0: risk_distance = 1e-5
     target = risk_distance * 2.0  
@@ -185,7 +188,10 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         if is_bull_breakout: box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
         else: box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
 
-        if box_start_idx >= i or (i - box_start_idx) < CONFIG["BOX_MIN_CANDLES"]: continue
+        # ⬇️ تطبيق شرط الحد الأدنى والأقصى لعدد الشموع ⬇️
+        box_length = i - box_start_idx
+        if box_start_idx >= i or box_length < CONFIG["BOX_MIN_CANDLES"] or box_length > CONFIG.get("BOX_MAX_CANDLES", 60): 
+            continue
 
         box_highs = highs[box_start_idx:i]
         box_lows = lows[box_start_idx:i]
@@ -194,6 +200,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         box_height = box_top - box_bottom
         box_mid = (box_top + box_bottom) / 2
         
+        # ⬇️ تطبيق شرط 1.5% كأقصى مسافة بين القمة والقاع ⬇️
         if box_height == 0 or (box_height / box_mid) > CONFIG["BOX_MAX_HEIGHT_PCT"]: continue
         if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
 
