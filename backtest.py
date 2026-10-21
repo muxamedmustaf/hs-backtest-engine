@@ -14,10 +14,13 @@ except ImportError:
     st.error("تأكد من وجود ملف engine.py")
     st.stop()
 
+# ⬇️ استيراد دالة الشيت ⬇️
 try:
     from ffff import get_symbols_from_sheet
+    SHEET_ENABLED = True
 except ImportError:
-    def get_symbols_from_sheet(*args, **kwargs): return [["EURUSD=X", "BTC-USD"]]
+    SHEET_ENABLED = False
+    def get_symbols_from_sheet(*args, **kwargs): return []
 
 st.set_page_config(page_title="Box Hunter Pro - Smart", page_icon="📦", layout="wide")
 
@@ -58,14 +61,22 @@ def pip_size_for(symbol):
         if key.upper() == s: return spec["pip"]
     return 0.0001
 
+# ⬇️⬇️ دالة جلب العملات (تم تحسينها لعرض الكل) ⬇️⬇️
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
-    try:
-        sheet_symbols = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
-        if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
-            for x in sheet_symbols[0]: s.add(str(x).strip().upper())
-    except Exception: pass
-    return sorted(s)
+    sheet_count = 0
+    
+    if SHEET_ENABLED:
+        try:
+            sheet_symbols = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
+            if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
+                for x in sheet_symbols[0]: 
+                    s.add(str(x).strip().upper())
+                sheet_count = len(sheet_symbols[0])
+        except Exception as e: 
+            pass
+            
+    return sorted(s), sheet_count
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_fetch(symbol, interval, start_date=None, end_date=None, period=None, force_download=False):
@@ -196,43 +207,34 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-# ⬇️⬇️ قسم إدارة البيانات (تم تحديثه بالكامل) ⬇️⬇️
+all_symbols, sheet_count = get_available_symbols()
+
 with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
     repo = get_github_repo()
     if repo:
         st.success(f"✅ متصل بـ: {repo.full_name}")
         
-        # اختيار طريقة التنزيل
-        dl_mode = st.radio(
-            "طريقة التنزيل:", 
-            ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], 
-            horizontal=True, 
-            key="dl_mode"
-        )
+        if sheet_count > 0:
+            st.info(f"📊 تم جلب **{sheet_count}** عملة من الشيت + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
+        else:
+            st.warning("⚠️ تعذر جلب العملات من الشيت (قد يكون ملف `ffff.py` مفقوداً أو هناك مشكلة في الاتصال). يتم عرض العملات الافتراضية فقط.")
         
-        # اختيار الأطُر الزمنية
-        intvs_to_dl = st.multiselect(
-            "اختر الأطُر الزمنية للتنزيل:", 
-            ["1h", "4h", "1d"], 
-            default=["1h", "4h"], 
-            key="dl_intvs"
-        )
+        dl_mode = st.radio("طريقة التنزيل:", ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], horizontal=True, key="dl_mode")
+        intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ["1h", "4h", "1d"], default=["1h", "4h"], key="dl_intvs")
         
         if dl_mode == "الكل (شيت)":
-            st.info("سيتم تنزيل جميع العملات الموجودة في الشيت (قد يستغرق بعض الوقت).")
+            st.info(f"سيتم تنزيل **جميع** العملات ({len(all_symbols)} عملة).")
             if st.button("📥 تنزيل وحفظ الكل", use_container_width=True):
-                av = get_available_symbols()
                 with st.status("جاري تحديث البيانات وحفظها...", expanded=True) as status:
-                    for i, sym in enumerate(av):
-                        st.write(f"[{i+1}/{len(av)}] تحديث {sym}...")
+                    for i, sym in enumerate(all_symbols):
+                        st.write(f"[{i+1}/{len(all_symbols)}] تحديث {sym}...")
                         for intv in intvs_to_dl:
                             _cached_fetch(fix_symbol(sym), intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
                     st.cache_data.clear()
                     status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
                     
         elif dl_mode == "مجموعة محددة":
-            av = get_available_symbols()
-            selected_syms = st.multiselect("اختر العملات المراد تنزيلها:", av, default=av[:5], key="dl_selected_syms")
+            selected_syms = st.multiselect("اختر العملات المراد تنزيلها:", all_symbols, default=all_symbols[:5], key="dl_selected_syms")
             if st.button("📥 تنزيل وحفظ المحدد", use_container_width=True) and selected_syms:
                 with st.status(f"جاري تحديث {len(selected_syms)} عملات...", expanded=True) as status:
                     for i, sym in enumerate(selected_syms):
@@ -270,14 +272,13 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
     if bt_mode == "سهم فردي":
         bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")]
     else:
-        all_av = get_available_symbols()
         c1, c2 = st.columns(2)
         if c1.button("✅ تحديد كل العملات", use_container_width=True):
-            st.session_state["bt_selected_symbols"] = all_av; st.rerun()
+            st.session_state["bt_selected_symbols"] = all_symbols; st.rerun()
         if c2.button("❌ إلغاء التحديد", use_container_width=True):
             st.session_state["bt_selected_symbols"] = []; st.rerun()
         if "bt_selected_symbols" not in st.session_state: st.session_state["bt_selected_symbols"] = ["BTC-USD"]
-        bt_symbols = st.multiselect("اختر:", all_av, key="bt_selected_symbols")
+        bt_symbols = st.multiselect("اختر:", all_symbols, key="bt_selected_symbols")
 
     now = datetime.datetime.now()
     c1, c2, c3 = st.columns(3)
@@ -416,14 +417,13 @@ else:
     if live_mode == "سهم فردي":
         symbols = [st.text_input("رمز:", value="BTC-USD", key="live_sym_input")]
     else:
-        all_av = get_available_symbols()
         c1, c2 = st.columns(2)
         if c1.button("✅ تحديد كل العملات", use_container_width=True, key="live_sel_all"):
-            st.session_state["live_selected_symbols"] = all_av; st.rerun()
+            st.session_state["live_selected_symbols"] = all_symbols; st.rerun()
         if c2.button("❌ إلغاء التحديد", use_container_width=True, key="live_clr_all"):
             st.session_state["live_selected_symbols"] = []; st.rerun()
         if "live_selected_symbols" not in st.session_state: st.session_state["live_selected_symbols"] = ["BTC-USD"]
-        symbols = st.multiselect("اختر العملات:", all_av, key="live_selected_symbols")
+        symbols = st.multiselect("اختر العملات:", all_symbols, key="live_selected_symbols")
 
     interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
     period = st.selectbox("النطاق:", ALL_PERIODS, index=2)
@@ -461,3 +461,39 @@ else:
                 if st.button("⬅️ السابق", key="live_prev_bottom", use_container_width=True): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
             with n6:
                 if st.button("التالي ➡️", key="live_next_bottom", use_container_width=True): st.session_state["live_signal_index"] = min(len(valid)-1, si + 1); st.rerun()
+
+# ⬇️⬇️ قائمة توضيحية بجميع الأزرار ⬇️⬇️
+st.markdown("---")
+with st.expander("📖 دليل الأزرار والخيارات (اضغط للقراءة)"):
+    st.markdown("""
+    ### ⚙️ قسم إدارة البيانات (GitHub)
+    * **الكل (شيت):** يقوم بتنزيل وتحديث بيانات **جميع** العملات الموجودة في الشيت دفعة واحدة وحفظها في GitHub.
+    * **مجموعة محددة:** يفتح لك قائمة (Multiselect) لتختار منها 5 أو 10 أو أي عدد تريده من العملات لتنزيلها.
+    * **عملة واحدة:** يتيح لك كتابة رمز عملة واحدة فقط (مثل XAUUSD) وتنزيلها.
+    * **الأطُر الزمنية (اختيار متعدد):** يمكنك تحديد 1h و 4h و 1d معاً وتنزيلهم في نفس الوقت.
+
+    ---
+    ### 🧪 مختبر الاختبار الرجعي (Backtest)
+    * **مصدر البيانات:** 
+      * `البيانات المحفوظة`: يقرأ من ملفات GitHub (سريع ولا يستهلك API).
+      * `جلب مباشر`: يتصل بالإنترنت لجلب أحدث البيانات فوراً (قد يستهلك حد الـ API).
+    * **طريقة الفحص (سهم فردي):** يختبر عملة واحدة فقط.
+    * **طريقة الفحص (مجموعة):** يختبر عدة عملات.
+    * **✅ تحديد كل العملات:** يضع كل عملات الشيت في قائمة الفحص دفعة واحدة.
+    * **❌ إلغاء التحديد:** يفرغ القائمة.
+    * **📊 بدء المحاكاة:** يبدأ عملية الاختبار التاريخي.
+    * **⬅️ السابق / التالي ➡️:** للتنقل بين الإشارات (موجودة أعلى وأسفل الشارت لتسهيل الاستخدام على الموبايل).
+
+    ---
+    ### 🚀 الماسح الحي (Live Scan)
+    * **مصدر البيانات:** نفس الخيارات السابقة.
+    * **سهم فردي / مجموعة:** لفحص عملة واحدة أو عدة عملات.
+    * **🚀 بدء المسح:** يبحث عن إشارات جديدة حالياً (آخر 10 شموع).
+    * **أزرار التنقل:** للتنقل بين الإشارات التي تم العثور عليها.
+
+    ---
+    ### 🧠 تبويبات النتائج (بعد انتهاء الباكتيست)
+    * **📉 الرسوم البيانية:** يعرض الشارت المزدوج (السعر + الحجم) مع رسم الصندوق (الدعم/المقاومة) ونجمة الكسر.
+    * **🧠 التشخيص الذكي:** يعرض نسبة الأرباح والخسائر، ويحلل أسباب الخسارة (انعكاس مبكر، متأخر، إلخ).
+    * **🛡️ تقرير الفلاتر:** يخبرك كم صفقة تم اكتشافها، وكم تم رفضها بسبب فلتر "الدعوم والمقاومات" أو فلتر "إعادة الاختبار". (مفيد جداً لضبط المحرك).
+    """)
