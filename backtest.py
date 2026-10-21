@@ -3,7 +3,7 @@ import calendar, datetime
 import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
 import numpy as np
 
-# ⬇️⬇️ استيراد صحيح لملف data_provider (بدون get_provider_info) ⬇️⬇️
+# ⬇️⬇️ استيراد آمن للمصادر ⬇️⬇️
 try:
     from data_provider import fetch_data, get_github_repo, PROVIDER
 except ImportError:
@@ -11,13 +11,11 @@ except ImportError:
     get_github_repo = None
     PROVIDER = None
 
-# ⬇️⬇️ استيراد محرك التحليل ⬇️⬇️
 try:
     from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_filters
 except ImportError:
     diagnose_filters = None
 
-# ⬇️⬇️ استيراد الشيت ⬇️⬇️
 try:
     from ffff import get_symbols_from_sheet
 except ImportError:
@@ -30,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ⬇️⬇️ تحسينات CSS للموبايل وإخفاء القوائم الجانبية ⬇️⬇️
+# ⬇️⬇️ تحسينات CSS للموبايل ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -55,9 +53,6 @@ DEFAULT_COL_NAME = "TOKENS"
 ALL_GLOBAL_INTERVALS = [
     "1m", "2m", "3m", "4m", "5m", "10m", "15m", "30m", "45m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "2d", "3d", "1wk", "1mo", "3mo", "6mo", "1y"
 ]
-INTERVAL_LIMITS = {
-    "1m": 7, "2m": 60, "5m": 60, "15m": 60, "30m": 60, "60m": 730, "90m": 60, "1h": 730,
-}
 
 IC_MARKETS_SPECS = {
     "BTC-USD": {"contract": 1, "min_lot": 0.01, "step": 0.01, "pip": 1.0, "cat": "🪙 Crypto"},
@@ -128,8 +123,6 @@ def pip_size_for(symbol):
     if any(x in s for x in ["BTC", "ETH"]): return 1.0
     if any(x in s for x in ["US30", "NAS", "SPX", "US100", "US500"]): return 1.0
     if "JPY" in s: return 0.01
-    high_price = ["HUF", "TRY", "SEK", "NOK", "CZK", "MXN", "ZAR", "PLN", "INR", "THB", "DKK", "HKD", "SGD", "PHP", "IDR"]
-    if any(c in s for c in high_price): return 0.01
     return 0.0001
 
 def get_default_lot_for_symbol(symbol):
@@ -213,13 +206,47 @@ def get_available_symbols():
         sheet_symbols = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)[0]
         for s in sheet_symbols: symbols_set.add(str(s).strip())
     except Exception: pass
-    if "backtest_scanned_signals" in st.session_state:
-        for item in st.session_state.backtest_scanned_signals:
-            if "symbol" in item: symbols_set.add(item["symbol"])
-    if "scanned_signals" in st.session_state:
-        for item in st.session_state.scanned_signals:
-            if "symbol" in item: symbols_set.add(item["symbol"])
     return sorted(list(symbols_set))
+
+# ⬇️⬇️ دالة الجلب الذكية (Smart Fetch) ⬇️⬇️
+def smart_fetch(symbol, interval, source_choice, start_date=None, end_date=None, period=None):
+    logs = []
+    df = None
+    source_used = ""
+    
+    if "المدمج" in source_choice and fetch_data is not None:
+        try:
+            if start_date and end_date:
+                df = fetch_data(symbol, interval=interval, start_date=start_date, end_date=end_date)
+            else:
+                df = fetch_data(symbol, interval=interval, period=period)
+            if df is None or df.empty:
+                raise ValueError("المصدر المدمج أرجع بيانات فارغة (0 شمعة).")
+            source_used = "Twelve Data / GitHub"
+        except Exception as e:
+            logs.append(f"⚠️ فشل الجلب من المدمج: {type(e).__name__} - {str(e)}")
+            df = None # إجبار التبديل للاحتياطي
+            
+    if df is None:
+        try:
+            if start_date and end_date:
+                df = yf.download(fix_symbol(symbol), start=start_date, end=end_date, interval=interval, progress=False, auto_adjust=False)
+            else:
+                df = yf.download(fix_symbol(symbol), period=period, interval=interval, progress=False, auto_adjust=False)
+            if df is None or df.empty:
+                raise ValueError("Yahoo Finance أرجع بيانات فارغة (0 شمعة). قد تكون العملة غير مدعومة أو الإطار غير متاح.")
+            source_used = "Yahoo Finance (احتياطي)"
+            if "المدمج" in source_choice:
+                logs.append("✅ تم التبديل التلقائي إلى Yahoo Finance بسبب فشل المصدر المدمج.")
+        except Exception as e:
+            logs.append(f"❌ فشل الجلب من Yahoo Finance: {type(e).__name__} - {str(e)}")
+            df = None
+            source_used = "فشل كلي"
+            
+    if df is not None and isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+        
+    return df, source_used, logs
 
 # ⬇️⬇️ إدارة الجلسة ⬇️⬇️
 for k, v in [
@@ -237,10 +264,10 @@ for k, v in [
     ("active_signal_tp", None), 
     ("active_signal_bias", None), 
     ("near_signals", []),
+    ("global_error_logs", [])
 ]:
     if k not in st.session_state: st.session_state[k] = v
 
-# ⬇️⬇️ الشريط العلوي وإدارة GitHub ⬇️⬇️
 st.markdown(f'''<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;direction:rtl;">
 <div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📈 {st.session_state.current_symbol}</div>
 <div style="border:1px solid #DADCE0;background:#FFF;border-radius:30px;padding:8px 14px;font-weight:700;color:#0B57D0;">{st.session_state.status_summary}</div>
@@ -249,20 +276,8 @@ st.markdown(f'''<div style="display:flex;justify-content:space-between;align-ite
 if get_github_repo is not None:
     with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
         repo = get_github_repo()
-        if repo:
-            st.success(f"✅ متصل بـ: {repo.full_name}")
-            if st.button("📥 تحديث وحفظ البيانات (الكل)", use_container_width=True):
-                av = get_available_symbols()[:10]
-                intervals = ["1h", "4h"]
-                with st.status("جاري تحديث البيانات وحفظها...", expanded=True) as status:
-                    for i, sym in enumerate(av):
-                        st.write(f"تحديث {sym}...")
-                        for intv in intervals:
-                            fetch_data(fix_symbol(sym), interval=intv, start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"), force_download=True)
-                    st.cache_data.clear()
-                    status.update(label="✅ تم التحديث والحفظ في GitHub!", state="complete", expanded=False)
-        else:
-            st.warning("⚠️ لم يتم ربط GitHub. يرجى إضافة التوكن في الإعدادات.")
+        if repo: st.success(f"✅ متصل بـ: {repo.full_name}")
+        else: st.warning("⚠️ لم يتم ربط GitHub. سيتم استخدام yfinance مباشرة.")
 
 app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي للأسواق", "🧪 مختبر الاختبار الرجعي (Backtest)"], horizontal=True)
 st.markdown("---")
@@ -270,6 +285,16 @@ st.markdown("---")
 # ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
     st.markdown("### 🧪 مختبر تحليل الأداء التاريخي")
+    
+    # ⬇️⬇️ زر اختيار مصدر البيانات ⬇️⬇️
+    data_source_choice = st.radio(
+        "📡 مصدر البيانات:",
+        ["المدمج (Twelve Data / GitHub)", "الخارجي (Yahoo Finance - yfinance)"],
+        horizontal=True,
+        key="bt_data_source",
+        help="المدمج أسرع ويحفظ البيانات، الخارجي (Yahoo) بديل مباشر."
+    )
+    
     bt_scan_mode = st.radio("طريقة الفحص:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True, key="bt_scan_mode")
     
     if bt_scan_mode == "سهم فردي":
@@ -329,25 +354,30 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
         st.success(f"✅ الفترة: **{period_label}**")
         if st.button("📊 بدء محاكاة الاختبار الرجعي", use_container_width=True) and bt_symbols:
             results, dfs = [], {}
-            p_bar = st.progress(0); s_txt = st.empty(); error_log = []
+            p_bar = st.progress(0); s_txt = st.empty()
+            st.session_state.global_error_logs = [] # تصفير السجل
             
             for idx, sym in enumerate(bt_symbols):
                 s_txt.text(f"محاكاة ({idx+1}/{len(bt_symbols)}): {sym}...")
                 p_bar.progress((idx + 1) / len(bt_symbols))
-                try:
-                    # ⬇️⬇️ استخدام fetch_data من data_provider بدلاً من yf ⬇️⬇️
-                    df = fetch_data(sym, interval=selected_interval, start_date=start_date, end_date=end_date) if fetch_data else yf.download(fix_symbol(sym), start=start_date, end=end_date, interval=selected_interval, progress=False, auto_adjust=False)
-                    
-                    if df is not None and not df.empty:
-                        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                
+                # استخدام الجلب الذكي
+                df, source_used, logs = smart_fetch(sym, selected_interval, data_source_choice, start_date=start_date, end_date=end_date)
+                
+                for log in logs:
+                    st.session_state.global_error_logs.append(f"[{sym}] {log}")
+                
+                if df is not None and not df.empty:
+                    try:
                         trades = backtest_strategy(df, interval=selected_interval, symbol=sym)
                         if trades:
                             tdf = pd.DataFrame(trades)
                             if "symbol" not in tdf.columns: tdf["symbol"] = sym
                             results.append({"symbol": sym, "trades_df": tdf, "total_signals": len(tdf)})
                         dfs[sym] = df
-                    else: error_log.append(f"⚠️ {sym}: لا توجد بيانات")
-                except Exception as e: error_log.append(f"❌ {sym}: {type(e).__name__}: {e}")
+                    except Exception as e:
+                        st.session_state.global_error_logs.append(f"[{sym}] ❌ خطأ في المحرك: {type(e).__name__} - {str(e)}")
+            
             s_txt.empty(); p_bar.empty()
             
             st.session_state.backtest_scanned_signals = results
@@ -355,10 +385,13 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             st.session_state.backtest_period = period_label
             st.session_state.backtest_start = start_date
             st.session_state.backtest_end = end_date
-            
-            if error_log:
-                with st.expander(f"⚠️ تحذيرات ({len(error_log)})"):
-                    for msg in error_log: st.text(msg)
+
+    # عرض سجل التشخيص الذكي إذا وجد
+    if st.session_state.global_error_logs:
+        with st.expander("🚨 سجل التشخيص الذكي (أخطاء المصادر والحدود)", expanded=True):
+            for log in st.session_state.global_error_logs:
+                if "❌" in log or "⚠️" in log: st.error(log)
+                else: st.info(log)
 
     if st.session_state.backtest_scanned_signals:
         res_list = st.session_state.backtest_scanned_signals
@@ -408,15 +441,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             trades_df = compute_dollar_pnl(compute_pips(active_item["trades_df"]), lot=lot_size)
             st.session_state.current_symbol = active_sym
             
-            if len(trades_df) > 0:
-                last_row = trades_df.iloc[-1]
-                st.session_state.update({
-                    "active_signal_symbol": active_sym, "active_signal_entry": last_row.get("Entry Price") or last_row.get("Entry"),
-                    "active_signal_sl": last_row.get("Stop Loss") or last_row.get("SL"),
-                    "active_signal_tp": last_row.get("Take Profit") or last_row.get("TP"),
-                    "active_signal_bias": last_row.get("bias") or last_row.get("Bias")
-                })
-                
             res_col = "Result" if "Result" in trades_df.columns else "Head Result" if "Head Result" in trades_df.columns else None
             if res_col:
                 res_series = trades_df[res_col].astype(str).str.upper()
@@ -473,32 +497,26 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 st.dataframe(cur_trade.to_frame().T, use_container_width=True)
 
             with st.expander("🔬 التقرير التشخيصي الذكي (تطوير ذاتي)", expanded=True):
-                if diagnose_filters is None: st.error("⚠️ `diagnose_filters` غير موجودة في engine.py")
-                else:
+                if diagnose_filters is not None:
                     df_for_diag = dfs_dict.get(active_sym)
                     if df_for_diag is not None and not df_for_diag.empty:
-                        with st.spinner("جاري تحليل أسباب الخسارة والربح..."):
-                            diag = diagnose_filters(df_for_diag, interval=selected_interval, symbol=active_sym)
-                            smart = diag.get("smart_diagnosis", {})
-                            if smart.get("verdict"): st.markdown(f"### 🎯 الحكم: {smart['verdict']}")
-                            
-                            stats = smart.get("stats", {})
-                            if stats:
-                                dc1, dc2, dc3 = st.columns(3)
-                                dc1.metric("إجمالي الصفقات المغلقة", stats.get("closed_trades", 0))
-                                dc2.metric("الصفقات الرابحة", stats.get("wins", 0), stats.get("win_rate", "0%"))
-                                dc3.metric("الصفقات الخاسرة", stats.get("losses", 0), stats.get("loss_rate", "0%"), delta_color="inverse")
-                            
-                            if smart.get("action_plan"):
-                                st.markdown("#### 💡 خطة التطوير الذاتي (توصيات المحرك)")
-                                for item in smart["action_plan"]:
-                                    if item.startswith("⚠️") or item.startswith("📉"): st.warning(item)
-                                    else: st.success(item)
-    else:
-        st.info("ℹ️ لم يتم العثور على نتائج بعد. اضبط الإعدادات واضغط 'بدء المحاكاة'.")
+                        diag = diagnose_filters(df_for_diag, interval=selected_interval, symbol=active_sym)
+                        smart = diag.get("smart_diagnosis", {})
+                        if smart.get("verdict"): st.markdown(f"### 🎯 الحكم: {smart['verdict']}")
+                        if smart.get("action_plan"):
+                            for item in smart["action_plan"]:
+                                st.warning(item) if item.startswith("⚠️") else st.info(item)
 
 # ================= LIVE SCAN MODE =================
 else:
+    data_source_choice = st.radio(
+        "📡 مصدر البيانات:",
+        ["المدمج (Twelve Data / GitHub)", "الخارجي (Yahoo Finance - yfinance)"],
+        horizontal=True,
+        key="live_data_source",
+        help="المدمج أسرع، الخارجي بديل مباشر."
+    )
+    
     scan_mode = st.radio("طريقة الفحص:", ["سهم فردي", "مسح كلي لشيت الأصول"], horizontal=True, key="live_scan_mode")
     
     if scan_mode == "سهم فردي":
@@ -518,29 +536,39 @@ else:
     selected_period = c2.selectbox("📅 نطاق البيانات:", ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"], index=3, key="live_period")
     
     if st.button("🚀 بدء المسح والتحليل الفوري", use_container_width=True) and symbols:
-        valid = []; p_bar = st.progress(0); s_txt = st.empty(); error_log = []
+        valid = []
+        p_bar = st.progress(0); s_txt = st.empty()
+        st.session_state.global_error_logs = [] # تصفير السجل
         
         for idx, sym in enumerate(symbols):
             s_txt.text(f"فحص ({idx+1}/{len(symbols)}): {sym}...")
             p_bar.progress((idx + 1) / len(symbols))
-            try:
-                # ⬇️⬇️ استخدام fetch_data من data_provider ⬇️⬇️
-                df = fetch_data(sym, interval=selected_interval, period=selected_period) if fetch_data else yf.download(fix_symbol(sym), period=selected_period, interval=selected_interval, progress=False, auto_adjust=False)
+            
+            df, source_used, logs = smart_fetch(sym, selected_interval, data_source_choice, period=selected_period)
+            
+            for log in logs:
+                st.session_state.global_error_logs.append(f"[{sym}] {log}")
                 
-                if df is not None and not df.empty:
-                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                    if len(df) >= 20:
+            if df is not None and not df.empty:
+                if len(df) >= 20:
+                    try:
                         res = run_full_analysis(df, interval=selected_interval, symbol=sym)
                         if res["signal"] in ["STRONG BUY", "STRONG SELL"] or scan_mode == "سهم فردي": 
                             valid.append({"symbol": sym, "result": res})
-                else: error_log.append(f"⚠️ {sym}: لا توجد بيانات")
-            except Exception as e: error_log.append(f"❌ {sym}: {type(e).__name__}: {e}")
+                    except Exception as e:
+                        st.session_state.global_error_logs.append(f"[{sym}] ❌ خطأ في المحرك: {type(e).__name__} - {str(e)}")
+                else:
+                    st.session_state.global_error_logs.append(f"[{sym}] ⚠️ بيانات غير كافية (أقل من 20 شمعة).")
+                    
         s_txt.empty(); p_bar.empty()
         st.session_state.scanned_signals = valid
-        
-        if error_log:
-            with st.expander(f"⚠️ تحذيرات ({len(error_log)})"):
-                for msg in error_log: st.text(msg)
+
+    # عرض سجل التشخيص الذكي إذا وجد
+    if st.session_state.global_error_logs:
+        with st.expander("🚨 سجل التشخيص الذكي (أخطاء المصادر والحدود)", expanded=True):
+            for log in st.session_state.global_error_logs:
+                if "❌" in log or "⚠️" in log: st.error(log)
+                else: st.info(log)
 
     if st.session_state.scanned_signals:
         sigs = st.session_state.scanned_signals
