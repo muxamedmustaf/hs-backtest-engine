@@ -22,13 +22,13 @@ except ImportError:
     def get_symbols_from_sheet(*args, **kwargs): return [["EURUSD=X", "BTC-USD"]]
 
 st.set_page_config(
-    page_title="Smart Market Analyzer & Backtest Lab",
-    page_icon="📈",
+    page_title="Box Hunter Pro - Smart Lab",
+    page_icon="📦",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# ⬇️⬇️ تحسينات CSS للموبايل ⬇️⬇️
+# ⬇️⬇️ تحسينات CSS للموبايل وإخفاء القوائم الجانبية ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -225,7 +225,7 @@ def smart_fetch(symbol, interval, source_choice, start_date=None, end_date=None,
             source_used = "Twelve Data / GitHub"
         except Exception as e:
             logs.append(f"⚠️ فشل الجلب من المدمج: {type(e).__name__} - {str(e)}")
-            df = None # إجبار التبديل للاحتياطي
+            df = None
             
     if df is None:
         try:
@@ -248,10 +248,32 @@ def smart_fetch(symbol, interval, source_choice, start_date=None, end_date=None,
         
     return df, source_used, logs
 
+# ⬇️⬇️ دالة رسم الصناديق (الاستراتيجية الأساسية) ⬇️⬇️
+def draw_box_pattern(fig, source):
+    if source is None: return
+    nodes = source.get("nodes", [])
+    box_nodes = source.get("neckline_nodes", [])
+    if len(nodes) < 3 or len(box_nodes) < 4: return
+
+    # خط الترند
+    fig.add_trace(go.Scatter(x=[nodes[0][0], nodes[1][0]], y=[nodes[0][1], nodes[1][1]], mode="lines", name="Trend", line=dict(color="#FF9800", width=2, dash="dot")))
+    
+    # مستطيل الصندوق
+    top_x, top_y = [box_nodes[0][0], box_nodes[1][0]], [box_nodes[0][1], box_nodes[1][1]]
+    bot_x, bot_y = [box_nodes[2][0], box_nodes[3][0]], [box_nodes[2][1], box_nodes[3][1]]
+    
+    fig.add_trace(go.Scatter(x=top_x, y=top_y, mode="lines", name="Resistance", line=dict(color="#2196F3", width=2)))
+    fig.add_trace(go.Scatter(x=bot_x, y=bot_y, mode="lines", name="Support", line=dict(color="#2196F3", width=2)))
+    fig.add_trace(go.Scatter(x=[top_x[0], bot_x[0]], y=[top_y[0], bot_y[0]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False))
+    fig.add_trace(go.Scatter(x=[top_x[1], bot_x[1]], y=[top_y[1], bot_y[1]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False))
+    
+    # نجمة الكسر
+    fig.add_trace(go.Scatter(x=[nodes[2][0]], y=[nodes[2][1]], mode="markers+text", name="Breakout", marker=dict(size=14, color="#E91E63", symbol="star"), text=["كسر"], textposition="top center"))
+
 # ⬇️⬇️ إدارة الجلسة ⬇️⬇️
 for k, v in [
     ("current_symbol", "NZDCAD=X"), 
-    ("status_summary", "⚡ Live Scan & Backtest Lab • جاهز"),
+    ("status_summary", "⚡ Box Hunter Pro • جاهز"),
     ("scanned_signals", []), 
     ("backtest_scanned_signals", []), 
     ("backtest_dfs", {}),
@@ -269,7 +291,7 @@ for k, v in [
     if k not in st.session_state: st.session_state[k] = v
 
 st.markdown(f'''<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;direction:rtl;">
-<div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📈 {st.session_state.current_symbol}</div>
+<div style="border:1px solid #DADCE0;background:#FFF;border-radius:16px;padding:8px 14px;font-weight:700;color:#0B57D0;">📦 {st.session_state.current_symbol}</div>
 <div style="border:1px solid #DADCE0;background:#FFF;border-radius:30px;padding:8px 14px;font-weight:700;color:#0B57D0;">{st.session_state.status_summary}</div>
 </div>''', unsafe_allow_html=True)
 
@@ -284,9 +306,8 @@ st.markdown("---")
 
 # ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
-    st.markdown("### 🧪 مختبر تحليل الأداء التاريخي")
+    st.markdown("### 🧪 مختبر الصناديق (Box Backtest)")
     
-    # ⬇️⬇️ زر اختيار مصدر البيانات ⬇️⬇️
     data_source_choice = st.radio(
         "📡 مصدر البيانات:",
         ["المدمج (Twelve Data / GitHub)", "الخارجي (Yahoo Finance - yfinance)"],
@@ -361,7 +382,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 s_txt.text(f"محاكاة ({idx+1}/{len(bt_symbols)}): {sym}...")
                 p_bar.progress((idx + 1) / len(bt_symbols))
                 
-                # استخدام الجلب الذكي
                 df, source_used, logs = smart_fetch(sym, selected_interval, data_source_choice, start_date=start_date, end_date=end_date)
                 
                 for log in logs:
@@ -386,7 +406,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
             st.session_state.backtest_start = start_date
             st.session_state.backtest_end = end_date
 
-    # عرض سجل التشخيص الذكي إذا وجد
     if st.session_state.global_error_logs:
         with st.expander("🚨 سجل التشخيص الذكي (أخطاء المصادر والحدود)", expanded=True):
             for log in st.session_state.global_error_logs:
@@ -478,9 +497,9 @@ if app_mode == "🧪 مختبر الاختبار الرجعي (Backtest)":
                 fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA50'], line=dict(color='orange', width=1.2), name="EMA 50"))
                 fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA200'], line=dict(color='blue', width=1.2), name="EMA 200"))
                 
-                if "nodes" in cur_trade and isinstance(cur_trade['nodes'], list):
-                    sn = sorted(cur_trade['nodes'], key=lambda x: pd.to_datetime(x[0]))
-                    fig.add_trace(go.Scatter(x=[n[0] for n in sn], y=[n[1] for n in sn], mode="lines+markers", name=f"النمط #{si+1}", line=dict(color="#9C27B0", width=2)))
+                # ⬇️⬇️ استدعاء دالة رسم الصناديق ⬇️⬇️
+                draw_box_pattern(fig, cur_trade)
+                
                 for val, col, txt in [(cur_trade.get('Entry Price'), "#2196F3", "دخول"), (cur_trade.get('Stop Loss'), "#F44336", "وقف"), (cur_trade.get('Take Profit'), "#4CAF50", "هدف")]:
                     if val: fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
                     
@@ -563,7 +582,6 @@ else:
         s_txt.empty(); p_bar.empty()
         st.session_state.scanned_signals = valid
 
-    # عرض سجل التشخيص الذكي إذا وجد
     if st.session_state.global_error_logs:
         with st.expander("🚨 سجل التشخيص الذكي (أخطاء المصادر والحدود)", expanded=True):
             for log in st.session_state.global_error_logs:
@@ -609,10 +627,8 @@ else:
             fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA50'], line=dict(color='orange', width=1.2), name="EMA 50"))
             fig.add_trace(go.Scatter(x=df_res.index, y=df_res['EMA200'], line=dict(color='blue', width=1.2), name="EMA 200"))
             
-            live_nodes = active_res.get("nodes") or active_res.get("pattern_nodes")
-            if isinstance(live_nodes, list) and live_nodes:
-                sn = sorted(live_nodes, key=lambda x: pd.to_datetime(x[0]))
-                fig.add_trace(go.Scatter(x=[n[0] for n in sn], y=[n[1] for n in sn], mode="lines+markers", name="النمط المكتشف", line=dict(color="#9C27B0", width=2)))
+            # ⬇️⬇️ استدعاء دالة رسم الصناديق (Live) ⬇️⬇️
+            draw_box_pattern(fig, active_res)
                 
             for val, col, txt in [(active_res.get('entry'), "#2196F3", "دخول"), (active_res.get('sl'), "#F44336", "وقف"), (active_res.get('tp'), "#4CAF50", "هدف")]:
                 if val: fig.add_hline(y=val, line_dash="dash", line_color=col, annotation_text=txt)
