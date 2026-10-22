@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
 import calendar, datetime
-import streamlit as st
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import pandas as pd
+import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
 import numpy as np
-import yfinance as yf
 from data_provider import fetch_data, get_github_repo
 
 # ⬇️ استيراد المحرك ⬇️
@@ -23,7 +19,12 @@ except ImportError:
     SHEET_ENABLED = False
     def get_symbols_from_sheet(*args, **kwargs): return []
 
-st.set_page_config(page_title="Box Hunter Pro - Smart", page_icon="📦", layout="wide")
+st.set_page_config(
+    page_title="Smart Market Analyzer & Backtest Lab",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 # ⬇️⬇️ تحديثات CSS للتوسيع، التباعد، والزر العائم ⬇️⬇️
 st.markdown("""
@@ -82,12 +83,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
+DEFAULT_SHEET_NAME = "GOLD"
+DEFAULT_COL_NAME = "TOKENS"
 
-# ⬇️⬇️ تصحيح: إضافة 4h إلى القائمة ⬇️⬇️
 ALL_GLOBAL_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "4h", "1d", "5d", "1wk", "1mo", "3mo"]
 ALL_PERIODS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
 
-IC_MARKETS_SPECS = {"BTC-USD": {"pip": 1.0}, "EURUSD": {"pip": 0.0001}, "GBPUSD": {"pip": 0.0001}}
+IC_MARKETS_SPECS = {
+    "BTC-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "ETH-USD":  {"contract": 1,      "min_lot": 0.01, "step": 0.01, "pip": 1.0,    "cat": "🪙 Crypto"},
+    "EURUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "GBPUSD":   {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDJPY=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.01,   "cat": "💴 JPY"},
+    "USDCHF=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "USDCAD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "AUDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+    "NZDUSD=X": {"contract": 100000, "min_lot": 0.01, "step": 0.01, "pip": 0.0001, "cat": "💵 Major"},
+}
+
 PLOTLY_CONFIG = {'responsive': True, 'scrollZoom': True, 'displaylogo': False, 'displayModeBar': True, 'dragmode': 'pan', 'doubleClick': 'reset+autosize'}
 
 def fix_symbol(sym):
@@ -100,19 +113,27 @@ def pip_size_for(symbol):
     s = str(symbol).upper()
     for key, spec in IC_MARKETS_SPECS.items():
         if key.upper() == s: return spec["pip"]
+    if "XAU" in s or "GOLD" in s: return 0.1
+    if "XAG" in s or "SILVER" in s: return 0.01
+    if any(x in s for x in ["BTC", "ETH"]): return 1.0
+    if "JPY" in s: return 0.01
     return 0.0001
 
+# ⬇️⬇️ دالة جلب كل العملات من الشيت ⬇️⬇️
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
     sheet_count = 0
     if SHEET_ENABLED:
         try:
-            sheet_symbols = get_symbols_from_sheet(SHEET_ID, "GOLD", "TOKENS")
+            sheet_symbols = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)
             if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
                 for x in sheet_symbols[0]: s.add(str(x).strip().upper())
                 sheet_count = len(sheet_symbols[0])
         except Exception: pass
     return sorted(s), sheet_count
+
+# استدعاء الدالة مرة واحدة لتكون متاحة لكل التبويبات
+all_symbols, sheet_count = get_available_symbols()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_smart_fetch(symbol, interval, source_choice, start_date=None, end_date=None, period=None):
@@ -276,8 +297,6 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-all_symbols, sheet_count = get_available_symbols()
-
 # ⬇️⬇️ قسم إدارة البيانات (GitHub) ⬇️⬇️
 with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
     repo = get_github_repo()
@@ -287,7 +306,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
         if sheet_count > 0:
             st.info(f"📊 تم جلب **{sheet_count}** عملة من الشيت + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
         else:
-            st.warning("⚠️ تعذر جلب العملات من الشيت (قد يكون ملف `ffff.py` مفقوداً).")
+            st.warning("⚠️ تعذر جلب العملات من الشيت (قد يكون ملف `ffff.py` مفقوداً أو هناك مشكلة في الاتصال).")
         
         dl_mode = st.radio("طريقة التنزيل:", ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], horizontal=True, key="dl_mode")
         intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ALL_GLOBAL_INTERVALS, default=["1h", "4h"], key="dl_intvs")
@@ -304,6 +323,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                     status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
                     
         elif dl_mode == "مجموعة محددة":
+            # ⬇️ هنا يتم استخدام all_symbols (كل العملات من الشيت) ⬇️
             selected_syms = st.multiselect("اختر العملات المراد تنزيلها:", all_symbols, default=all_symbols[:5], key="dl_selected_syms")
             if st.button("📥 تنزيل وحفظ المحدد", use_container_width=True) and selected_syms:
                 with st.status(f"جاري تحديث {len(selected_syms)} عملات...", expanded=True) as status:
@@ -349,6 +369,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         if c2.button("❌ إلغاء التحديد", use_container_width=True):
             st.session_state["bt_selected_symbols"] = []; st.rerun()
         if "bt_selected_symbols" not in st.session_state: st.session_state["bt_selected_symbols"] = ["BTC-USD"]
+        # ⬇️ هنا يتم استخدام all_symbols (كل العملات من الشيت) ⬇️
         bt_symbols = st.multiselect("اختر:", all_symbols, key="bt_selected_symbols")
 
     now = datetime.datetime.now()
@@ -597,6 +618,7 @@ else:
         if c2.button("❌ إلغاء التحديد", use_container_width=True, key="live_clr_all"):
             st.session_state["live_selected_symbols"] = []; st.rerun()
         if "live_selected_symbols" not in st.session_state: st.session_state["live_selected_symbols"] = ["BTC-USD"]
+        # ⬇️ هنا يتم استخدام all_symbols (كل العملات من الشيت) ⬇️
         symbols = st.multiselect("اختر العملات:", all_symbols, key="live_selected_symbols")
 
     interval = st.selectbox("الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=ALL_GLOBAL_INTERVALS.index("1h"))
