@@ -2,6 +2,7 @@
 import calendar, datetime
 import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
 import numpy as np
+from plotly.subplots import make_subplots  # ⬅️ تم إضافة هذا السطر هنا
 from data_provider import fetch_data, get_github_repo
 
 # ⬇️ استيراد المحرك ⬇️
@@ -119,7 +120,6 @@ def pip_size_for(symbol):
     if "JPY" in s: return 0.01
     return 0.0001
 
-# ⬇️⬇️ دالة جلب كل العملات من الشيت ⬇️⬇️
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
     sheet_count = 0
@@ -132,7 +132,6 @@ def get_available_symbols():
         except Exception: pass
     return sorted(s), sheet_count
 
-# استدعاء الدالة مرة واحدة لتكون متاحة لكل التبويبات
 all_symbols, sheet_count = get_available_symbols()
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -297,7 +296,6 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-# ⬇️⬇️ قسم إدارة البيانات (GitHub) ⬇️⬇️
 with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للفتح", expanded=False):
     repo = get_github_repo()
     if repo:
@@ -323,7 +321,6 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                     status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
                     
         elif dl_mode == "مجموعة محددة":
-            # ⬇️ هنا يتم استخدام all_symbols (كل العملات من الشيت) ⬇️
             selected_syms = st.multiselect("اختر العملات المراد تنزيلها:", all_symbols, default=all_symbols[:5], key="dl_selected_syms")
             if st.button("📥 تنزيل وحفظ المحدد", use_container_width=True) and selected_syms:
                 with st.status(f"جاري تحديث {len(selected_syms)} عملات...", expanded=True) as status:
@@ -369,7 +366,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         if c2.button("❌ إلغاء التحديد", use_container_width=True):
             st.session_state["bt_selected_symbols"] = []; st.rerun()
         if "bt_selected_symbols" not in st.session_state: st.session_state["bt_selected_symbols"] = ["BTC-USD"]
-        # ⬇️ هنا يتم استخدام all_symbols (كل العملات من الشيت) ⬇️
         bt_symbols = st.multiselect("اختر:", all_symbols, key="bt_selected_symbols")
 
     now = datetime.datetime.now()
@@ -618,7 +614,6 @@ else:
         if c2.button("❌ إلغاء التحديد", use_container_width=True, key="live_clr_all"):
             st.session_state["live_selected_symbols"] = []; st.rerun()
         if "live_selected_symbols" not in st.session_state: st.session_state["live_selected_symbols"] = ["BTC-USD"]
-        # ⬇️ هنا يتم استخدام all_symbols (كل العملات من الشيت) ⬇️
         symbols = st.multiselect("اختر العملات:", all_symbols, key="live_selected_symbols")
 
     interval = st.selectbox("الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=ALL_GLOBAL_INTERVALS.index("1h"))
