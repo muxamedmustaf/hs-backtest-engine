@@ -14,11 +14,9 @@ CONFIG = {
     "MAX_RETRACEMENT_PCT": 0.50,   
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
     "REQUIRE_RETEST": True,        
-    "RETEST_MAX_CANDLES": 10,       # نعطي السعر حتى 10 شموع للاختبار
+    "RETEST_MAX_CANDLES": 10,       
     "RETEST_TOLERANCE": 0.001,     
     
-    # ⬇️ الهدف والتريلينج ⬇️
-    "TRAILING_LEVELS_HEAD": [(0.50, 0.0), (0.75, 0.5), (1.00, 0.8)],
     "SAFE_SL_MARGIN": 0.05,        
     "USE_SAFE_SL": True,
     
@@ -111,6 +109,7 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     tp = entry + target if bias == "Bullish" else entry - target
     return final_sl, tp, safe_sl, structural_sl
 
+# ⬇️⬇️ دالة المحاكاة (بدون تريلينج ستوب - الوقف والهدف ثابتان) ⬇️⬇️
 def simulate_trade(pattern, df, cfg=None):
     bias = pattern["bias"]
     entry = float(pattern["entry"])
@@ -122,9 +121,8 @@ def simulate_trade(pattern, df, cfg=None):
     post_df = df.loc[end_idx:]
     if len(post_df) <= 1: return {"Result": "OPEN"}
 
-    stats = {"Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, "Entry Date": str(end_idx), "Exit Date": None, "candles_to_exit": 0, "Trailing Stage": 0, "Initial SL": sl, "Final SL": sl, "Loss Category": None, "exit_price": None}
+    stats = {"Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, "Entry Date": str(end_idx), "Exit Date": None, "candles_to_exit": 0, "Initial SL": sl, "Final SL": sl, "Loss Category": None, "exit_price": None}
     total_tp_dist = abs(tp - entry)
-    head_size = total_tp_dist
     max_fav, max_adv = 0.0, 0.0
     exited = False
 
@@ -133,26 +131,25 @@ def simulate_trade(pattern, df, cfg=None):
         fav = max(0.0, entry - l) if bias == "Bearish" else max(0.0, h - entry)
         adv = max(0.0, h - entry) if bias == "Bearish" else max(0.0, entry - l)
         prog = (fav / total_tp_dist) if total_tp_dist > 0 else 0.0
-        prog_h = (fav / head_size) if head_size > 0 else 0.0
 
         if not exited:
             max_fav = max(max_fav, prog * 100)
             max_adv = max(max_adv, (adv / abs(entry - stats["Initial SL"]) * 100) if abs(entry - stats["Initial SL"]) > 0 else 0.0)
         if exited: continue
 
-        for st_idx, (th, ph) in enumerate(CONFIG["TRAILING_LEVELS_HEAD"]):
-            if prog_h < th: break
-            new_sl = entry - ph * head_size if bias == "Bearish" else entry + ph * head_size
-            if bias == "Bearish" and new_sl < sl: sl = new_sl; stats["Trailing Stage"] = st_idx + 1
-            elif bias == "Bullish" and new_sl > sl: sl = new_sl; stats["Trailing Stage"] = st_idx + 1
-        stats["Final SL"] = sl
-
+        # فحص ضرب الوقف أو الهدف
         hit_sl = (h >= sl) if bias == "Bearish" else (l <= sl)
         hit_tp = (l <= tp) if bias == "Bearish" else (h >= tp)
 
-        if hit_sl and not hit_tp:
+        # إذا ضُرب الاثنان في نفس الشمعة، نعتبر الوقف هو من ضُرب أولاً (الأسوأ)
+        if hit_sl and hit_tp:
+            hit_tp = False 
+
+        if hit_sl:
             is_prof = (sl < entry) if bias == "Bearish" else (sl > entry)
-            if is_prof: stats["Result"] = "WIN"; stats["Loss Category"] = "trailing_win"
+            if is_prof: 
+                stats["Result"] = "WIN"
+                stats["Loss Category"] = "trailing_win"
             else:
                 stats["Result"] = "LOSS"
                 if max_fav < 30: stats["Loss Category"] = "early_reversal"
@@ -217,7 +214,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
 
         stats["raw_breakouts"] += 1
         
-        # ⬇️ المنطق الجديد للاختبار ⬇️
         actual_entry_idx = i
         actual_entry_price = closes[i]
         structural_sl = lows[i] if is_bull_breakout else highs[i]
@@ -228,49 +224,34 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             lowest_during_retest = lows[i]
             highest_during_retest = highs[i]
 
-            # نبحث في الشموع التي تلي شمعة الكسر
             for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
                 if is_bull_breakout:
-                    # إلغاء إذا كسر قاع الصندوق
                     if lows[j] < box_bottom: break 
-                    
                     lowest_during_retest = min(lowest_during_retest, lows[j])
-                    
-                    # اللمس الأول
                     if not has_touched and lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]):
                         has_touched = True
-                        
-                    # التأكيد (إغلاق شمعة فوق الصندوق بعد اللمس)
                     if has_touched and closes[j] > box_top:
                         retest_found = True
                         actual_entry_idx = j
                         actual_entry_price = closes[j]
-                        structural_sl = lowest_during_retest # الوقف عند أقل نقطة في الاختبار
+                        structural_sl = lowest_during_retest
                         break
-                        
                 elif is_bear_breakout:
-                    # إلغاء إذا كسر سقف الصندوق
                     if highs[j] > box_top: break 
-                    
                     highest_during_retest = max(highest_during_retest, highs[j])
-                    
-                    # اللمس الأول
                     if not has_touched and highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]):
                         has_touched = True
-                        
-                    # التأكيد (إغلاق شمعة تحت الصندوق بعد اللمس)
                     if has_touched and closes[j] < box_bottom:
                         retest_found = True
                         actual_entry_idx = j
                         actual_entry_price = closes[j]
-                        structural_sl = highest_during_retest # الوقف عند أعلى نقطة في الاختبار
+                        structural_sl = highest_during_retest
                         break
 
             if not retest_found: 
                 stats["rejected_retest"] += 1
                 continue
 
-        # فلاتر RSI
         if CONFIG.get("USE_RSI_FILTER", True):
             current_rsi = rsi_vals[actual_entry_idx]
             if is_bull_breakout and not (CONFIG["RSI_BUY_MIN"] < current_rsi < CONFIG["RSI_BUY_MAX"]): 
@@ -278,8 +259,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
                 stats["rejected_rsi"] += 1; continue
 
-        # ⬇️ الرسم ⬇️
-        # الصندوق يتوقف عند شمعة الكسر (i)
         box_nodes = [(df.index[box_start_idx], box_top), (df.index[i], box_top), (df.index[box_start_idx], box_bottom), (df.index[i], box_bottom)]
         trend_nodes = [(df.index[impulse_start_idx], impulse_start_price), (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), (df.index[actual_entry_idx], actual_entry_price)]
 
