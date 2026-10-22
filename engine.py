@@ -14,7 +14,7 @@ CONFIG = {
     "MAX_RETRACEMENT_PCT": 0.50,   
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
     "REQUIRE_RETEST": True,        
-    "RETEST_MAX_CANDLES": 10,       
+    "RETEST_MAX_CANDLES": 12,       # نعطي السعر حتى 12 شمعة للاختبار
     "RETEST_TOLERANCE": 0.001,     
     
     "SAFE_SL_MARGIN": 0.05,        
@@ -213,67 +213,55 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         structural_sl = lows[i] if is_bull_breakout else highs[i]
         retest_found = False
 
-        # ⬇️ المنطق الجديد للاختبار (التأكيد المزدوج للحالة الخاصة) ⬇️
+        # ⬇️ المنطق الدقيق الذي طلبته (عودة -> إغلاق بالداخل -> كسر ثانٍ) ⬇️
         if CONFIG.get("REQUIRE_RETEST", False):
-            has_touched = False
-            lowest_during_retest = lows[i]
-            highest_during_retest = highs[i]
+            state = 0 # 0: ينتظر العودة, 1: عاد وينتظر الإغلاق بالداخل, 2: أغلق بالداخل وينتظر الاختراق الثاني
+            retest_extreme = lows[i] if is_bull_breakout else highs[i]
 
             for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
                 if is_bull_breakout:
-                    if lows[j] < box_bottom: break 
-                    lowest_during_retest = min(lowest_during_retest, lows[j])
-                    
-                    if not has_touched:
+                    if lows[j] < box_bottom: break # إلغاء إذا كسر قاع الصندوق
+                    retest_extreme = min(retest_extreme, lows[j])
+
+                    if state == 0:
                         if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]):
-                            has_touched = True
-                            if closes[j] > box_top:
-                                # الحالة الخاصة: لمس وأغلق فوق الصندوق في نفس الشمعة
-                                # نطلب شمعة تأكيد إضافية
-                                if j + 1 < n and closes[j+1] > box_top:
-                                    retest_found = True
-                                    actual_entry_idx = j + 1
-                                    actual_entry_price = closes[j+1]
-                                    lowest_during_retest = min(lowest_during_retest, lows[j+1])
-                                    structural_sl = lowest_during_retest
-                                    break
-                                else:
-                                    break # إلغاء لأن التأكيد لم يحدث
-                    else:
-                        # اللمسة حدثت سابقاً (داخل الصندوق)، وهذه الشمعة تغلق فوقه
+                            state = 1
+                    elif state == 1:
+                        if box_bottom <= closes[j] <= box_top:
+                            state = 2
+                        elif closes[j] > box_top:
+                            break # فخ: لمس وأغلق فوق مباشرة دون إغلاق بالداخل
+                    elif state == 2:
                         if closes[j] > box_top:
                             retest_found = True
                             actual_entry_idx = j
                             actual_entry_price = closes[j]
-                            structural_sl = lowest_during_retest
+                            structural_sl = retest_extreme
                             break
-                            
+                        elif closes[j] < box_bottom:
+                            break # إلغاء إذا أغلق تحت الصندوق مجدداً
+
                 elif is_bear_breakout:
-                    if highs[j] > box_top: break 
-                    highest_during_retest = max(highest_during_retest, highs[j])
-                    
-                    if not has_touched:
+                    if highs[j] > box_top: break # إلغاء إذا كسر سقف الصندوق
+                    retest_extreme = max(retest_extreme, highs[j])
+
+                    if state == 0:
                         if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]):
-                            has_touched = True
-                            if closes[j] < box_bottom:
-                                # الحالة الخاصة: لمس وأغلق تحت الصندوق في نفس الشمعة
-                                if j + 1 < n and closes[j+1] < box_bottom:
-                                    retest_found = True
-                                    actual_entry_idx = j + 1
-                                    actual_entry_price = closes[j+1]
-                                    highest_during_retest = max(highest_during_retest, highs[j+1])
-                                    structural_sl = highest_during_retest
-                                    break
-                                else:
-                                    break # إلغاء
-                    else:
-                        # اللمسة حدثت سابقاً (داخل الصندوق)، وهذه الشمعة تغلق تحته
+                            state = 1
+                    elif state == 1:
+                        if box_bottom <= closes[j] <= box_top:
+                            state = 2
+                        elif closes[j] < box_bottom:
+                            break # فخ: لمس وأغلق تحت مباشرة
+                    elif state == 2:
                         if closes[j] < box_bottom:
                             retest_found = True
                             actual_entry_idx = j
                             actual_entry_price = closes[j]
-                            structural_sl = highest_during_retest
+                            structural_sl = retest_extreme
                             break
+                        elif closes[j] > box_top:
+                            break # إلغاء إذا أغلق فوق الصندوق مجدداً
 
             if not retest_found: 
                 stats["rejected_retest"] += 1
