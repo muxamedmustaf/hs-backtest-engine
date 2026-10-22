@@ -32,18 +32,15 @@ st.markdown("""
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     
-    /* توسيع الحاوية الرئيسية وإضافة هوامش مريحة */
     .main .block-container { 
         max-width: 98% !important; 
         padding: 1.5rem 2.5rem !important; 
     }
     
-    /* تنسيق اتجاه النصوص */
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 16px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; margin-bottom: 1rem; }
     label, .stRadio label, .stTextInput label, .stSelectbox label, .stMultiSelect label { direction: rtl; text-align: right; margin-bottom: 0.5rem; }
     
-    /* تكبير وتوسيع الأزرار */
     .stButton > button { 
         direction: rtl; 
         text-align: center; 
@@ -51,15 +48,12 @@ st.markdown("""
         font-size: 1rem;
     }
     
-    /* تنسيق التنبيهات والمربعات */
     .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; padding: 1rem; font-size: 16px; font-weight: bold;}
     .stDataFrame { direction: ltr; }
     
-    /* إضافة مسافات بين الصفوف والأعمدة */
     div[data-testid="stHorizontalBlock"] { gap: 1.5rem; }
     div[data-testid="stVerticalBlock"] { gap: 1rem; }
     
-    /* الزر العائم للعودة لأعلى */
     .float-top {
         position: fixed;
         bottom: 80px;
@@ -88,8 +82,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
-ALL_GLOBAL_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
-ALL_PERIODS = ["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"]
+
+# ⬇️⬇️ إضافة جميع الأطُر والفترات المتاحة في المنصات ⬇️⬇️
+ALL_GLOBAL_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
+ALL_PERIODS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
 
 IC_MARKETS_SPECS = {"BTC-USD": {"pip": 1.0}, "EURUSD": {"pip": 0.0001}, "GBPUSD": {"pip": 0.0001}}
 PLOTLY_CONFIG = {'responsive': True, 'scrollZoom': True, 'displaylogo': False, 'displayModeBar': True, 'dragmode': 'pan', 'doubleClick': 'reset+autosize'}
@@ -146,8 +142,8 @@ def _cached_smart_fetch(symbol, interval, source_choice, start_date=None, end_da
     return df
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_backtest(symbol, interval, start_date, end_date, source_choice):
-    df = _cached_smart_fetch(symbol, interval, source_choice, start_date=start_date, end_date=end_date)
+def _cached_backtest(symbol, interval, start_date, end_date, period, source_choice):
+    df = _cached_smart_fetch(symbol, interval, source_choice, start_date=start_date, end_date=end_date, period=period)
     if df is None or df.empty: 
         return None, None, "فشل جلب البيانات أو لا توجد بيانات في هذه الفترة.", {}
     try: 
@@ -165,8 +161,8 @@ def _cached_live(symbol, interval, period, source_choice):
     return df, res
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _prepare_chart_data(symbol, interval, start_date, end_date, source_choice):
-    df = _cached_smart_fetch(symbol, interval, source_choice, start_date=start_date, end_date=end_date)
+def _prepare_chart_data(symbol, interval, start_date, end_date, period, source_choice):
+    df = _cached_smart_fetch(symbol, interval, source_choice, start_date=start_date, end_date=end_date, period=period)
     if df is None or df.empty: return None
     df = df.copy()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
@@ -253,7 +249,6 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     
     draw_box_pattern(fig, cur)
     
-    # ⬇️⬇️ إضافة خطوط الدخول، الهدف، ووقف الخسارة ⬇️⬇️
     try:
         e_val = float(cur.get("entry", 0))
         s_val = float(cur.get("sl", 0))
@@ -295,7 +290,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
             st.warning("⚠️ تعذر جلب العملات من الشيت (قد يكون ملف `ffff.py` مفقوداً).")
         
         dl_mode = st.radio("طريقة التنزيل:", ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], horizontal=True, key="dl_mode")
-        intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ["1h", "4h", "1d"], default=["1h", "4h"], key="dl_intvs")
+        intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ALL_GLOBAL_INTERVALS, default=["1h", "4h"], key="dl_intvs")
         
         if dl_mode == "الكل (شيت)":
             st.info(f"سيتم تنزيل **جميع** العملات ({len(all_symbols)} عملة).")
@@ -304,7 +299,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                     for i, sym in enumerate(all_symbols):
                         st.write(f"[{i+1}/{len(all_symbols)}] تحديث {sym}...")
                         for intv in intvs_to_dl:
-                            _cached_smart_fetch(fix_symbol(sym), intv, "الإنترنت", start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"))
+                            _cached_smart_fetch(fix_symbol(sym), intv, "الإنترنت", period="max")
                     st.cache_data.clear()
                     status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
                     
@@ -315,7 +310,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                     for i, sym in enumerate(selected_syms):
                         st.write(f"[{i+1}/{len(selected_syms)}] تحديث {sym}...")
                         for intv in intvs_to_dl:
-                            _cached_smart_fetch(fix_symbol(sym), intv, "الإنترنت", start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"))
+                            _cached_smart_fetch(fix_symbol(sym), intv, "الإنترنت", period="max")
                     st.cache_data.clear()
                     status.update(label="✅ تم التحديث والحفظ!", state="complete", expanded=False)
                     
@@ -325,7 +320,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
                 with st.status(f"جاري تحديث {single_sym}...", expanded=True) as status:
                     for intv in intvs_to_dl:
                         st.write(f"تحديث {single_sym} للإطار {intv}...")
-                        _cached_smart_fetch(fix_symbol(single_sym), intv, "الإنترنت", start_date="2020-01-01", end_date=datetime.datetime.now().strftime("%Y-%m-%d"))
+                        _cached_smart_fetch(fix_symbol(single_sym), intv, "الإنترنت", period="max")
                     st.cache_data.clear()
                     status.update(label=f"✅ تم تحديث {single_sym}!", state="complete", expanded=False)
     else:
@@ -349,7 +344,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         bt_symbols = [st.text_input("رمز الأصل", value="BTC-USD")]
     else:
         c1, c2 = st.columns(2)
-        if c1.button("✅ تحديد كل العملات", use_container_width=True):
+        if c1.button("✅ تحديد كل العملات (من الشيت والافتراضية)", use_container_width=True):
             st.session_state["bt_selected_symbols"] = all_symbols; st.rerun()
         if c2.button("❌ إلغاء التحديد", use_container_width=True):
             st.session_state["bt_selected_symbols"] = []; st.rerun()
@@ -357,10 +352,19 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         bt_symbols = st.multiselect("اختر:", all_symbols, key="bt_selected_symbols")
 
     now = datetime.datetime.now()
-    c1, c2, c3 = st.columns(3)
-    sd = c1.date_input("من:", value=datetime.date(now.year-1, 1, 1)).strftime("%Y-%m-%d")
-    ed = c2.date_input("إلى:", value=datetime.date.today()).strftime("%Y-%m-%d")
-    interval = c3.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
+    st.markdown("#### 📅 اختيار الفترة الزمنية")
+    date_mode = st.radio("طريقة تحديد الفترة:", ["📅 تواريخ مخصصة", "⏳ فترة سريعة"], horizontal=True, key="bt_date_mode")
+    
+    sd, ed, period = None, None, None
+    if date_mode == "📅 تواريخ مخصصة":
+        c1, c2, c3 = st.columns(3)
+        sd = c1.date_input("من:", value=datetime.date(now.year-1, 1, 1)).strftime("%Y-%m-%d")
+        ed = c2.date_input("إلى:", value=datetime.date.today()).strftime("%Y-%m-%d")
+        interval = c3.selectbox("الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=ALL_GLOBAL_INTERVALS.index("1h"))
+    else:
+        c1, c2 = st.columns(2)
+        period = c1.selectbox("اختر الفترة السريعة:", ALL_PERIODS, index=ALL_PERIODS.index("1y"))
+        interval = c2.selectbox("الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=ALL_GLOBAL_INTERVALS.index("1h"))
 
     if st.button("📊 بدء المحاكاة", use_container_width=True) and bt_symbols:
         results, dfs, all_stats = [], {}, []
@@ -368,7 +372,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         with st.status(f"جاري محاكاة {len(bt_symbols)} رموز...", expanded=True) as status:
             for i, sym in enumerate(bt_symbols):
                 st.write(f"⏳ **جاري معالجة {sym}** (خطوة {i+1}/{len(bt_symbols)})...")
-                df, trades, error_msg, stats = _cached_backtest(fix_symbol(sym), interval, sd, ed, bt_data_source)
+                df, trades, error_msg, stats = _cached_backtest(fix_symbol(sym), interval, sd, ed, period, bt_data_source)
                 
                 if error_msg:
                     st.error(f"❌ **{sym}:** {error_msg}")
@@ -393,7 +397,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         st.session_state["bt_results"] = results
         st.session_state["bt_dfs"] = dfs
         st.session_state["bt_stats"] = all_stats
-        st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_int"] = sd, ed, interval
+        st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_period"], st.session_state["bt_int"] = sd, ed, period, interval
 
     if "bt_results" in st.session_state and st.session_state["bt_results"]:
         rl = st.session_state["bt_results"]
@@ -401,17 +405,12 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         all_dfs = [r["trades_df"] for r in rl if not r["trades_df"].empty]
         
         if all_dfs:
-            # ⬇️⬇️ إضافة التبويب الخامس الخاص بالحاسبات ⬇️⬇️
             tab1, tab2, tab3, tab4, tab5 = st.tabs(["📉 الرسوم البيانية", "📋 جدول كل الإشارات", "🧠 التشخيص الذكي", "🛡️ تقرير الفلاتر", "🧮 الحاسبات التفاعلية"])
             
             with tab5:
                 st.subheader("🧮 الحاسبات التفاعلية وإدارة المخاطر")
                 
-                # -----------------------------------------
-                # الحاسبة الأولى: تفاعلية مع الإشارة
-                # -----------------------------------------
                 st.markdown("#### 1️⃣ حاسبة الإشارة الحالية والنتائج الإجمالية")
-                
                 opts = [f"{r['symbol']} ({r['total']})" for r in rl]
                 sel_idx_calc = st.selectbox("اختر الأصل للتحليل:", opts, key="calc_sel_sym")
                 ai_calc = rl[opts.index(sel_idx_calc)]
@@ -419,7 +418,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 
                 if not tdf_calc.empty:
                     tdf_calc = compute_dollar_pnl(compute_pips(tdf_calc), lot=0.01)
-                    
                     sig_options = [f"إشارة {i+1} | اتجاه: {'بيع 🔴' if 'Bear' in str(tdf_calc.iloc[i].get('bias', '')) else 'شراء 🟢'}" for i in range(len(tdf_calc))]
                     selected_sig_str = st.selectbox("اختر الإشارة لعرض تفاصيلها:", sig_options, index=len(tdf_calc)-1, key="calc_sig_idx")
                     sig_idx = sig_options.index(selected_sig_str)
@@ -458,10 +456,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         c4.metric("نسبة النجاح", f"{(len(wins)/len(tdf_calc)*100):.1f}%" if len(tdf_calc)>0 else "0%")
                 
                 st.markdown("---")
-                
-                # -----------------------------------------
-                # الحاسبة الثانية: إدارة المخاطر (حجم العقد)
-                # -----------------------------------------
                 st.markdown("#### 2️⃣ حاسبة إدارة المخاطر وحجم العقد (Position Size)")
                 
                 c1, c2 = st.columns(2)
@@ -473,7 +467,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 
                 if not tdf_calc.empty and e_val > 0:
                     risk_distance = abs(e_val - s_val)
-                    
                     if risk_distance > 0:
                         if "BTC" in sym_calc or "ETH" in sym_calc:
                             lot_size = max_risk_usd / risk_distance
@@ -559,7 +552,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         si = len(tdf) - 1
                         st.session_state[f"signal_index_{sym}"] = si
 
-                    # أزرار التنقل العلوية
                     n1, n2, n3 = st.columns([1, 2, 1])
                     with n1:
                         if st.button("⬅️ السابق", use_container_width=True, key="bt_prev_top"): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
@@ -574,11 +566,10 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     if rec_text:
                         st.info(rec_text)
                     
-                    df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"], bt_data_source)
+                    df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_period"], bt_data_source)
                     render_chart_fast(sym, cur, df_chart, chart_mode)
                     
                     st.markdown("<br>", unsafe_allow_html=True)
-                    # أزرار التنقل السفلية
                     n4, n5, n6 = st.columns([1, 2, 1])
                     with n4:
                         if st.button("⬅️ السابق", key="bt_prev_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
@@ -601,15 +592,15 @@ else:
         symbols = [st.text_input("رمز:", value="BTC-USD", key="live_sym_input")]
     else:
         c1, c2 = st.columns(2)
-        if c1.button("✅ تحديد كل العملات", use_container_width=True, key="live_sel_all"):
+        if c1.button("✅ تحديد كل العملات (من الشيت والافتراضية)", use_container_width=True, key="live_sel_all"):
             st.session_state["live_selected_symbols"] = all_symbols; st.rerun()
         if c2.button("❌ إلغاء التحديد", use_container_width=True, key="live_clr_all"):
             st.session_state["live_selected_symbols"] = []; st.rerun()
         if "live_selected_symbols" not in st.session_state: st.session_state["live_selected_symbols"] = ["BTC-USD"]
         symbols = st.multiselect("اختر العملات:", all_symbols, key="live_selected_symbols")
 
-    interval = st.selectbox("الإطار:", ALL_GLOBAL_INTERVALS, index=4)
-    period = st.selectbox("النطاق:", ALL_PERIODS, index=2)
+    interval = st.selectbox("الإطار الزمني:", ALL_GLOBAL_INTERVALS, index=ALL_GLOBAL_INTERVALS.index("1h"))
+    period = st.selectbox("الفترة:", ALL_PERIODS, index=ALL_PERIODS.index("3mo"))
     
     if st.button("🚀 بدء المسح", use_container_width=True) and symbols:
         valid = []
@@ -635,7 +626,7 @@ else:
 
             ar, sym = valid[si]["result"], valid[si]["symbol"]
             st.write(f"**{sym}** - {ar['signal']}")
-            df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None, live_data_source)
+            df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None, period, live_data_source)
             if df_chart is not None: render_chart_fast(sym, ar, df_chart, "adaptive")
             
             st.markdown("<br>", unsafe_allow_html=True)
