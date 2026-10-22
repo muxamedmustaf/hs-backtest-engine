@@ -25,22 +25,25 @@ except ImportError:
 
 st.set_page_config(page_title="Box Hunter Pro - Smart", page_icon="📦", layout="wide")
 
-# ⬇️⬇️ تحديثات CSS للتوسيع والتباعد (واجهة أوسع وأطول) ⬇️⬇️
+# ⬇️⬇️ تحديثات CSS للتوسيع، التباعد، والزر العائم ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     
+    /* توسيع الحاوية الرئيسية وإضافة هوامش مريحة */
     .main .block-container { 
         max-width: 98% !important; 
         padding: 1.5rem 2.5rem !important; 
     }
     
+    /* تنسيق اتجاه النصوص */
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 16px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; margin-bottom: 1rem; }
     label, .stRadio label, .stTextInput label, .stSelectbox label, .stMultiSelect label { direction: rtl; text-align: right; margin-bottom: 0.5rem; }
     
+    /* تكبير وتوسيع الأزرار */
     .stButton > button { 
         direction: rtl; 
         text-align: center; 
@@ -48,14 +51,40 @@ st.markdown("""
         font-size: 1rem;
     }
     
-    .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; padding: 1rem; }
+    /* تنسيق التنبيهات والمربعات */
+    .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; padding: 1rem; font-size: 16px; font-weight: bold;}
     .stDataFrame { direction: ltr; }
     
+    /* إضافة مسافات بين الصفوف والأعمدة */
     div[data-testid="stHorizontalBlock"] { gap: 1.5rem; }
     div[data-testid="stVerticalBlock"] { gap: 1rem; }
     
+    /* الزر العائم للعودة لأعلى */
+    .float-top {
+        position: fixed;
+        bottom: 80px;
+        right: 20px;
+        z-index: 99999;
+        background-color: #E91E63;
+        color: white !important;
+        border-radius: 50%;
+        width: 55px;
+        height: 55px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        text-decoration: none;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+    }
+    .float-top:hover { background-color: #C2185B; color: white; }
+    
     .js-plotly-plot .plotly, .js-plotly-plot .main-svg { touch-action: none !important; }
 </style>
+</head>
+<body>
+    <a href="#top" class="float-top" title="العودة للأعلى">⬆️</a>
+</body>
 """, unsafe_allow_html=True)
 
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
@@ -89,13 +118,11 @@ def get_available_symbols():
         except Exception: pass
     return sorted(s), sheet_count
 
-# ⬇️⬇️ دالة الجلب الذكية (التي تسمح بالاختيار بين المصادر) ⬇️⬇️
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_smart_fetch(symbol, interval, source_choice, start_date=None, end_date=None, period=None):
     df = None
     force_dl = True if "الإنترنت" in source_choice else False
     
-    # الخيار 1: GitHub أو الإنترنت (Twelve Data)
     if "GitHub" in source_choice or "الإنترنت" in source_choice:
         try:
             if start_date and end_date: 
@@ -105,7 +132,6 @@ def _cached_smart_fetch(symbol, interval, source_choice, start_date=None, end_da
         except Exception:
             df = None
 
-    # الخيار 2: Yahoo Finance (إما بطلب من المستخدم أو كبديل تلقائي)
     if df is None or "Yahoo" in source_choice:
         try:
             if start_date and end_date:
@@ -117,7 +143,6 @@ def _cached_smart_fetch(symbol, interval, source_choice, start_date=None, end_da
 
     if df is not None and isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-        
     return df
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -228,11 +253,26 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     
     draw_box_pattern(fig, cur)
     
+    # ⬇️⬇️ إضافة خطوط الدخول، الهدف، ووقف الخسارة ⬇️⬇️
+    try:
+        e_val = float(cur.get("entry", 0))
+        s_val = float(cur.get("sl", 0))
+        t_val = float(cur.get("tp", 0))
+        
+        if e_val > 0:
+            fig.add_hline(y=e_val, line_dash="dash", line_color="#2196F3", annotation_text=f"الدخول: {e_val}", annotation_position="top left", row=1, col=1)
+        if s_val > 0:
+            fig.add_hline(y=s_val, line_dash="dash", line_color="#F44336", annotation_text=f"وقف الخسارة: {s_val}", annotation_position="bottom left", row=1, col=1)
+        if t_val > 0:
+            fig.add_hline(y=t_val, line_dash="dash", line_color="#4CAF50", annotation_text=f"الهدف: {t_val}", annotation_position="top left", row=1, col=1)
+    except Exception:
+        pass
+    
     if "Volume" in df_window.columns:
         fig.add_trace(go.Bar(x=df_window.index, y=df_window["Volume"], name="Volume", marker_color='rgba(158, 158, 158, 0.5)'), row=2, col=1)
     
     fig.update_layout(
-        template="plotly_white", height=750, autosize=True, xaxis_rangeslider_visible=False, 
+        template="plotly_white", height=650, autosize=True, xaxis_rangeslider_visible=False, 
         dragmode="pan", hovermode="x unified", margin=dict(l=10, r=60, t=40, b=40), 
         yaxis=dict(side="right", showgrid=True, gridcolor="#EEEEEE", fixedrange=False, automargin=True),
         yaxis2=dict(side="right", showgrid=False, fixedrange=False, automargin=True),
@@ -297,7 +337,6 @@ app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "�
 if app_mode == "🧪 مختبر الاختبار الرجعي":
     st.markdown("### 🧪 مختبر الصناديق")
     
-    # ⬇️ إعادة خيارات مصدر البيانات ⬇️
     bt_data_source = st.radio(
         "📁 مصدر البيانات للمحاكاة:",
         ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
@@ -434,6 +473,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         si = len(tdf) - 1
                         st.session_state[f"signal_index_{sym}"] = si
 
+                    # أزرار التنقل العلوية
                     n1, n2, n3 = st.columns([1, 2, 1])
                     with n1:
                         if st.button("⬅️ السابق", use_container_width=True, key="bt_prev_top"): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
@@ -443,11 +483,17 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         if st.button("التالي ➡️", use_container_width=True, key="bt_next_top"): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
                             
                     cur = tdf.iloc[si]
-                    st.write(cur.get("Trade Recommendation", ""))
+                    
+                    # عرض النص بشكل أوضح
+                    rec_text = cur.get("Trade Recommendation", "")
+                    if rec_text:
+                        st.info(rec_text)
+                    
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"], bt_data_source)
                     render_chart_fast(sym, cur, df_chart, chart_mode)
                     
-                    st.markdown("<br><br>", unsafe_allow_html=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    # أزرار التنقل السفلية
                     n4, n5, n6 = st.columns([1, 2, 1])
                     with n4:
                         if st.button("⬅️ السابق", key="bt_prev_bottom", use_container_width=True): st.session_state[f"signal_index_{sym}"] = max(0, si - 1); st.rerun()
@@ -458,7 +504,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
 else:
     st.markdown("### 🚀 الماسح الحي")
     
-    # ⬇️ إعادة خيارات مصدر البيانات ⬇️
     live_data_source = st.radio(
         "📡 مصدر البيانات:",
         ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
@@ -508,7 +553,7 @@ else:
             df_chart = _prepare_chart_data(fix_symbol(sym), interval, None, None, live_data_source)
             if df_chart is not None: render_chart_fast(sym, ar, df_chart, "adaptive")
             
-            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
             n4, n5, n6 = st.columns([1, 2, 1])
             with n4:
                 if st.button("⬅️ السابق", key="live_prev_bottom", use_container_width=True): st.session_state["live_signal_index"] = max(0, si - 1); st.rerun()
