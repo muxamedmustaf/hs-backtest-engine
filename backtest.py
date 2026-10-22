@@ -94,6 +94,8 @@ def pip_size_for(symbol):
     if "JPY" in s: return 0.01
     return 0.0001
 
+# ⬇️ إضافة كاش (Cache) لتسريع جلب الشيت ⬇️
+@st.cache_data(ttl=3600, show_spinner="جاري جلب العملات من الشيت...")
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
     sheet_count = 0
@@ -175,7 +177,6 @@ def _prepare_chart_data(symbol, interval, start_date, end_date, period, source_c
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
     return df
 
-# ⬇️ حساب النقاط (Pips) ⬇️
 def compute_pips(df):
     if df is None or df.empty: return df
     df = df.copy()
@@ -191,7 +192,6 @@ def compute_pips(df):
     df["Pips"] = pips_l
     return df
 
-# ⬇️ حساب الربح والخسارة بالدولار بناءً على رأس المال والمخاطرة ⬇️
 def compute_dollar_pnl(df, capital=1000.0, risk_pct=2.0):
     if df is None or df.empty: return df
     df = df.copy()
@@ -209,7 +209,6 @@ def compute_dollar_pnl(df, capital=1000.0, risk_pct=2.0):
         risk_distance = abs(e - sl)
         if risk_distance == 0: risk_distance = 1e-5
         
-        # حساب حجم العقد المناسب لكل صفقة
         max_risk_usd = capital * (risk_pct / 100)
         
         if "BTC" in sym or "ETH" in sym: 
@@ -449,7 +448,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 sym_calc, tdf_calc = ai_calc["symbol"], ai_calc["trades_df"]
                 
                 if not tdf_calc.empty:
-                    # ⬇️ تمرير رأس المال ونسبة المخاطرة لدالة حساب الدولار ⬇️
                     tdf_calc = compute_dollar_pnl(compute_pips(tdf_calc), capital=capital, risk_pct=risk_per_trade_pct)
                     
                     sig_options = [f"إشارة {i+1} | اتجاه: {'بيع 🔴' if 'Bear' in str(tdf_calc.iloc[i].get('bias', '')) else 'شراء 🟢'}" for i in range(len(tdf_calc))]
@@ -497,7 +495,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 sym, tdf = ai["symbol"], ai["trades_df"]
                 
                 if not tdf.empty:
-                    # استخدام نفس الإعدادات الافتراضية للحاسبة لعرض الجدول
                     tdf_pips = compute_pips(tdf)
                     tdf_pips = compute_dollar_pnl(tdf_pips, capital=1000.0, risk_pct=2.0)
                     display_cols = ["Entry Date", "Exit Date", "bias", "Entry Price", "Stop Loss", "Take Profit", "Result", "Pips", "PnL_USD"]
@@ -507,7 +504,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
             with tab3:
                 st.subheader("📊 تحليل النتائج وخطة التطوير الذاتي")
                 combined_df = pd.concat(all_dfs, ignore_index=True)
-                combined_df = compute_dollar_pnl(compute_pips(combined_df), capital=1000.0, risk_pct=2.0) # حساب تقريبي للكل
+                combined_df = compute_dollar_pnl(compute_pips(combined_df), capital=1000.0, risk_pct=2.0) 
                 
                 closed = combined_df[combined_df["Result"].isin(["WIN", "LOSS"])]
                 wins = len(closed[closed["Result"] == "WIN"])
@@ -539,15 +536,17 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         rej_retest = st_item.get("rejected_retest", 0)
                         rej_sr = st_item.get("rejected_sr", 0)
                         rej_rsi = st_item.get("rejected_rsi", 0)
+                        rej_touches = st_item.get("rejected_touches", 0)
                         accepted = raw - rej_retest - rej_sr - rej_rsi
                         
                         st.markdown(f"#### {sym}")
-                        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+                        sc1, sc2, sc3, sc4, sc5, sc6 = st.columns(6)
                         sc1.metric("كسرات خام (Raw)", raw)
-                        sc2.metric("مرفوضة (RSI)", rej_rsi)
-                        sc3.metric("مرفوضة (إعادة اختبار)", rej_retest)
-                        sc4.metric("مرفوضة (دعوم/مقاومات)", rej_sr)
-                        sc5.metric("مقبولة (ناجحة)", accepted)
+                        sc2.metric("مرفوضة (لمسات)", rej_touches)
+                        sc3.metric("مرفوضة (RSI)", rej_rsi)
+                        sc4.metric("مرفوضة (اختبار)", rej_retest)
+                        sc5.metric("مرفوضة (S/R)", rej_sr)
+                        sc6.metric("مقبولة", accepted)
                         st.markdown("---")
 
             with tab1:
