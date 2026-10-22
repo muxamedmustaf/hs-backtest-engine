@@ -6,11 +6,13 @@ CONFIG = {
     "IMPULSE_MIN_PCT": 0.025,      
     "IMPULSE_MAX_LOOKBACK": 40,    
     
-    # ⬇️ تم إلغاء قيود الطول والعرض والاكتفاء بالواقع
-    "BOX_MIN_CANDLES": 3,          # 3 شموع كحد أدنى لبداية التكوين
+    # ⬇️ الشروط الجديدة: صندوق بعد موجة، أكثر من 5 شموع
+    "BOX_MIN_CANDLES": 6,          # أكثر من 5 شموع (أي 6 فأكثر)
+    "BOX_MAX_CANDLES": 60,         # حد أقصى 60 شمعة (حتى لا يتحول لترند عرضي طويل)
+    "MAX_RETRACEMENT_PCT": 0.50,   # ألا يتجاوز التصحيح 50% من قوة الموجة
     
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
-    "REQUIRE_RETEST": True,        
+    "REQUIRE_RETEST": True,        # شرط الاختبار (عودة، إغلاق بالداخل، كسر ثاني)
     "RETEST_MAX_CANDLES": 12,       
     "RETEST_TOLERANCE": 0.001,     
     
@@ -154,6 +156,7 @@ def simulate_trade(pattern, df, cfg=None):
     stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
     return stats
 
+# ⬇️⬇️ المنطق الجديد للصندوق (التجميع الواقعي > 5 شموع) ⬇️⬇️
 def detect_box_breakouts(df, symbol=None, is_backtest=True):
     patterns = []
     n = len(df)
@@ -163,7 +166,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
     rsi_vals = df["RSI"].values if "RSI" in df.columns else np.full(n, 50)
     
     last_entry_idx = -1000
-    stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0, "rejected_rsi": 0}
+    stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0, "rejected_rsi": 0, "rejected_impulse": 0}
     
     for i in range(60, n):
         if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]: continue
@@ -174,41 +177,50 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         is_bear_breakout = closes[i] < opens[i]
         lookback_start = max(0, i - CONFIG["IMPULSE_MAX_LOOKBACK"])
         
+        # 1. الموجة الحافزة
         if is_bull_breakout:
             impulse_start_idx = lookback_start + np.argmin(lows[lookback_start:i])
             impulse_start_price = lows[impulse_start_idx]
             impulse_move = closes[i] - impulse_start_price
-            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
+            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: 
+                stats["rejected_impulse"] += 1
+                continue
+            impulse_end_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
         else:
             impulse_start_idx = lookback_start + np.argmax(highs[lookback_start:i])
             impulse_start_price = highs[impulse_start_idx]
             impulse_move = impulse_start_price - closes[i]
-            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
-
-        # ⬇️ تحديد الموجة الدافعة
-        if is_bull_breakout: 
-            impulse_end_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
-        else: 
+            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: 
+                stats["rejected_impulse"] += 1
+                continue
             impulse_end_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
 
+        # 2. بداية الصندوق (بعد نهاية الموجة مباشرة)
         box_start_idx = impulse_end_idx + 1 
-
+        
+        # 3. شرط التجميع الواقعي: أكثر من 5 شموع، وأقل من 60 شمعة
         box_length = i - box_start_idx
-        if box_start_idx >= i or box_length < CONFIG["BOX_MIN_CANDLES"]: continue
+        if box_length < CONFIG["BOX_MIN_CANDLES"] or box_length > CONFIG["BOX_MAX_CANDLES"]: 
+            continue
 
-        # ⬇️ الصندوق يُرسم من الواقع: نأخذ أعلى قمة وأدنى قاع خلال فترة التجميع
+        # 4. رسم الصندوق من الواقع
         box_highs = highs[box_start_idx:i]
         box_lows = lows[box_start_idx:i]
         box_top = np.max(box_highs)
         box_bottom = np.min(box_lows)
+        box_height = box_top - box_bottom
         
+        # شرط ألا يكون التصحيح عميقاً جداً
+        if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: 
+            continue
+
         stats["raw_breakouts"] += 1
-        
         actual_entry_idx = i
         actual_entry_price = closes[i]
         structural_sl = lows[i] if is_bull_breakout else highs[i]
         retest_found = False
 
+        # 5. منطق الاختبار (عودة -> إغلاق بالداخل -> كسر ثاني)
         if CONFIG.get("REQUIRE_RETEST", False):
             state = 0 
             retest_extreme = lows[i] if is_bull_breakout else highs[i]
@@ -261,6 +273,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
                 stats["rejected_rsi"] += 1; continue
 
+        # ⬇️ الرسم: الصندوق من نهاية الموجة إلى الكسر
         box_nodes = [(df.index[box_start_idx], box_top), (df.index[i], box_top), (df.index[box_start_idx], box_bottom), (df.index[i], box_bottom)]
         trend_nodes = [(df.index[impulse_start_idx], impulse_start_price), (df.index[impulse_end_idx], highs[impulse_end_idx] if is_bull_breakout else lows[impulse_end_idx]), (df.index[actual_entry_idx], actual_entry_price)]
 
