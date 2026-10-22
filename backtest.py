@@ -2,7 +2,7 @@
 import calendar, datetime
 import streamlit as st, yfinance as yf, plotly.graph_objects as go, pandas as pd
 import numpy as np
-from plotly.subplots import make_subplots  # ⬅️ تم إضافة هذا السطر هنا
+from plotly.subplots import make_subplots
 from data_provider import fetch_data, get_github_repo
 
 # ⬇️ استيراد المحرك ⬇️
@@ -18,7 +18,7 @@ try:
     SHEET_ENABLED = True
 except ImportError:
     SHEET_ENABLED = False
-    def get_symbols_from_sheet(*args, **kwargs): return []
+    def get_symbols_from_sheet(*args, **kwargs): return [], "ملف ffff.py غير موجود"
 
 st.set_page_config(
     page_title="Smart Market Analyzer & Backtest Lab",
@@ -84,8 +84,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
-DEFAULT_SHEET_NAME = "GOLD"
-DEFAULT_COL_NAME = "TOKENS"
+DEFAULT_SHEET_NAME = "Sheet1"  # تم التعديل ليتطابق مع ملف ffff.py (أو GOLD إذا كان هذا اسم الشيت)
+DEFAULT_COL_NAME = "Ticker"    # تم التعديل ليتطابق مع ملف ffff.py (أو TOKENS إذا كان هذا اسم العمود)
 
 ALL_GLOBAL_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "4h", "1d", "5d", "1wk", "1mo", "3mo"]
 ALL_PERIODS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
@@ -120,19 +120,37 @@ def pip_size_for(symbol):
     if "JPY" in s: return 0.01
     return 0.0001
 
+# ⬇️⬇️ دالة جلب كل العملات من الشيت (تم إصلاحها) ⬇️⬇️
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
     sheet_count = 0
+    error_msg = None
+    
     if SHEET_ENABLED:
         try:
-            sheet_symbols = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)
-            if sheet_symbols and isinstance(sheet_symbols, list) and len(sheet_symbols) > 0:
-                for x in sheet_symbols[0]: s.add(str(x).strip().upper())
-                sheet_count = len(sheet_symbols[0])
-        except Exception: pass
-    return sorted(s), sheet_count
+            # دالة ffff ترجع Tuple (قائمة_العملات, رسالة_الخطأ)
+            result = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)
+            
+            if isinstance(result, tuple) and len(result) == 2:
+                sheet_symbols, err = result
+                if err:
+                    error_msg = err
+                elif sheet_symbols and isinstance(sheet_symbols, list):
+                    for x in sheet_symbols: 
+                        if x and str(x).lower() != 'nan':
+                            s.add(str(x).strip().upper())
+                    sheet_count = len(sheet_symbols)
+            elif isinstance(result, list):
+                for x in result: s.add(str(x).strip().upper())
+                sheet_count = len(result)
+                
+        except Exception as e: 
+            error_msg = str(e)
+            
+    return sorted(s), sheet_count, error_msg
 
-all_symbols, sheet_count = get_available_symbols()
+# استدعاء الدالة مرة واحدة
+all_symbols, sheet_count, sheet_error = get_available_symbols()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_smart_fetch(symbol, interval, source_choice, start_date=None, end_date=None, period=None):
@@ -304,7 +322,7 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
         if sheet_count > 0:
             st.info(f"📊 تم جلب **{sheet_count}** عملة من الشيت + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
         else:
-            st.warning("⚠️ تعذر جلب العملات من الشيت (قد يكون ملف `ffff.py` مفقوداً أو هناك مشكلة في الاتصال).")
+            st.warning(f"⚠️ تعذر جلب العملات من الشيت. السبب: {sheet_error if sheet_error else 'قد يكون الملف مفقوداً أو أسماء الجدول/العمود خاطئة.'}")
         
         dl_mode = st.radio("طريقة التنزيل:", ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], horizontal=True, key="dl_mode")
         intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ALL_GLOBAL_INTERVALS, default=["1h", "4h"], key="dl_intvs")
