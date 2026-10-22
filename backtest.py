@@ -401,8 +401,94 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         all_dfs = [r["trades_df"] for r in rl if not r["trades_df"].empty]
         
         if all_dfs:
-            tab1, tab2, tab3, tab4 = st.tabs(["📉 الرسوم البيانية", "📋 جدول كل الإشارات", "🧠 التشخيص الذكي", "🛡️ تقرير الفلاتر"])
+            # ⬇️⬇️ إضافة التبويب الخامس الخاص بالحاسبات ⬇️⬇️
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📉 الرسوم البيانية", "📋 جدول كل الإشارات", "🧠 التشخيص الذكي", "🛡️ تقرير الفلاتر", "🧮 الحاسبات التفاعلية"])
             
+            with tab5:
+                st.subheader("🧮 الحاسبات التفاعلية وإدارة المخاطر")
+                
+                # -----------------------------------------
+                # الحاسبة الأولى: تفاعلية مع الإشارة
+                # -----------------------------------------
+                st.markdown("#### 1️⃣ حاسبة الإشارة الحالية والنتائج الإجمالية")
+                
+                opts = [f"{r['symbol']} ({r['total']})" for r in rl]
+                sel_idx_calc = st.selectbox("اختر الأصل للتحليل:", opts, key="calc_sel_sym")
+                ai_calc = rl[opts.index(sel_idx_calc)]
+                sym_calc, tdf_calc = ai_calc["symbol"], ai_calc["trades_df"]
+                
+                if not tdf_calc.empty:
+                    tdf_calc = compute_dollar_pnl(compute_pips(tdf_calc), lot=0.01)
+                    
+                    sig_options = [f"إشارة {i+1} | اتجاه: {'بيع 🔴' if 'Bear' in str(tdf_calc.iloc[i].get('bias', '')) else 'شراء 🟢'}" for i in range(len(tdf_calc))]
+                    selected_sig_str = st.selectbox("اختر الإشارة لعرض تفاصيلها:", sig_options, index=len(tdf_calc)-1, key="calc_sig_idx")
+                    sig_idx = sig_options.index(selected_sig_str)
+                    
+                    cur_calc = tdf_calc.iloc[sig_idx]
+                    e_val = float(cur_calc.get("entry", 0))
+                    s_val = float(cur_calc.get("sl", 0))
+                    t_val = float(cur_calc.get("tp", 0))
+                    is_bear = "Bear" in str(cur_calc.get("bias", ""))
+                    
+                    if e_val > 0:
+                        risk_pts = abs(e_val - s_val)
+                        reward_pts = abs(t_val - e_val)
+                        risk_pct = (risk_pts / e_val) * 100
+                        reward_pct = (reward_pts / e_val) * 100
+                        rr = reward_pct / risk_pct if risk_pct > 0 else 0
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("سعر الدخول", f"{e_val:.5f}", "بيع" if is_bear else "شراء", delta_color="inverse" if is_bear else "normal")
+                        col2.metric("وقف الخسارة (SL)", f"{s_val:.5f}", f"-{risk_pct:.2f}%", delta_color="inverse")
+                        col3.metric("الهدف (TP)", f"{t_val:.5f}", f"+{reward_pct:.2f}%", delta_color="normal")
+                        col4.metric("نسبة المخاطرة/الربح", f"1 : {rr:.2f}")
+                        
+                        st.markdown("##### 📊 ملخص جميع إشارات هذا الأصل:")
+                        wins = tdf_calc[tdf_calc["Result"] == "WIN"]
+                        losses = tdf_calc[tdf_calc["Result"] == "LOSS"]
+                        
+                        total_profit_usd = wins["PnL_USD"].sum() if "PnL_USD" in wins else 0
+                        total_loss_usd = losses["PnL_USD"].sum() if "PnL_USD" in losses else 0
+                        net_pnl = total_profit_usd + total_loss_usd
+                        
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("إجمالي الأرباح", f"+${total_profit_usd:.2f}", f"{len(wins)} صفقة", delta_color="normal")
+                        c2.metric("إجمالي الخسائر", f"${total_loss_usd:.2f}", f"{len(losses)} صفقة", delta_color="inverse")
+                        c3.metric("صافي الربح/الخسارة", f"${net_pnl:.2f}", delta_color="normal" if net_pnl > 0 else "inverse")
+                        c4.metric("نسبة النجاح", f"{(len(wins)/len(tdf_calc)*100):.1f}%" if len(tdf_calc)>0 else "0%")
+                
+                st.markdown("---")
+                
+                # -----------------------------------------
+                # الحاسبة الثانية: إدارة المخاطر (حجم العقد)
+                # -----------------------------------------
+                st.markdown("#### 2️⃣ حاسبة إدارة المخاطر وحجم العقد (Position Size)")
+                
+                c1, c2 = st.columns(2)
+                capital = c1.number_input("رأس المال ($):", min_value=10.0, value=1000.0, step=100.0, key="calc_capital")
+                risk_per_trade_pct = c2.slider("نسبة المخاطرة لكل صفقة (%):", min_value=1, max_value=10, value=2, key="calc_risk_pct")
+                
+                max_risk_usd = capital * (risk_per_trade_pct / 100)
+                st.info(f"💰 أقصى خسارة مسموحة (بناءً على رأس المال): **${max_risk_usd:.2f}**")
+                
+                if not tdf_calc.empty and e_val > 0:
+                    risk_distance = abs(e_val - s_val)
+                    
+                    if risk_distance > 0:
+                        if "BTC" in sym_calc or "ETH" in sym_calc:
+                            lot_size = max_risk_usd / risk_distance
+                            lot_unit = "عملة"
+                        elif "XAU" in sym_calc or "GC=F" in sym_calc:
+                            lot_size = max_risk_usd / (risk_distance * 100)
+                            lot_unit = "لوت (100 أونصة)"
+                        else:
+                            lot_size = max_risk_usd / (risk_distance * 100000)
+                            lot_unit = "لوت قياسي"
+                            
+                        st.success(f"✅ حجم العقد المقترح للدخول في الإشارة المحددة أعلاه: **{lot_size:.4f} {lot_unit}**")
+                        expected_profit_usd = max_risk_usd * rr
+                        st.info(f"🎯 الربح المتوقع عند الوصول للهدف: **${expected_profit_usd:.2f}**")
+
             with tab2:
                 st.subheader("📋 قائمة بجميع الإشارات التي تم العثور عليها")
                 opts = [f"{r['symbol']} ({r['total']})" for r in rl]
@@ -484,7 +570,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                             
                     cur = tdf.iloc[si]
                     
-                    # عرض النص بشكل أوضح
                     rec_text = cur.get("Trade Recommendation", "")
                     if rec_text:
                         st.info(rec_text)
