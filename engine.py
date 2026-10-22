@@ -14,7 +14,7 @@ CONFIG = {
     "MAX_RETRACEMENT_PCT": 0.50,   
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
     "REQUIRE_RETEST": True,        
-    "RETEST_MAX_CANDLES": 12,       # نعطي السعر حتى 12 شمعة للاختبار
+    "RETEST_MAX_CANDLES": 12,       
     "RETEST_TOLERANCE": 0.001,     
     
     "SAFE_SL_MARGIN": 0.05,        
@@ -190,8 +190,14 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             impulse_move = impulse_start_price - closes[i]
             if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: continue
 
-        if is_bull_breakout: box_start_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
-        else: box_start_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
+        # ⬇️ تحديد نهاية الموجة الدافعة (أعلى قمة أو أدنى قاع) ⬇️
+        if is_bull_breakout: 
+            impulse_end_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
+        else: 
+            impulse_end_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
+
+        # ⬇️ بداية الصندوق هي الشمعة التي تلي الموجة الدافعة مباشرة ⬇️
+        box_start_idx = impulse_end_idx + 1 
 
         box_length = i - box_start_idx
         if box_start_idx >= i or box_length < CONFIG["BOX_MIN_CANDLES"] or box_length > CONFIG.get("BOX_MAX_CANDLES", 60): continue
@@ -213,14 +219,14 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         structural_sl = lows[i] if is_bull_breakout else highs[i]
         retest_found = False
 
-        # ⬇️ المنطق الدقيق الذي طلبته (عودة -> إغلاق بالداخل -> كسر ثانٍ) ⬇️
+        # ⬇️ منطق الاختبار (عودة -> إغلاق بالداخل -> كسر ثانٍ) ⬇️
         if CONFIG.get("REQUIRE_RETEST", False):
-            state = 0 # 0: ينتظر العودة, 1: عاد وينتظر الإغلاق بالداخل, 2: أغلق بالداخل وينتظر الاختراق الثاني
+            state = 0 
             retest_extreme = lows[i] if is_bull_breakout else highs[i]
 
             for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
                 if is_bull_breakout:
-                    if lows[j] < box_bottom: break # إلغاء إذا كسر قاع الصندوق
+                    if lows[j] < box_bottom: break 
                     retest_extreme = min(retest_extreme, lows[j])
 
                     if state == 0:
@@ -230,7 +236,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                         if box_bottom <= closes[j] <= box_top:
                             state = 2
                         elif closes[j] > box_top:
-                            break # فخ: لمس وأغلق فوق مباشرة دون إغلاق بالداخل
+                            break 
                     elif state == 2:
                         if closes[j] > box_top:
                             retest_found = True
@@ -239,10 +245,10 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                             structural_sl = retest_extreme
                             break
                         elif closes[j] < box_bottom:
-                            break # إلغاء إذا أغلق تحت الصندوق مجدداً
+                            break 
 
                 elif is_bear_breakout:
-                    if highs[j] > box_top: break # إلغاء إذا كسر سقف الصندوق
+                    if highs[j] > box_top: break 
                     retest_extreme = max(retest_extreme, highs[j])
 
                     if state == 0:
@@ -252,7 +258,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                         if box_bottom <= closes[j] <= box_top:
                             state = 2
                         elif closes[j] < box_bottom:
-                            break # فخ: لمس وأغلق تحت مباشرة
+                            break 
                     elif state == 2:
                         if closes[j] < box_bottom:
                             retest_found = True
@@ -261,7 +267,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                             structural_sl = retest_extreme
                             break
                         elif closes[j] > box_top:
-                            break # إلغاء إذا أغلق فوق الصندوق مجدداً
+                            break 
 
             if not retest_found: 
                 stats["rejected_retest"] += 1
@@ -274,8 +280,13 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
                 stats["rejected_rsi"] += 1; continue
 
+        # ⬇️ تحديث الرسم: الصندوق يبدأ من بعد الموجة، والترند يصل إلى نهاية الموجة ⬇️
         box_nodes = [(df.index[box_start_idx], box_top), (df.index[i], box_top), (df.index[box_start_idx], box_bottom), (df.index[i], box_bottom)]
-        trend_nodes = [(df.index[impulse_start_idx], impulse_start_price), (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), (df.index[actual_entry_idx], actual_entry_price)]
+        trend_nodes = [
+            (df.index[impulse_start_idx], impulse_start_price), 
+            (df.index[impulse_end_idx], highs[impulse_end_idx] if is_bull_breakout else lows[impulse_end_idx]), 
+            (df.index[actual_entry_idx], actual_entry_price)
+        ]
 
         if is_bull_breakout and actual_entry_price > box_top:
             final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, impulse_move)
