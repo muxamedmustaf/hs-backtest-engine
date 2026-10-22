@@ -18,7 +18,7 @@ try:
     SHEET_ENABLED = True
 except ImportError:
     SHEET_ENABLED = False
-    def get_symbols_from_sheet(*args, **kwargs): return [], "ملف ffff.py غير موجود"
+    def get_symbols_from_sheet(*args, **kwargs): return [], "ملف ffff.py غير موجود."
 
 st.set_page_config(
     page_title="Smart Market Analyzer & Backtest Lab",
@@ -27,7 +27,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ⬇️⬇️ تحديثات CSS للتوسيع، التباعد، والزر العائم ⬇️⬇️
+# ⬇️⬇️ تحديثات CSS وإصلاح الزر العائم بـ JavaScript ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
@@ -56,6 +56,7 @@ st.markdown("""
     div[data-testid="stHorizontalBlock"] { gap: 1.5rem; }
     div[data-testid="stVerticalBlock"] { gap: 1rem; }
     
+    /* الزر العائم */
     .float-top {
         position: fixed;
         bottom: 80px;
@@ -72,20 +73,28 @@ st.markdown("""
         font-size: 28px;
         text-decoration: none;
         box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        cursor: pointer;
+        border: none;
     }
     .float-top:hover { background-color: #C2185B; color: white; }
     
     .js-plotly-plot .plotly, .js-plotly-plot .main-svg { touch-action: none !important; }
 </style>
-</head>
-<body>
-    <a href="#top" class="float-top" title="العودة للأعلى">⬆️</a>
-</body>
+<div id="top"></div>
+<a href="javascript:void(0);" class="float-top" onclick="
+    var main = document.querySelector('.main');
+    var appView = document.querySelector('div[data-testid=\'stAppViewContainer\']');
+    var scrollable = document.querySelector('section.main');
+    if(main) main.scrollTo({top: 0, behavior: 'smooth'});
+    if(appView) appView.scrollTo({top: 0, behavior: 'smooth'});
+    if(scrollable) scrollable.scrollTo({top: 0, behavior: 'smooth'});
+    window.scrollTo({top: 0, behavior: 'smooth'});
+" title="العودة للأعلى">⬆️</a>
 """, unsafe_allow_html=True)
 
 SHEET_ID = "1TXvF6RhSgfJ631UpnWB38Ww1OMvZVx7VonDB_y1pO3s"
-DEFAULT_SHEET_NAME = "Sheet1"  # تم التعديل ليتطابق مع ملف ffff.py (أو GOLD إذا كان هذا اسم الشيت)
-DEFAULT_COL_NAME = "Ticker"    # تم التعديل ليتطابق مع ملف ffff.py (أو TOKENS إذا كان هذا اسم العمود)
+DEFAULT_SHEET_NAME = "GOLD"
+DEFAULT_COL_NAME = "TOKENS"
 
 ALL_GLOBAL_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "4h", "1d", "5d", "1wk", "1mo", "3mo"]
 ALL_PERIODS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
@@ -120,7 +129,7 @@ def pip_size_for(symbol):
     if "JPY" in s: return 0.01
     return 0.0001
 
-# ⬇️⬇️ دالة جلب كل العملات من الشيت (تم إصلاحها) ⬇️⬇️
+# ⬇️⬇️ دالة جلب كل العملات من الشيت ⬇️⬇️
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
     sheet_count = 0
@@ -128,13 +137,10 @@ def get_available_symbols():
     
     if SHEET_ENABLED:
         try:
-            # دالة ffff ترجع Tuple (قائمة_العملات, رسالة_الخطأ)
             result = get_symbols_from_sheet(SHEET_ID, DEFAULT_SHEET_NAME, DEFAULT_COL_NAME)
-            
             if isinstance(result, tuple) and len(result) == 2:
                 sheet_symbols, err = result
-                if err:
-                    error_msg = err
+                if err: error_msg = err
                 elif sheet_symbols and isinstance(sheet_symbols, list):
                     for x in sheet_symbols: 
                         if x and str(x).lower() != 'nan':
@@ -143,13 +149,11 @@ def get_available_symbols():
             elif isinstance(result, list):
                 for x in result: s.add(str(x).strip().upper())
                 sheet_count = len(result)
-                
         except Exception as e: 
             error_msg = str(e)
             
     return sorted(s), sheet_count, error_msg
 
-# استدعاء الدالة مرة واحدة
 all_symbols, sheet_count, sheet_error = get_available_symbols()
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -320,9 +324,9 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
         st.success(f"✅ متصل بـ: {repo.full_name}")
         
         if sheet_count > 0:
-            st.info(f"📊 تم جلب **{sheet_count}** عملة من الشيت + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
+            st.success(f"📊 تم جلب **{sheet_count}** عملة من الشيت بنجاح + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
         else:
-            st.warning(f"⚠️ تعذر جلب العملات من الشيت. السبب: {sheet_error if sheet_error else 'قد يكون الملف مفقوداً أو أسماء الجدول/العمود خاطئة.'}")
+            st.error(f"⚠️ فشل جلب العملات من الشيت! السبب: {sheet_error if sheet_error else 'قد يكون اسم الشيت أو العمود غير صحيح، أو أن الشيت خاص (Private) ويحتاج إلى إعدادات الصلاحيات.'}")
         
         dl_mode = st.radio("طريقة التنزيل:", ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], horizontal=True, key="dl_mode")
         intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ALL_GLOBAL_INTERVALS, default=["1h", "4h"], key="dl_intvs")
