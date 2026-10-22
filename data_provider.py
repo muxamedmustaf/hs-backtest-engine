@@ -5,6 +5,7 @@ from datetime import datetime
 import time
 import base64
 import io
+import requests # ⬅️ مكتبة جديدة للقراءة السريعة من GitHub
 
 try:
     from github import Github
@@ -28,16 +29,21 @@ def get_github_repo():
         return g.get_repo(GITHUB_REPO)
     except Exception: return None
 
+# ⬇️ دالة القراءة السريعة جداً (بدون API) ⬇️
 def load_from_github(symbol, interval):
-    repo = get_github_repo()
-    if repo is None: return None
+    if not GITHUB_REPO: return None
     file_path = f"{DATA_FOLDER}/{symbol.replace('=','_').replace('-','_')}_{interval}.parquet"
+    raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{DATA_BRANCH}/{file_path}"
+    
     try:
-        contents = repo.get_contents(file_path, ref=DATA_BRANCH)
-        decoded = base64.b64decode(contents.content)
-        df = pd.read_parquet(io.BytesIO(decoded))
-        return df
-    except Exception: return None
+        # نستخدم requests لجلب الملف مباشرة من رابط الـ Raw (أسرع 100 مرة من API)
+        r = requests.get(raw_url, timeout=5)
+        if r.status_code == 200:
+            df = pd.read_parquet(io.BytesIO(r.content))
+            return df
+        return None
+    except Exception:
+        return None
 
 def save_to_github(symbol, interval, df):
     repo = get_github_repo()
@@ -98,7 +104,7 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
             end_date_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
             df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= end_date_dt)]
 
-        # ⬇️ التأخير هنا فقط لأننا نستخدم API خارجي
+        # ⬇️ التأخير هنا فقط في حالة استخدام الإنترنت (API)
         time.sleep(8) 
         return df
     except Exception as e: 
@@ -106,13 +112,11 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
         return None
 
 def fetch_data(symbol, interval="1h", period="3mo", start_date=None, end_date=None, cache_hours=None, force_download=False, **kwargs):
-    # 1. محاولة القراءة من GitHub المحلي أولاً
     df_github = load_from_github(symbol, interval)
     
     if df_github is not None and len(df_github) < 100:
         force_download = True
 
-    # 2. إذا لم يكن هناك طلب جلب مباشر، نرجع بيانات GitHub فوراً (بدون أي تأخير)
     if not force_download and df_github is not None and not df_github.empty:
         if start_date and end_date:
             df_github.index = pd.to_datetime(df_github.index)
@@ -122,7 +126,6 @@ def fetch_data(symbol, interval="1h", period="3mo", start_date=None, end_date=No
                 return adjust_timezone(df_filtered)
         return adjust_timezone(df_github)
 
-    # 3. الجلب من الإنترنت (API) - هنا سيأخذ الوقت (8 ثواني)
     df_new = _fetch_twelve(symbol, interval, start_date, end_date)
     
     if df_new is not None and not df_new.empty:
