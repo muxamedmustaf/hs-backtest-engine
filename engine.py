@@ -109,7 +109,6 @@ def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
     tp = entry + target if bias == "Bullish" else entry - target
     return final_sl, tp, safe_sl, structural_sl
 
-# ⬇️⬇️ دالة المحاكاة (بدون تريلينج ستوب - الوقف والهدف ثابتان) ⬇️⬇️
 def simulate_trade(pattern, df, cfg=None):
     bias = pattern["bias"]
     entry = float(pattern["entry"])
@@ -137,19 +136,14 @@ def simulate_trade(pattern, df, cfg=None):
             max_adv = max(max_adv, (adv / abs(entry - stats["Initial SL"]) * 100) if abs(entry - stats["Initial SL"]) > 0 else 0.0)
         if exited: continue
 
-        # فحص ضرب الوقف أو الهدف
         hit_sl = (h >= sl) if bias == "Bearish" else (l <= sl)
         hit_tp = (l <= tp) if bias == "Bearish" else (h >= tp)
 
-        # إذا ضُرب الاثنان في نفس الشمعة، نعتبر الوقف هو من ضُرب أولاً (الأسوأ)
-        if hit_sl and hit_tp:
-            hit_tp = False 
+        if hit_sl and hit_tp: hit_tp = False 
 
         if hit_sl:
             is_prof = (sl < entry) if bias == "Bearish" else (sl > entry)
-            if is_prof: 
-                stats["Result"] = "WIN"
-                stats["Loss Category"] = "trailing_win"
+            if is_prof: stats["Result"] = "WIN"; stats["Loss Category"] = "trailing_win"
             else:
                 stats["Result"] = "LOSS"
                 if max_fav < 30: stats["Loss Category"] = "early_reversal"
@@ -219,6 +213,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         structural_sl = lows[i] if is_bull_breakout else highs[i]
         retest_found = False
 
+        # ⬇️ المنطق الجديد للاختبار (التأكيد المزدوج للحالة الخاصة) ⬇️
         if CONFIG.get("REQUIRE_RETEST", False):
             has_touched = False
             lowest_during_retest = lows[i]
@@ -228,25 +223,57 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
                 if is_bull_breakout:
                     if lows[j] < box_bottom: break 
                     lowest_during_retest = min(lowest_during_retest, lows[j])
-                    if not has_touched and lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]):
-                        has_touched = True
-                    if has_touched and closes[j] > box_top:
-                        retest_found = True
-                        actual_entry_idx = j
-                        actual_entry_price = closes[j]
-                        structural_sl = lowest_during_retest
-                        break
+                    
+                    if not has_touched:
+                        if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]):
+                            has_touched = True
+                            if closes[j] > box_top:
+                                # الحالة الخاصة: لمس وأغلق فوق الصندوق في نفس الشمعة
+                                # نطلب شمعة تأكيد إضافية
+                                if j + 1 < n and closes[j+1] > box_top:
+                                    retest_found = True
+                                    actual_entry_idx = j + 1
+                                    actual_entry_price = closes[j+1]
+                                    lowest_during_retest = min(lowest_during_retest, lows[j+1])
+                                    structural_sl = lowest_during_retest
+                                    break
+                                else:
+                                    break # إلغاء لأن التأكيد لم يحدث
+                    else:
+                        # اللمسة حدثت سابقاً (داخل الصندوق)، وهذه الشمعة تغلق فوقه
+                        if closes[j] > box_top:
+                            retest_found = True
+                            actual_entry_idx = j
+                            actual_entry_price = closes[j]
+                            structural_sl = lowest_during_retest
+                            break
+                            
                 elif is_bear_breakout:
                     if highs[j] > box_top: break 
                     highest_during_retest = max(highest_during_retest, highs[j])
-                    if not has_touched and highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]):
-                        has_touched = True
-                    if has_touched and closes[j] < box_bottom:
-                        retest_found = True
-                        actual_entry_idx = j
-                        actual_entry_price = closes[j]
-                        structural_sl = highest_during_retest
-                        break
+                    
+                    if not has_touched:
+                        if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]):
+                            has_touched = True
+                            if closes[j] < box_bottom:
+                                # الحالة الخاصة: لمس وأغلق تحت الصندوق في نفس الشمعة
+                                if j + 1 < n and closes[j+1] < box_bottom:
+                                    retest_found = True
+                                    actual_entry_idx = j + 1
+                                    actual_entry_price = closes[j+1]
+                                    highest_during_retest = max(highest_during_retest, highs[j+1])
+                                    structural_sl = highest_during_retest
+                                    break
+                                else:
+                                    break # إلغاء
+                    else:
+                        # اللمسة حدثت سابقاً (داخل الصندوق)، وهذه الشمعة تغلق تحته
+                        if closes[j] < box_bottom:
+                            retest_found = True
+                            actual_entry_idx = j
+                            actual_entry_price = closes[j]
+                            structural_sl = highest_during_retest
+                            break
 
             if not retest_found: 
                 stats["rejected_retest"] += 1
