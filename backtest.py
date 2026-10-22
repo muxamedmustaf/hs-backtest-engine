@@ -5,14 +5,12 @@ import numpy as np
 from plotly.subplots import make_subplots
 from data_provider import fetch_data, get_github_repo
 
-# ⬇️ استيراد المحرك ⬇️
 try:
     from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals, diagnose_filters
 except ImportError:
     st.error("تأكد من وجود ملف engine.py")
     st.stop()
 
-# ⬇️ استيراد دالة جلب العملات من الشيت ⬇️
 try:
     from ffff import get_symbols_from_sheet
     SHEET_ENABLED = True
@@ -20,64 +18,31 @@ except ImportError:
     SHEET_ENABLED = False
     def get_symbols_from_sheet(*args, **kwargs): return [], "ملف ffff.py غير موجود."
 
-st.set_page_config(
-    page_title="Smart Market Analyzer & Backtest Lab",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Box Hunter Pro - Smart", page_icon="📦", layout="wide", initial_sidebar_state="collapsed")
 
-# ⬇️⬇️ تحديثات CSS وإصلاح الزر العائم بـ JavaScript ⬇️⬇️
 st.markdown("""
 <head><meta charset="UTF-8"></head>
 <style>
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
-    
-    .main .block-container { 
-        max-width: 98% !important; 
-        padding: 1.5rem 2.5rem !important; 
-    }
-    
+    .main .block-container { max-width: 98% !important; padding: 1.5rem 2.5rem !important; }
     html, body, [class*="css"] { direction: rtl; text-align: right; font-size: 16px; }
     h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; margin-bottom: 1rem; }
     label, .stRadio label, .stTextInput label, .stSelectbox label, .stMultiSelect label { direction: rtl; text-align: right; margin-bottom: 0.5rem; }
-    
-    .stButton > button { 
-        direction: rtl; 
-        text-align: center; 
-        padding: 0.6rem 1rem;
-        font-size: 1rem;
-    }
-    
+    .stButton > button { direction: rtl; text-align: center; padding: 0.6rem 1rem; font-size: 1rem; }
     .stAlert, .stInfo, .stSuccess, .stWarning, .stError { direction: rtl; text-align: right; padding: 1rem; font-size: 16px; font-weight: bold;}
     .stDataFrame { direction: ltr; }
-    
     div[data-testid="stHorizontalBlock"] { gap: 1.5rem; }
     div[data-testid="stVerticalBlock"] { gap: 1rem; }
     
-    /* الزر العائم */
     .float-top {
-        position: fixed;
-        bottom: 80px;
-        right: 20px;
-        z-index: 99999;
-        background-color: #E91E63;
-        color: white !important;
-        border-radius: 50%;
-        width: 55px;
-        height: 55px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 28px;
-        text-decoration: none;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.4);
-        cursor: pointer;
-        border: none;
+        position: fixed; bottom: 80px; right: 20px; z-index: 99999;
+        background-color: #E91E63; color: white !important; border-radius: 50%;
+        width: 55px; height: 55px; display: flex; align-items: center; justify-content: center;
+        font-size: 28px; text-decoration: none; box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        cursor: pointer; border: none;
     }
     .float-top:hover { background-color: #C2185B; color: white; }
-    
     .js-plotly-plot .plotly, .js-plotly-plot .main-svg { touch-action: none !important; }
 </style>
 <div id="top"></div>
@@ -129,7 +94,6 @@ def pip_size_for(symbol):
     if "JPY" in s: return 0.01
     return 0.0001
 
-# ⬇️⬇️ دالة جلب كل العملات من الشيت ⬇️⬇️
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
     sheet_count = 0
@@ -211,6 +175,7 @@ def _prepare_chart_data(symbol, interval, start_date, end_date, period, source_c
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
     return df
 
+# ⬇️ حساب النقاط (Pips) ⬇️
 def compute_pips(df):
     if df is None or df.empty: return df
     df = df.copy()
@@ -226,21 +191,44 @@ def compute_pips(df):
     df["Pips"] = pips_l
     return df
 
-def compute_dollar_pnl(df, lot=0.01):
+# ⬇️ حساب الربح والخسارة بالدولار بناءً على رأس المال والمخاطرة ⬇️
+def compute_dollar_pnl(df, capital=1000.0, risk_pct=2.0):
     if df is None or df.empty: return df
     df = df.copy()
-    usd = []
+    usd_list = []
+    
     for _, row in df.iterrows():
         sym = str(row.get("symbol") or "").upper()
-        try: e, x = float(row.get("Entry Price")), float(row.get("Exit Price"))
-        except: usd.append(None); continue
-        move = (x - e) if "BEAR" not in str(row.get("bias")).upper() else (e - x)
-        if "BTC" in sym: pnl = move * lot
-        elif "XAU" in sym: pnl = move * lot * 100
-        elif sym.endswith("USD"): pnl = move * lot * 100000
-        else: pnl = move * lot * 100000 / x if x else None
-        usd.append(round(pnl, 2) if pnl is not None else None)
-    df["PnL_USD"] = usd
+        try: 
+            e, x = float(row.get("Entry Price")), float(row.get("Exit Price"))
+            sl = float(row.get("Stop Loss"))
+        except: 
+            usd_list.append(None); continue
+            
+        is_sell = "BEAR" in str(row.get("bias")).upper()
+        risk_distance = abs(e - sl)
+        if risk_distance == 0: risk_distance = 1e-5
+        
+        # حساب حجم العقد المناسب لكل صفقة
+        max_risk_usd = capital * (risk_pct / 100)
+        
+        if "BTC" in sym or "ETH" in sym: 
+            lot_size = max_risk_usd / risk_distance
+            pnl = ((x - e) if not is_sell else (e - x)) * lot_size
+        elif "XAU" in sym or "GC=F" in sym: 
+            lot_size = max_risk_usd / (risk_distance * 100)
+            pnl = ((x - e) if not is_sell else (e - x)) * lot_size * 100
+        else:
+            if sym.endswith("USD"):
+                lot_size = max_risk_usd / (risk_distance * 100000)
+                pnl = ((x - e) if not is_sell else (e - x)) * lot_size * 100000
+            else:
+                lot_size = max_risk_usd / (risk_distance * 100000)
+                pnl = ((x - e) if not is_sell else (e - x)) * lot_size * 100000 / x if x else None
+                
+        usd_list.append(round(pnl, 2) if pnl is not None else None)
+        
+    df["PnL_USD"] = usd_list
     return df
 
 def draw_box_pattern(fig, source):
@@ -296,12 +284,9 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
         s_val = float(cur.get("sl", 0))
         t_val = float(cur.get("tp", 0))
         
-        if e_val > 0:
-            fig.add_hline(y=e_val, line_dash="dash", line_color="#2196F3", annotation_text=f"الدخول: {e_val}", annotation_position="top left", row=1, col=1)
-        if s_val > 0:
-            fig.add_hline(y=s_val, line_dash="dash", line_color="#F44336", annotation_text=f"وقف الخسارة: {s_val}", annotation_position="bottom left", row=1, col=1)
-        if t_val > 0:
-            fig.add_hline(y=t_val, line_dash="dash", line_color="#4CAF50", annotation_text=f"الهدف: {t_val}", annotation_position="top left", row=1, col=1)
+        if e_val > 0: fig.add_hline(y=e_val, line_dash="dash", line_color="#2196F3", annotation_text=f"الدخول: {e_val}", annotation_position="top left", row=1, col=1)
+        if s_val > 0: fig.add_hline(y=s_val, line_dash="dash", line_color="#F44336", annotation_text=f"وقف الخسارة: {s_val}", annotation_position="bottom left", row=1, col=1)
+        if t_val > 0: fig.add_hline(y=t_val, line_dash="dash", line_color="#4CAF50", annotation_text=f"الهدف: {t_val}", annotation_position="top left", row=1, col=1)
     except Exception:
         pass
     
@@ -323,10 +308,8 @@ with st.expander("⚙️ إدارة البيانات (GitHub) - اضغط للف�
     if repo:
         st.success(f"✅ متصل بـ: {repo.full_name}")
         
-        if sheet_count > 0:
-            st.success(f"📊 تم جلب **{sheet_count}** عملة من الشيت بنجاح + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
-        else:
-            st.error(f"⚠️ فشل جلب العملات من الشيت! السبب: {sheet_error if sheet_error else 'قد يكون اسم الشيت أو العمود غير صحيح، أو أن الشيت خاص (Private) ويحتاج إلى إعدادات الصلاحيات.'}")
+        if sheet_count > 0: st.success(f"📊 تم جلب **{sheet_count}** عملة من الشيت بنجاح + العملات الافتراضية. الإجمالي: **{len(all_symbols)}** عملة.")
+        else: st.error(f"⚠️ فشل جلب العملات من الشيت! السبب: {sheet_error if sheet_error else 'قد يكون اسم الشيت أو العمود غير صحيح.'}")
         
         dl_mode = st.radio("طريقة التنزيل:", ["الكل (شيت)", "مجموعة محددة", "عملة واحدة"], horizontal=True, key="dl_mode")
         intvs_to_dl = st.multiselect("اختر الأطُر الزمنية للتنزيل:", ALL_GLOBAL_INTERVALS, default=["1h", "4h"], key="dl_intvs")
@@ -449,14 +432,26 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
             with tab5:
                 st.subheader("🧮 الحاسبات التفاعلية وإدارة المخاطر")
                 
-                st.markdown("#### 1️⃣ حاسبة الإشارة الحالية والنتائج الإجمالية")
+                st.markdown("#### 1️⃣ الإعدادات العامة للحساب")
+                c1, c2 = st.columns(2)
+                capital = c1.number_input("رأس المال الكلي ($):", min_value=10.0, value=1000.0, step=100.0, key="calc_capital")
+                risk_per_trade_pct = c2.slider("نسبة المخاطرة لكل صفقة (%):", min_value=1, max_value=10, value=2, key="calc_risk_pct")
+                
+                max_risk_usd = capital * (risk_per_trade_pct / 100)
+                st.info(f"💰 أقصى خسارة مسموحة لكل صفقة: **${max_risk_usd:.2f}**")
+                
+                st.markdown("---")
+                st.markdown("#### 2️⃣ حاسبة الإشارة الحالية والنتائج الكلية")
+                
                 opts = [f"{r['symbol']} ({r['total']})" for r in rl]
                 sel_idx_calc = st.selectbox("اختر الأصل للتحليل:", opts, key="calc_sel_sym")
                 ai_calc = rl[opts.index(sel_idx_calc)]
                 sym_calc, tdf_calc = ai_calc["symbol"], ai_calc["trades_df"]
                 
                 if not tdf_calc.empty:
-                    tdf_calc = compute_dollar_pnl(compute_pips(tdf_calc), lot=0.01)
+                    # ⬇️ تمرير رأس المال ونسبة المخاطرة لدالة حساب الدولار ⬇️
+                    tdf_calc = compute_dollar_pnl(compute_pips(tdf_calc), capital=capital, risk_pct=risk_per_trade_pct)
+                    
                     sig_options = [f"إشارة {i+1} | اتجاه: {'بيع 🔴' if 'Bear' in str(tdf_calc.iloc[i].get('bias', '')) else 'شراء 🟢'}" for i in range(len(tdf_calc))]
                     selected_sig_str = st.selectbox("اختر الإشارة لعرض تفاصيلها:", sig_options, index=len(tdf_calc)-1, key="calc_sig_idx")
                     sig_idx = sig_options.index(selected_sig_str)
@@ -480,7 +475,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         col3.metric("الهدف (TP)", f"{t_val:.5f}", f"+{reward_pct:.2f}%", delta_color="normal")
                         col4.metric("نسبة المخاطرة/الربح", f"1 : {rr:.2f}")
                         
-                        st.markdown("##### 📊 ملخص جميع إشارات هذا الأصل:")
+                        st.markdown("##### 📊 ملخص جميع إشارات هذا الأصل بالدولار:")
                         wins = tdf_calc[tdf_calc["Result"] == "WIN"]
                         losses = tdf_calc[tdf_calc["Result"] == "LOSS"]
                         
@@ -493,33 +488,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         c2.metric("إجمالي الخسائر", f"${total_loss_usd:.2f}", f"{len(losses)} صفقة", delta_color="inverse")
                         c3.metric("صافي الربح/الخسارة", f"${net_pnl:.2f}", delta_color="normal" if net_pnl > 0 else "inverse")
                         c4.metric("نسبة النجاح", f"{(len(wins)/len(tdf_calc)*100):.1f}%" if len(tdf_calc)>0 else "0%")
-                
-                st.markdown("---")
-                st.markdown("#### 2️⃣ حاسبة إدارة المخاطر وحجم العقد (Position Size)")
-                
-                c1, c2 = st.columns(2)
-                capital = c1.number_input("رأس المال ($):", min_value=10.0, value=1000.0, step=100.0, key="calc_capital")
-                risk_per_trade_pct = c2.slider("نسبة المخاطرة لكل صفقة (%):", min_value=1, max_value=10, value=2, key="calc_risk_pct")
-                
-                max_risk_usd = capital * (risk_per_trade_pct / 100)
-                st.info(f"💰 أقصى خسارة مسموحة (بناءً على رأس المال): **${max_risk_usd:.2f}**")
-                
-                if not tdf_calc.empty and e_val > 0:
-                    risk_distance = abs(e_val - s_val)
-                    if risk_distance > 0:
-                        if "BTC" in sym_calc or "ETH" in sym_calc:
-                            lot_size = max_risk_usd / risk_distance
-                            lot_unit = "عملة"
-                        elif "XAU" in sym_calc or "GC=F" in sym_calc:
-                            lot_size = max_risk_usd / (risk_distance * 100)
-                            lot_unit = "لوت (100 أونصة)"
-                        else:
-                            lot_size = max_risk_usd / (risk_distance * 100000)
-                            lot_unit = "لوت قياسي"
-                            
-                        st.success(f"✅ حجم العقد المقترح للدخول في الإشارة المحددة أعلاه: **{lot_size:.4f} {lot_unit}**")
-                        expected_profit_usd = max_risk_usd * rr
-                        st.info(f"🎯 الربح المتوقع عند الوصول للهدف: **${expected_profit_usd:.2f}**")
 
             with tab2:
                 st.subheader("📋 قائمة بجميع الإشارات التي تم العثور عليها")
@@ -529,8 +497,9 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 sym, tdf = ai["symbol"], ai["trades_df"]
                 
                 if not tdf.empty:
+                    # استخدام نفس الإعدادات الافتراضية للحاسبة لعرض الجدول
                     tdf_pips = compute_pips(tdf)
-                    tdf_pips = compute_dollar_pnl(tdf_pips, lot=0.01)
+                    tdf_pips = compute_dollar_pnl(tdf_pips, capital=1000.0, risk_pct=2.0)
                     display_cols = ["Entry Date", "Exit Date", "bias", "Entry Price", "Stop Loss", "Take Profit", "Result", "Pips", "PnL_USD"]
                     available_cols = [c for c in display_cols if c in tdf_pips.columns]
                     st.dataframe(tdf_pips[available_cols], use_container_width=True, height=600)
@@ -538,15 +507,21 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
             with tab3:
                 st.subheader("📊 تحليل النتائج وخطة التطوير الذاتي")
                 combined_df = pd.concat(all_dfs, ignore_index=True)
+                combined_df = compute_dollar_pnl(compute_pips(combined_df), capital=1000.0, risk_pct=2.0) # حساب تقريبي للكل
+                
                 closed = combined_df[combined_df["Result"].isin(["WIN", "LOSS"])]
                 wins = len(closed[closed["Result"] == "WIN"])
                 losses = len(closed[closed["Result"] == "LOSS"])
                 wr = round((wins / len(closed) * 100), 1) if len(closed) > 0 else 0
                 
-                c1, c2, c3 = st.columns(3)
+                total_profit_all = closed[closed["Result"] == "WIN"]["PnL_USD"].sum()
+                total_loss_all = closed[closed["Result"] == "LOSS"]["PnL_USD"].sum()
+                
+                c1, c2, c3, c4 = st.columns(4)
                 c1.metric("إجمالي المغلقة", len(closed))
                 c2.metric("الرابحة", wins, f"{wr}%")
-                c3.metric("الخاسرة", losses, f"{100-wr}%", delta_color="inverse")
+                c3.metric("إجمالي الأرباح الكلية", f"+${total_profit_all:.2f}", delta_color="normal")
+                c4.metric("إجمالي الخسائر الكلية", f"${total_loss_all:.2f}", delta_color="inverse")
                 
                 if losses > 0:
                     st.markdown("### 🔍 تحليل الخسائر وخطة التطوير")
@@ -557,8 +532,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
             
             with tab4:
                 st.subheader("🛡️ تقرير الفلاتر (Filter Diagnostics)")
-                st.markdown("هذا التقرير يوضح لك عدد النماذج التي تم اكتشافها وعدد التي تم رفضها بسبب الفلاتر.")
-                
                 if all_stats:
                     for st_item in all_stats:
                         sym = st_item["symbol"]
@@ -602,8 +575,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     cur = tdf.iloc[si]
                     
                     rec_text = cur.get("Trade Recommendation", "")
-                    if rec_text:
-                        st.info(rec_text)
+                    if rec_text: st.info(rec_text)
                     
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_period"], bt_data_source)
                     render_chart_fast(sym, cur, df_chart, chart_mode)
@@ -622,8 +594,7 @@ else:
     live_data_source = st.radio(
         "📡 مصدر البيانات:",
         ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
-        horizontal=True,
-        help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
+        horizontal=True
     )
 
     live_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True, key="live_mode_radio")
