@@ -52,7 +52,7 @@ def save_to_github(symbol, interval, df):
     except Exception:
         try: repo.create_file(file_path, f"Create {symbol} {interval}", content, branch=DATA_BRANCH)
         except Exception as e:
-            st.error(f"ÙØ´Ù„ Ø­ÙØ¸ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª ÙÙŠ GitHub: {e}"); return False
+            st.error(f"فشل حفظ البيانات في GitHub: {e}"); return False
     return True
 
 def adjust_timezone(df):
@@ -83,8 +83,6 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
     tf = _timeframe_twelve(interval)
     sym = _symbol_twelve(symbol)
     
-    # ðŸš¨ Ø§Ù„Ø³Ø± Ù‡Ù†Ø§: Ù†Ø·Ù„Ø¨ 5000 Ø´Ù…Ø¹Ø© Ø¯Ø§Ø¦Ù…Ø§Ù‹ ÙˆÙ†ØªØ¬Ø§Ù‡Ù„ Ø§Ù„ØªÙˆØ§Ø±ÙŠØ® ÙÙŠ Ø·Ù„Ø¨ Ø§Ù„Ù€ API
-    # Ù„ÙƒÙŠ Ù„Ø§ ÙŠÙ‚ÙˆÙ… Ø§Ù„Ù€ API Ø¨Ø¥Ø±Ø¬Ø§Ø¹ 30 Ø´Ù…Ø¹Ø© ÙƒØ¥Ø¹Ø¯Ø§Ø¯ Ø§ÙØªØ±Ø§Ø¶ÙŠ
     kwargs = {"symbol": sym, "interval": tf, "timezone": "UTC", "outputsize": 5000}
 
     try:
@@ -95,28 +93,27 @@ def _fetch_twelve(symbol, interval="1h", start_date=None, end_date=None):
         df = df.iloc[::-1]
         df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}, inplace=True)
         
-        # Ø§Ù„Ø¢Ù† Ù†Ù‚ÙˆÙ… Ø¨Ù‚Øµ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ù…Ø­Ù„ÙŠØ§Ù‹ (ÙÙŠ Ø¨Ø§ÙŠØ«ÙˆÙ†) Ø­Ø³Ø¨ Ø§Ù„ØªÙˆØ§Ø±ÙŠØ® Ø§Ù„ØªÙŠ Ø§Ø®ØªØ±ØªÙ‡Ø§ ÙÙŠ Ø§Ù„ÙˆØ§Ø¬Ù‡Ø©
         if start_date and end_date:
             df.index = pd.to_datetime(df.index)
-            # Ù†Ø¶ÙŠÙ ÙŠÙˆÙ… ÙƒØ§Ù…Ù„ Ù„ØªØ§Ø±ÙŠØ® Ø§Ù„Ù†Ù‡Ø§ÙŠØ© Ù„Ø¶Ù…Ø§Ù† ØªØ¶Ù…ÙŠÙ†Ù‡
             end_date_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
             df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= end_date_dt)]
 
+        # ⬇️ التأخير هنا فقط لأننا نستخدم API خارجي
         time.sleep(8) 
         return df
     except Exception as e: 
-        st.error(f"Ø®Ø·Ø£ Ù…Ù† Twelve Data: {e}")
+        st.error(f"خطأ من Twelve Data: {e}")
         return None
 
 def fetch_data(symbol, interval="1h", period="3mo", start_date=None, end_date=None, cache_hours=None, force_download=False, **kwargs):
+    # 1. محاولة القراءة من GitHub المحلي أولاً
     df_github = load_from_github(symbol, interval)
     
-    # Ø¥Ø°Ø§ ÙƒØ§Ù†Øª Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø© Ø£Ù‚Ù„ Ù…Ù† 100 Ø´Ù…Ø¹Ø©ØŒ Ø§Ø¹ØªØ¨Ø±Ù‡Ø§ ØªØ§Ù„ÙØ© ÙˆØ§Ø¬Ù„Ø¨ Ù…Ù† Ø§Ù„Ø¥Ù†ØªØ±Ù†Øª
     if df_github is not None and len(df_github) < 100:
         force_download = True
 
+    # 2. إذا لم يكن هناك طلب جلب مباشر، نرجع بيانات GitHub فوراً (بدون أي تأخير)
     if not force_download and df_github is not None and not df_github.empty:
-        # Ø­ØªÙ‰ Ù„Ùˆ Ù‚Ø±Ø£Ù†Ø§ Ù…Ù† GitHubØŒ Ù†Ù‚ÙˆÙ… Ø¨Ù‚ØµÙ‡Ø§ Ø­Ø³Ø¨ Ø§Ù„ØªÙˆØ§Ø±ÙŠØ®
         if start_date and end_date:
             df_github.index = pd.to_datetime(df_github.index)
             end_date_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
@@ -125,7 +122,7 @@ def fetch_data(symbol, interval="1h", period="3mo", start_date=None, end_date=No
                 return adjust_timezone(df_filtered)
         return adjust_timezone(df_github)
 
-    # Ø¬Ù„Ø¨ 5000 Ø´Ù…Ø¹Ø© Ø¬Ø¯ÙŠØ¯Ø©
+    # 3. الجلب من الإنترنت (API) - هنا سيأخذ الوقت (8 ثواني)
     df_new = _fetch_twelve(symbol, interval, start_date, end_date)
     
     if df_new is not None and not df_new.empty:
