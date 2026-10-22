@@ -6,18 +6,16 @@ CONFIG = {
     "IMPULSE_MIN_PCT": 0.025,      
     "IMPULSE_MAX_LOOKBACK": 40,    
     
-    # ⬇️ شروط التجمع (تم تعديلها لتجد إشارات أكثر) ⬇️
-    "BOX_MIN_CANDLES": 8,          # 8 شمعات كحد أدنى
-    "BOX_MAX_CANDLES": 60,         # 60 شمعة كحد أقصى
-    "BOX_MAX_HEIGHT_PCT": 0.015,   # أقصى مسافة 1.5%
+    # ⬇️ شروط التجمع (الصندوق) ⬇️
+    "BOX_MIN_CANDLES": 8,          
+    "BOX_MAX_CANDLES": 60,         
+    "BOX_MAX_HEIGHT_PCT": 0.015,   
     
     "MAX_RETRACEMENT_PCT": 0.50,   
     "BREAKOUT_MIN_BODY_PCT": 0.004, 
     "REQUIRE_RETEST": True,        
-    "RETEST_MAX_CANDLES": 8,       
-    "RETEST_TOLERANCE": 0.003,     
-    "RETEST_STRONG_CLOSE_RATIO": 0.5, 
-    "LIVE_MAX_BREAKOUT_CANDLES": 10, 
+    "RETEST_MAX_CANDLES": 10,       # نعطي السعر حتى 10 شموع للاختبار
+    "RETEST_TOLERANCE": 0.001,     
     
     # ⬇️ الهدف والتريلينج ⬇️
     "TRAILING_LEVELS_HEAD": [(0.50, 0.0), (0.75, 0.5), (1.00, 0.8)],
@@ -31,13 +29,13 @@ CONFIG = {
     "SR_LOOKBACK": 150,
     "SR_WINDOW": 5,
     
-    # ⬇️ فلتر RSI (تطبيق شرطك بدقة) ⬇️
+    # ⬇️ فلتر RSI ⬇️
     "USE_RSI_FILTER": True,
     "RSI_PERIOD": 14,
-    "RSI_BUY_MIN": 30,   # Buy > 30
-    "RSI_BUY_MAX": 75,   # Buy < 75
-    "RSI_SELL_MIN": 25,  # Sell > 25
-    "RSI_SELL_MAX": 50,  # Sell < 50
+    "RSI_BUY_MIN": 30,   
+    "RSI_BUY_MAX": 75,   
+    "RSI_SELL_MIN": 25,  
+    "RSI_SELL_MAX": 50,  
     
     "MIN_GAP_BETWEEN_TRADES": 5
 }
@@ -182,7 +180,6 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
     stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0, "rejected_rsi": 0}
     
     for i in range(60, n):
-        # منع التداخل
         if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]: continue
         candle_body = abs(closes[i] - opens[i])
         if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
@@ -219,38 +216,71 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
         if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: continue
 
         stats["raw_breakouts"] += 1
+        
+        # ⬇️ المنطق الجديد للاختبار ⬇️
         actual_entry_idx = i
         actual_entry_price = closes[i]
         structural_sl = lows[i] if is_bull_breakout else highs[i]
-
-        # ⬇️ تطبيق شرط RSI كما طلبت ⬇️
-        if CONFIG.get("USE_RSI_FILTER", True):
-            current_rsi = rsi_vals[i]
-            if is_bull_breakout and not (CONFIG["RSI_BUY_MIN"] < current_rsi < CONFIG["RSI_BUY_MAX"]): 
-                stats["rejected_rsi"] += 1
-                continue
-            if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
-                stats["rejected_rsi"] += 1
-                continue
+        retest_found = False
 
         if CONFIG.get("REQUIRE_RETEST", False):
-            retest_found = False
+            has_touched = False
+            lowest_during_retest = lows[i]
+            highest_during_retest = highs[i]
+
+            # نبحث في الشموع التي تلي شمعة الكسر
             for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
                 if is_bull_breakout:
-                    if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]) and closes[j] > box_top:
-                        candle_range = highs[j] - lows[j]
-                        if candle_range > 0 and (closes[j] - lows[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
-                            retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; structural_sl = lows[j]; break
+                    # إلغاء إذا كسر قاع الصندوق
+                    if lows[j] < box_bottom: break 
+                    
+                    lowest_during_retest = min(lowest_during_retest, lows[j])
+                    
+                    # اللمس الأول
+                    if not has_touched and lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]):
+                        has_touched = True
+                        
+                    # التأكيد (إغلاق شمعة فوق الصندوق بعد اللمس)
+                    if has_touched and closes[j] > box_top:
+                        retest_found = True
+                        actual_entry_idx = j
+                        actual_entry_price = closes[j]
+                        structural_sl = lowest_during_retest # الوقف عند أقل نقطة في الاختبار
+                        break
+                        
                 elif is_bear_breakout:
-                    if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]) and closes[j] < box_bottom:
-                        candle_range = highs[j] - lows[j]
-                        if candle_range > 0 and (highs[j] - closes[j]) / candle_range >= CONFIG["RETEST_STRONG_CLOSE_RATIO"]:
-                            retest_found = True; actual_entry_idx = j; actual_entry_price = closes[j]; structural_sl = highs[j]; break
+                    # إلغاء إذا كسر سقف الصندوق
+                    if highs[j] > box_top: break 
+                    
+                    highest_during_retest = max(highest_during_retest, highs[j])
+                    
+                    # اللمس الأول
+                    if not has_touched and highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]):
+                        has_touched = True
+                        
+                    # التأكيد (إغلاق شمعة تحت الصندوق بعد اللمس)
+                    if has_touched and closes[j] < box_bottom:
+                        retest_found = True
+                        actual_entry_idx = j
+                        actual_entry_price = closes[j]
+                        structural_sl = highest_during_retest # الوقف عند أعلى نقطة في الاختبار
+                        break
+
             if not retest_found: 
                 stats["rejected_retest"] += 1
                 continue
 
-        box_nodes = [(df.index[box_start_idx], box_top), (df.index[actual_entry_idx], box_top), (df.index[box_start_idx], box_bottom), (df.index[actual_entry_idx], box_bottom)]
+        # فلاتر RSI
+        if CONFIG.get("USE_RSI_FILTER", True):
+            current_rsi = rsi_vals[actual_entry_idx]
+            if is_bull_breakout and not (CONFIG["RSI_BUY_MIN"] < current_rsi < CONFIG["RSI_BUY_MAX"]): 
+                stats["rejected_rsi"] += 1; continue
+            if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
+                stats["rejected_rsi"] += 1; continue
+
+        # ⬇️ الرسم ⬇️
+        # الصندوق يتوقف عند شمعة الكسر (i)
+        box_nodes = [(df.index[box_start_idx], box_top), (df.index[i], box_top), (df.index[box_start_idx], box_bottom), (df.index[i], box_bottom)]
         trend_nodes = [(df.index[impulse_start_idx], impulse_start_price), (df.index[box_start_idx], box_bottom if is_bull_breakout else box_top), (df.index[actual_entry_idx], actual_entry_price)]
 
         if is_bull_breakout and actual_entry_price > box_top:
@@ -258,11 +288,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             
             if CONFIG.get("USE_SR_FILTER", True):
                 major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
-                sr_blocked = False
-                for lvl in major_levels:
-                    if actual_entry_price * 1.0005 < lvl < tp * 0.9995:
-                        sr_blocked = True
-                        break
+                sr_blocked = any(actual_entry_price * 1.0005 < lvl < tp * 0.9995 for lvl in major_levels)
                 if sr_blocked:
                     stats["rejected_sr"] += 1
                     continue
@@ -278,11 +304,7 @@ def detect_box_breakouts(df, symbol=None, is_backtest=True):
             
             if CONFIG.get("USE_SR_FILTER", True):
                 major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
-                sr_blocked = False
-                for lvl in major_levels:
-                    if tp * 1.0005 < lvl < actual_entry_price * 0.9995:
-                        sr_blocked = True
-                        break
+                sr_blocked = any(tp * 1.0005 < lvl < actual_entry_price * 0.9995 for lvl in major_levels)
                 if sr_blocked:
                     stats["rejected_sr"] += 1
                     continue
