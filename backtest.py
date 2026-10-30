@@ -18,7 +18,7 @@ except ImportError:
     SHEET_ENABLED = False
     def get_symbols_from_sheet(*args, **kwargs): return [], "ملف ffff.py غير موجود."
 
-st.set_page_config(page_title="Box Hunter Pro - Smart", page_icon="📦", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="H&S Hunter Pro", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <head><meta charset="UTF-8"></head>
@@ -94,7 +94,6 @@ def pip_size_for(symbol):
     if "JPY" in s: return 0.01
     return 0.0001
 
-# ⬇️ إضافة كاش (Cache) لتسريع جلب الشيت ⬇️
 @st.cache_data(ttl=3600, show_spinner="جاري جلب العملات من الشيت...")
 def get_available_symbols():
     s = set(IC_MARKETS_SPECS.keys())
@@ -155,16 +154,16 @@ def _cached_backtest(symbol, interval, start_date, end_date, period, source_choi
     if df is None or df.empty: 
         return None, None, "فشل جلب البيانات أو لا توجد بيانات في هذه الفترة.", {}
     try: 
-        trades, stats = backtest_strategy(df, interval=interval, symbol=symbol)
+        trades = backtest_strategy(df)
     except Exception as e: 
         return df, None, f"خطأ داخل محرك البحث (engine.py): {str(e)}", {}
-    return df, trades, None, stats
+    return df, trades, None, {}
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_live(symbol, interval, period, source_choice):
     df = _cached_smart_fetch(symbol, interval, source_choice, period=period)
     if df is None or df.empty: return None, None
-    try: res = run_full_analysis(df, interval=interval, symbol=symbol)
+    try: res = run_full_analysis(df)
     except Exception: return df, None
     return df, res
 
@@ -184,8 +183,9 @@ def compute_pips(df):
     pips_l = []
     for _, row in df.iterrows():
         pip = pip_size_for(row.get("symbol") or row.get("Symbol") or "")
-        e, x = _f(row.get("Entry Price")), _f(row.get("Exit Price"))
-        bias = str(row.get("bias") or "").upper()
+        e = _f(row.get("Entry")) # New engine uses 'Entry'
+        x = _f(row.get("Exit Price")) # New engine uses 'Exit Price'
+        bias = str(row.get("Bias") or "").upper() # New engine uses 'Bias'
         is_sell = "BEAR" in bias
         p = (e - x) / pip if (e and x and is_sell) else (x - e) / pip if (e and x) else None
         pips_l.append(round(p, 1) if p is not None else None)
@@ -200,12 +200,13 @@ def compute_dollar_pnl(df, capital=1000.0, risk_pct=2.0):
     for _, row in df.iterrows():
         sym = str(row.get("symbol") or "").upper()
         try: 
-            e, x = float(row.get("Entry Price")), float(row.get("Exit Price"))
-            sl = float(row.get("Stop Loss"))
+            e = float(row.get("Entry"))
+            x = float(row.get("Exit Price"))
+            sl = float(row.get("SL"))
         except: 
             usd_list.append(None); continue
             
-        is_sell = "BEAR" in str(row.get("bias")).upper()
+        is_sell = "BEAR" in str(row.get("Bias")).upper()
         risk_distance = abs(e - sl)
         if risk_distance == 0: risk_distance = 1e-5
         
@@ -230,21 +231,22 @@ def compute_dollar_pnl(df, capital=1000.0, risk_pct=2.0):
     df["PnL_USD"] = usd_list
     return df
 
-def draw_box_pattern(fig, source):
+def draw_pattern(fig, source):
     if source is None: return
     nodes = source.get("nodes", [])
-    box_nodes = source.get("neckline_nodes", [])
-    if len(nodes) < 3 or len(box_nodes) < 4: return
-
-    fig.add_trace(go.Scatter(x=[nodes[0][0], nodes[1][0]], y=[nodes[0][1], nodes[1][1]], mode="lines", name="Trend", line=dict(color="#FF9800", width=2, dash="dot")), row=1, col=1)
-    top_x, top_y = [box_nodes[0][0], box_nodes[1][0]], [box_nodes[0][1], box_nodes[1][1]]
-    bot_x, bot_y = [box_nodes[2][0], box_nodes[3][0]], [box_nodes[2][1], box_nodes[3][1]]
+    neckline_nodes = source.get("neckline_nodes", [])
     
-    fig.add_trace(go.Scatter(x=top_x, y=top_y, mode="lines", name="Resistance", line=dict(color="#2196F3", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=bot_x, y=bot_y, mode="lines", name="Support", line=dict(color="#2196F3", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[top_x[0], bot_x[0]], y=[top_y[0], bot_y[0]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[top_x[1], bot_x[1]], y=[top_y[1], bot_y[1]], mode="lines", line=dict(color="#B0BEC5", width=1), showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[nodes[2][0]], y=[nodes[2][1]], mode="markers+text", name="Breakout", marker=dict(size=14, color="#E91E63", symbol="star"), text=["كسر"], textposition="top center"), row=1, col=1)
+    # رسم خطوط النموذج (الكتف والرأس)
+    if len(nodes) > 0:
+        nx = [n[0] for n in nodes]
+        ny = [n[1] for n in nodes]
+        fig.add_trace(go.Scatter(x=nx, y=ny, mode="lines+markers", name="Pattern", line=dict(color="#FF9800", width=2, dash="dot")), row=1, col=1)
+        
+    # رسم خط العنق (Neckline)
+    if len(neckline_nodes) == 2:
+        nl_x = [neckline_nodes[0][0], neckline_nodes[1][0]]
+        nl_y = [neckline_nodes[0][1], neckline_nodes[1][1]]
+        fig.add_trace(go.Scatter(x=nl_x, y=nl_y, mode="lines", name="Neckline", line=dict(color="#2196F3", width=2)), row=1, col=1)
 
 def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     if df_chart_full is None or df_chart_full.empty: return
@@ -276,7 +278,7 @@ def render_chart_fast(sym, cur, df_chart_full, chart_mode):
     if "EMA50" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA50"], line=dict(color="orange", width=1), name="EMA 50"), row=1, col=1)
     if "EMA200" in df_window.columns: fig.add_trace(go.Scatter(x=df_window.index, y=df_window["EMA200"], line=dict(color="blue", width=1), name="EMA 200"), row=1, col=1)
     
-    draw_box_pattern(fig, cur)
+    draw_pattern(fig, cur)
     
     try:
         e_val = float(cur.get("entry", 0))
@@ -351,13 +353,12 @@ app_mode = st.radio("وضع التطبيق:", ["🚀 الماسح الحي", "�
 
 # ================= BACKTEST MODE =================
 if app_mode == "🧪 مختبر الاختبار الرجعي":
-    st.markdown("### 🧪 مختبر الصناديق")
+    st.markdown("### 🧪 مختبر الكتف والكتفين (H&S)")
     
     bt_data_source = st.radio(
         "📁 مصدر البيانات للمحاكاة:",
         ["📁 البيانات المحفوظة (GitHub - سريع جداً)", "🌐 جلب مباشر من الإنترنت (API - قد يكون بطيئاً)", "🌐 Yahoo Finance (بديل)"],
-        horizontal=True,
-        help="اختر 'البيانات المحفوظة' لاستخدام الملفات التي قمت بتحميلها مسبقاً دون استهلاك الـ API."
+        horizontal=True
     )
 
     bt_mode = st.radio("طريقة الفحص:", ["سهم فردي", "🎯 مجموعة"], horizontal=True)
@@ -406,14 +407,14 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                     if trades:
                         tdf = pd.DataFrame(trades)
                         results.append({"symbol": sym, "trades_df": tdf, "total": len(tdf)})
-                        st.success(f"✅ تم العثور على {len(tdf)} صفقة لـ {sym}.")
+                        st.success(f"✅ تم العثور على {len(tdf)} نموذج لـ {sym}.")
                     else:
-                        st.warning(f"⚠️ **{sym}:** لم يتم العثور على أي نماذج تتطابق مع شروط 'الصناديق' في هذه الفترة.")
+                        st.warning(f"⚠️ **{sym}:** لم يتم العثور على أي نماذج H&S في هذه الفترة.")
             
             if results:
-                status.update(label=f"✅ اكتملت المحاكاة. تم العثور على صفقات في {len(results)} أصول.", state="complete", expanded=False)
+                status.update(label=f"✅ اكتملت المحاكاة. تم العثور على نماذج في {len(results)} أصول.", state="complete", expanded=False)
             else:
-                status.update(label="⚠️ اكتملت المحاكاة. لم يتم العثور على أي صفقات.", state="error", expanded=True)
+                status.update(label="⚠️ اكتملت المحاكاة. لم يتم العثور على أي نماذج.", state="error", expanded=True)
 
         st.session_state["bt_results"] = results
         st.session_state["bt_dfs"] = dfs
@@ -426,9 +427,9 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
         all_dfs = [r["trades_df"] for r in rl if not r["trades_df"].empty]
         
         if all_dfs:
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📉 الرسوم البيانية", "📋 جدول كل الإشارات", "🧠 التشخيص الذكي", "🛡️ تقرير الفلاتر", "🧮 الحاسبات التفاعلية"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📉 الرسوم البيانية", "📋 جدول كل الإشارات", "🧠 التشخيص الذكي", "🧮 الحاسبات التفاعلية"])
             
-            with tab5:
+            with tab4:
                 st.subheader("🧮 الحاسبات التفاعلية وإدارة المخاطر")
                 
                 st.markdown("#### 1️⃣ الإعدادات العامة للحساب")
@@ -450,15 +451,15 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 if not tdf_calc.empty:
                     tdf_calc = compute_dollar_pnl(compute_pips(tdf_calc), capital=capital, risk_pct=risk_per_trade_pct)
                     
-                    sig_options = [f"إشارة {i+1} | اتجاه: {'بيع 🔴' if 'Bear' in str(tdf_calc.iloc[i].get('bias', '')) else 'شراء 🟢'}" for i in range(len(tdf_calc))]
+                    sig_options = [f"إشارة {i+1} | اتجاه: {'بيع 🔴' if 'Bear' in str(tdf_calc.iloc[i].get('Bias', '')) else 'شراء 🟢'}" for i in range(len(tdf_calc))]
                     selected_sig_str = st.selectbox("اختر الإشارة لعرض تفاصيلها:", sig_options, index=len(tdf_calc)-1, key="calc_sig_idx")
                     sig_idx = sig_options.index(selected_sig_str)
                     
                     cur_calc = tdf_calc.iloc[sig_idx]
-                    e_val = float(cur_calc.get("entry", 0))
-                    s_val = float(cur_calc.get("sl", 0))
-                    t_val = float(cur_calc.get("tp", 0))
-                    is_bear = "Bear" in str(cur_calc.get("bias", ""))
+                    e_val = float(cur_calc.get("Entry", 0))
+                    s_val = float(cur_calc.get("SL", 0))
+                    t_val = float(cur_calc.get("TP", 0))
+                    is_bear = "Bear" in str(cur_calc.get("Bias", ""))
                     
                     if e_val > 0:
                         risk_pts = abs(e_val - s_val)
@@ -474,8 +475,8 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         col4.metric("نسبة المخاطرة/الربح", f"1 : {rr:.2f}")
                         
                         st.markdown("##### 📊 ملخص جميع إشارات هذا الأصل بالدولار:")
-                        wins = tdf_calc[tdf_calc["Result"] == "WIN"]
-                        losses = tdf_calc[tdf_calc["Result"] == "LOSS"]
+                        wins = tdf_calc[tdf_calc["trade_result"] == "WIN"]
+                        losses = tdf_calc[tdf_calc["trade_result"] == "LOSS"]
                         
                         total_profit_usd = wins["PnL_USD"].sum() if "PnL_USD" in wins else 0
                         total_loss_usd = losses["PnL_USD"].sum() if "PnL_USD" in losses else 0
@@ -497,7 +498,7 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 if not tdf.empty:
                     tdf_pips = compute_pips(tdf)
                     tdf_pips = compute_dollar_pnl(tdf_pips, capital=1000.0, risk_pct=2.0)
-                    display_cols = ["Entry Date", "Exit Date", "bias", "Entry Price", "Stop Loss", "Take Profit", "Result", "Pips", "PnL_USD"]
+                    display_cols = ["Pattern", "Bias", "Entry", "SL", "TP", "Exit Index", "Exit Price", "trade_result", "Pips", "PnL_USD"]
                     available_cols = [c for c in display_cols if c in tdf_pips.columns]
                     st.dataframe(tdf_pips[available_cols], use_container_width=True, height=600)
 
@@ -506,48 +507,19 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                 combined_df = pd.concat(all_dfs, ignore_index=True)
                 combined_df = compute_dollar_pnl(compute_pips(combined_df), capital=1000.0, risk_pct=2.0) 
                 
-                closed = combined_df[combined_df["Result"].isin(["WIN", "LOSS"])]
-                wins = len(closed[closed["Result"] == "WIN"])
-                losses = len(closed[closed["Result"] == "LOSS"])
+                closed = combined_df[combined_df["trade_result"].isin(["WIN", "LOSS"])]
+                wins = len(closed[closed["trade_result"] == "WIN"])
+                losses = len(closed[closed["trade_result"] == "LOSS"])
                 wr = round((wins / len(closed) * 100), 1) if len(closed) > 0 else 0
                 
-                total_profit_all = closed[closed["Result"] == "WIN"]["PnL_USD"].sum()
-                total_loss_all = closed[closed["Result"] == "LOSS"]["PnL_USD"].sum()
+                total_profit_all = closed[closed["trade_result"] == "WIN"]["PnL_USD"].sum()
+                total_loss_all = closed[closed["trade_result"] == "LOSS"]["PnL_USD"].sum()
                 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("إجمالي المغلقة", len(closed))
                 c2.metric("الرابحة", wins, f"{wr}%")
                 c3.metric("إجمالي الأرباح الكلية", f"+${total_profit_all:.2f}", delta_color="normal")
                 c4.metric("إجمالي الخسائر الكلية", f"${total_loss_all:.2f}", delta_color="inverse")
-                
-                if losses > 0:
-                    st.markdown("### 🔍 تحليل الخسائر وخطة التطوير")
-                    loss_counts = closed[closed["Result"] == "LOSS"]["Loss Category"].value_counts()
-                    for cat, count in loss_counts.items():
-                        cat_ar = REASON_MAP.get(cat, {}).get("reason", cat)
-                        st.write(f"- **{cat_ar}**: {count} صفقة ({round(count/losses*100, 1)}%)")
-            
-            with tab4:
-                st.subheader("🛡️ تقرير الفلاتر (Filter Diagnostics)")
-                if all_stats:
-                    for st_item in all_stats:
-                        sym = st_item["symbol"]
-                        raw = st_item.get("raw_breakouts", 0)
-                        rej_retest = st_item.get("rejected_retest", 0)
-                        rej_sr = st_item.get("rejected_sr", 0)
-                        rej_rsi = st_item.get("rejected_rsi", 0)
-                        rej_touches = st_item.get("rejected_touches", 0)
-                        accepted = raw - rej_retest - rej_sr - rej_rsi
-                        
-                        st.markdown(f"#### {sym}")
-                        sc1, sc2, sc3, sc4, sc5, sc6 = st.columns(6)
-                        sc1.metric("كسرات خام (Raw)", raw)
-                        sc2.metric("مرفوضة (لمسات)", rej_touches)
-                        sc3.metric("مرفوضة (RSI)", rej_rsi)
-                        sc4.metric("مرفوضة (اختبار)", rej_retest)
-                        sc5.metric("مرفوضة (S/R)", rej_sr)
-                        sc6.metric("مقبولة", accepted)
-                        st.markdown("---")
 
             with tab1:
                 opts = [f"{r['symbol']} ({r['total']})" for r in rl]
@@ -572,9 +544,6 @@ if app_mode == "🧪 مختبر الاختبار الرجعي":
                         if st.button("التالي ➡️", use_container_width=True, key="bt_next_top"): st.session_state[f"signal_index_{sym}"] = min(len(tdf)-1, si + 1); st.rerun()
                             
                     cur = tdf.iloc[si]
-                    
-                    rec_text = cur.get("Trade Recommendation", "")
-                    if rec_text: st.info(rec_text)
                     
                     df_chart = _prepare_chart_data(fix_symbol(sym), st.session_state["bt_int"], st.session_state["bt_sd"], st.session_state["bt_ed"], st.session_state["bt_period"], bt_data_source)
                     render_chart_fast(sym, cur, df_chart, chart_mode)
