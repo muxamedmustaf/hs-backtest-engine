@@ -2,349 +2,369 @@
 import pandas as pd
 import numpy as np
 
-CONFIG = {
-    "IMPULSE_MIN_PCT": 0.025,      
-    "IMPULSE_MAX_LOOKBACK": 40,    
-    
-    # ⬇️ الشروط الجديدة: صندوق بعد موجة، أكثر من 5 شموع
-    "BOX_MIN_CANDLES": 6,          # أكثر من 5 شموع (أي 6 فأكثر)
-    "BOX_MAX_CANDLES": 60,         # حد أقصى 60 شمعة (حتى لا يتحول لترند عرضي طويل)
-    "MAX_RETRACEMENT_PCT": 0.50,   # ألا يتجاوز التصحيح 50% من قوة الموجة
-    
-    "BREAKOUT_MIN_BODY_PCT": 0.004, 
-    "REQUIRE_RETEST": True,        # شرط الاختبار (عودة، إغلاق بالداخل، كسر ثاني)
-    "RETEST_MAX_CANDLES": 12,       
-    "RETEST_TOLERANCE": 0.001,     
-    
-    "SAFE_SL_MARGIN": 0.05,        
-    "USE_SAFE_SL": True,
-    
-    "VOLUME_MA_PERIOD": 20,
-    "TREND_EMA_PERIOD": 200,
-    "USE_SR_FILTER": True,
-    "SR_LOOKBACK": 150,
-    "SR_WINDOW": 5,
-    
-    "USE_RSI_FILTER": True,
-    "RSI_PERIOD": 14,
-    "RSI_BUY_MIN": 30,   
-    "RSI_BUY_MAX": 75,   
-    "RSI_SELL_MIN": 25,  
-    "RSI_SELL_MAX": 50,  
-    
-    "MIN_GAP_BETWEEN_TRADES": 5
-}
+# ==========================================================
+# ENGINE.PY - DYNAMIC SWING SCANNER & BACKTEST LAB (v4.7 Fixed)
+# ==========================================================
+MIN_WAVE_CANDLES = 3
 
-REASON_MAP = {
-    "immediate_rejection": {"reason": "السعر رفض الصندوق فورًا."},
-    "early_reversal": {"reason": "انعكاس مبكر قبل 30%."},
-    "mid_reversal": {"reason": "انعكاس متوسط."},
-    "late_reversal": {"reason": "وصل 70%+ ثم عاد."},
-    "breakeven": {"reason": "تعادل."},
-    "success": {"reason": "وصل الهدف."},
-    "trailing_win": {"reason": "خرج بـ Trailing."},
-    "open": {"reason": "مفتوحة."},
-}
-
-def get_symbol_config(symbol): return CONFIG.copy()
-
-def calculate_indicators(df, cfg=None):
+def calculate_indicators(df):
     df = df.copy()
-    if "Volume" in df.columns:
-        v = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
-        df["Volume"] = v
-        df["Volume_MA"] = v.rolling(CONFIG.get("VOLUME_MA_PERIOD", 20)).mean().fillna(0.0)
-    else:
-        df["Volume"] = 0.0
-        df["Volume_MA"] = 0.0
-        
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["EMA200"] = df["Close"].ewm(span=CONFIG["TREND_EMA_PERIOD"], adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
     
     delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=CONFIG.get("RSI_PERIOD", 14)).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=CONFIG.get("RSI_PERIOD", 14)).mean()
-    rs = gain / loss
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = -delta.where(delta < 0, 0.0).rolling(14).mean()
+    loss_safe = loss.replace(0, 1e-9)
+    rs = gain / loss_safe
     df["RSI"] = 100 - (100 / (1 + rs))
-    df["RSI"] = df["RSI"].fillna(50)
+    df["RSI"] = df["RSI"].fillna(50.0)
     
+    high_low = df["High"] - df["Low"]
+    high_close = np.abs(df["High"] - df["Close"].shift())
+    low_close = np.abs(df["Low"] - df["Close"].shift())
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    df["ATR"] = true_range.rolling(14).mean()
+    df["Dynamic_Swing"] = (df["ATR"] / df["Close"]) * 0.5
+    df["Dynamic_Swing"] = df["Dynamic_Swing"].fillna(0.001)
     return df
 
-def get_major_levels(df, current_idx, lookback=150, window=5):
-    start_idx = max(0, current_idx - lookback)
-    df_sub = df.iloc[start_idx:current_idx]
-    if len(df_sub) < window * 2: return []
-    highs = df_sub['High'].values
-    lows = df_sub['Low'].values
-    levels = []
-    for i in range(window, len(df_sub) - window):
-        if highs[i] == max(highs[i-window:i+window+1]): levels.append(highs[i])
-        if lows[i] == min(lows[i-window:i+window+1]): levels.append(lows[i])
-    if not levels: return []
-    levels = sorted(list(set(levels)))
-    clustered = []
-    current_cluster = [levels[0]]
-    for l in levels[1:]:
-        if (l - current_cluster[0]) / current_cluster[0] < 0.005: current_cluster.append(l)
+def calculate_zigzag(df, depth=12, backstep=6):
+    df = df.copy()
+    df["Pivot_H"] = np.nan
+    df["Pivot_L"] = np.nan
+    highs = df["High"].astype(float).values
+    lows = df["Low"].astype(float).values
+    n = len(df)
+    for i in range(depth, n - backstep):
+        high_window = highs[i - depth:i + backstep + 1]
+        low_window = lows[i - depth:i + backstep + 1]
+        current_high = highs[i]
+        current_low = lows[i]
+        is_high = (current_high == np.max(high_window) and np.sum(high_window == current_high) == 1)
+        is_low = (current_low == np.min(low_window) and np.sum(low_window == current_low) == 1)
+        if is_high and not is_low:
+            df.iloc[i, df.columns.get_loc("Pivot_H")] = float(current_high)
+        elif is_low and not is_high:
+            df.iloc[i, df.columns.get_loc("Pivot_L")] = float(current_low)
+    return df
+
+def get_chronological_pivots(df):
+    raw = []
+    for pos, (idx, row) in enumerate(df.iterrows()):
+        if not pd.isna(row["Pivot_H"]):
+            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_H"]), "type": "H", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
+        elif not pd.isna(row["Pivot_L"]):
+            raw.append({"idx": idx, "pos": pos, "val": float(row["Pivot_L"]), "type": "L", "dynamic_swing": float(row.get("Dynamic_Swing", 0.001))})
+    if not raw: return []
+    
+    clean = []
+    for p in raw:
+        if not clean:
+            clean.append(p)
+            continue
+        last = clean[-1]
+        current_min_swing = p["dynamic_swing"]
+        if last["type"] != p["type"]:
+            movement = abs(p["val"] - last["val"]) / max(abs(last["val"]), 1e-9)
+            if movement >= current_min_swing:
+                clean.append(p)
         else:
-            clustered.append(sum(current_cluster)/len(current_cluster))
-            current_cluster = [l]
-    clustered.append(sum(current_cluster)/len(current_cluster))
-    return clustered
+            if last["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
+            elif last["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
+            elif p["type"] == "H" and p["val"] > last["val"]: clean[-1] = p
+            elif p["type"] == "L" and p["val"] < last["val"]: clean[-1] = p
+            
+    final_clean = []
+    for p in clean:
+        if not final_clean:
+            final_clean.append(p)
+        else:
+            if final_clean[-1]["type"] != p["type"]:
+                final_clean.append(p)
+            else:
+                if p["type"] == "H" and p["val"] > final_clean[-1]["val"]: final_clean[-1] = p
+                elif p["type"] == "L" and p["val"] < final_clean[-1]["val"]: final_clean[-1] = p
+    return final_clean
 
-def compute_safe_sl_and_tp(bias, entry, structural_sl, wave_height, cfg=None):
-    structural_risk = abs(entry - structural_sl)
-    if structural_risk == 0: structural_risk = 1e-5
-    if bias == "Bullish": safe_sl = structural_sl - (structural_risk * CONFIG["SAFE_SL_MARGIN"])
-    else: safe_sl = structural_sl + (structural_risk * CONFIG["SAFE_SL_MARGIN"])
-    final_sl = safe_sl if CONFIG["USE_SAFE_SL"] else structural_sl
-    
-    risk_distance = abs(entry - final_sl)
-    if risk_distance == 0: risk_distance = 1e-5
-    target = risk_distance * 2.0  
-    
-    tp = entry + target if bias == "Bullish" else entry - target
-    return final_sl, tp, safe_sl, structural_sl
-
-def simulate_trade(pattern, df, cfg=None):
+def simulate_backtest_outcome(pattern, df):
     bias = pattern["bias"]
-    entry = float(pattern["entry"])
     sl = float(pattern["sl"])
     tp = float(pattern["tp"])
     end_idx = pattern["neckline_end_idx"]
-    
-    if end_idx not in df.index: return {"Result": "OPEN"}
+    if end_idx not in df.index: return "OPEN", None, None
     post_df = df.loc[end_idx:]
-    if len(post_df) <= 1: return {"Result": "OPEN"}
+    for idx, row in post_df.iterrows():
+        high = float(row["High"])
+        low = float(row["Low"])
+        if bias == "Bearish":
+            hit_sl = high >= sl
+            hit_tp = low <= tp
+            if hit_sl and hit_tp: return "LOSS", idx, sl
+            elif hit_sl: return "LOSS", idx, sl
+            elif hit_tp: return "WIN", idx, tp
+        elif bias == "Bullish":
+            hit_sl = low <= sl
+            hit_tp = high >= tp
+            if hit_sl and hit_tp: return "LOSS", idx, sl
+            elif hit_sl: return "LOSS", idx, sl
+            elif hit_tp: return "WIN", idx, tp
+    return "OPEN", None, None
 
-    stats = {"Result": "OPEN", "Max Reach %": 0.0, "SL Safety %": 0.0, "Entry Date": str(end_idx), "Exit Date": None, "candles_to_exit": 0, "Initial SL": sl, "Final SL": sl, "Loss Category": None, "exit_price": None}
-    total_tp_dist = abs(tp - entry)
-    max_fav, max_adv = 0.0, 0.0
-    exited = False
+class PatternValidatorPipeline:
+    def __init__(self, df):
+        self.df = df
+        self.filters = [self.time_filter, self.trend_filter, self.invalidation_filter, self.indicator_confirmation_filter, self.breakout_filter]
 
-    for c, (idx, row) in enumerate(post_df.iloc[1:].iterrows(), start=1):
-        h, l = float(row["High"]), float(row["Low"])
-        fav = max(0.0, entry - l) if bias == "Bearish" else max(0.0, h - entry)
-        adv = max(0.0, h - entry) if bias == "Bearish" else max(0.0, entry - l)
-        prog = (fav / total_tp_dist) if total_tp_dist > 0 else 0.0
+    def time_filter(self, p, data):
+        i_l0, i_h1, i_l1, i_h2, i_l2, i_h3 = [x["pos"] for x in p]
+        if (i_h1 - i_l0 < MIN_WAVE_CANDLES) or (i_l1 - i_h1 < MIN_WAVE_CANDLES) or (i_h2 - i_l1 < MIN_WAVE_CANDLES) or (i_l2 - i_h2 < MIN_WAVE_CANDLES) or (i_h3 - i_l2 < MIN_WAVE_CANDLES):
+            return False, None, None
+        return True, None, None
 
-        if not exited:
-            max_fav = max(max_fav, prog * 100)
-            max_adv = max(max_adv, (adv / abs(entry - stats["Initial SL"]) * 100) if abs(entry - stats["Initial SL"]) > 0 else 0.0)
-        if exited: continue
+    def trend_filter(self, p, data):
+        idx_l0 = p[0]["idx"]
+        pre_l0_df = data.loc[:idx_l0]
+        if len(pre_l0_df) > 10:
+            past_min = float(pre_l0_df["Low"].iloc[-10:].min())
+            if past_min > p[0]["val"]: return False, None, None
+        return True, None, None
 
-        hit_sl = (h >= sl) if bias == "Bearish" else (l <= sl)
-        hit_tp = (l <= tp) if bias == "Bearish" else (h >= tp)
+    def invalidation_filter(self, p, data):
+        h2 = p[3]["val"]
+        idx_h2 = p[3]["idx"]
+        post_head_df = data.loc[idx_h2:]
+        if not post_head_df.empty:
+            if float(post_head_df["High"].max()) > h2: return False, None, None
+        return True, None, None
 
-        if hit_sl and hit_tp: hit_tp = False 
+    def indicator_confirmation_filter(self, p, data):
+        idx_h3 = p[5]["idx"]
+        rsi_val = float(data.loc[idx_h3, "RSI"])
+        if not (30 <= rsi_val <= 75): return False, None, None
+        ema50 = data.loc[idx_h3, "EMA50"]
+        ema200 = data.loc[idx_h3, "EMA200"]
+        if pd.isna(ema50) or pd.isna(ema200): return False, None, None
+        return True, None, None
 
-        if hit_sl:
-            is_prof = (sl < entry) if bias == "Bearish" else (sl > entry)
-            if is_prof: stats["Result"] = "WIN"; stats["Loss Category"] = "trailing_win"
-            else:
-                stats["Result"] = "LOSS"
-                if max_fav < 30: stats["Loss Category"] = "early_reversal"
-                elif max_fav < 70: stats["Loss Category"] = "mid_reversal"
-                else: stats["Loss Category"] = "late_reversal"
-            stats["exit_price"] = sl; stats["candles_to_exit"] = c; stats["Exit Date"] = str(idx); exited = True; continue
+    def breakout_filter(self, p, data):
+        idx_h3 = p[5]["idx"]
+        l1, l2 = p[2]["val"], p[4]["val"]
+        neckline_avg = (l1 + l2) / 2.0
+        post_h3_df = data.loc[idx_h3:]
+        breakout_candles = post_h3_df[post_h3_df["Close"] < neckline_avg]
+        if breakout_candles.empty: return False, None, None
+        end_idx = breakout_candles.index[0]
+        end_val = float(breakout_candles["Close"].iloc[0])
+        return True, end_idx, end_val
 
-        elif hit_tp:
-            stats["Result"] = "WIN"; stats["Loss Category"] = "success"
-            stats["exit_price"] = tp; stats["candles_to_exit"] = c; stats["Exit Date"] = str(idx); exited = True; continue
+    def run(self, p):
+        end_idx, end_val = None, None
+        for f in self.filters:
+            passed, e_idx, e_val = f(p, self.df)
+            if not passed: return False, None, None
+            if e_idx is not None: end_idx, end_val = e_idx, e_val
+        return True, end_idx, end_val
 
-    stats["Max Reach %"] = round(max_fav, 1)
-    stats["SL Safety %"] = round(100 - max_adv, 1) if max_adv <= 100 else 0.0
-    return stats
-
-# ⬇️⬇️ المنطق الجديد للصندوق (التجميع الواقعي > 5 شموع) ⬇️⬇️
-def detect_box_breakouts(df, symbol=None, is_backtest=True):
+def detect_all_head_shoulders(pivots, df):
     patterns = []
-    n = len(df)
-    if n < 100: return patterns, {}
+    if len(pivots) < 6: return patterns
+    validator = PatternValidatorPipeline(df)
+    for i in range(len(pivots) - 5):
+        p = pivots[i:i + 6]
+        if [x["type"] for x in p] != ["L", "H", "L", "H", "L", "H"]: continue
+        l0, h1, l1, h2, l2, h3 = [x["val"] for x in p]
+        if h1 <= l0 or l1 <= l0 or h2 <= h1 or h2 <= h3: continue
+        neckline_min = min(l1, l2)
+        head_height = h2 - neckline_min
+        if head_height <= 0: continue
+        if abs(h1 - h3) > (head_height * 0.35): continue
+        max_shoulder = max(h1, h3)
+        if (h2 - max_shoulder) < (head_height * 0.25): continue
+        if abs(l1 - l2) > (head_height * 0.25): continue
+        
+        passed, end_idx, end_val = validator.run(p)
+        if not passed: continue
+        
+        l1_idx, l2_idx = p[2]["idx"], p[4]["idx"]
+        neckline_avg = (l1 + l2) / 2.0
+        actual_head_length = h2 - neckline_avg
+        entry = neckline_avg
+        sl = h2
+        tp = entry - actual_head_length
+        
+        nodes = [(x["idx"], x["val"]) for x in p]
+        nodes.append((end_idx, float(end_val)))
+        neckline_nodes = [(l1_idx, l1), (l2_idx, l2)]
+        target_nodes = [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))]
+        
+        pattern_dict = {
+            "name": "Head and Shoulders", "pattern": "Head and Shoulders", "bias": "Bearish", "match": 100.0, 
+            "nodes": nodes, "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)), 
+            "sl": float(round(sl, 5)), "tp": float(round(tp, 5)), 
+            "neckline_start_idx": l1_idx, "neckline_end_idx": end_idx, "neckline_nodes": neckline_nodes, "target_nodes": target_nodes, 
+            "end_pos": p[5]["pos"], "SL": float(round(sl, 5)), "Shoulder SL": float(round(sl, 5))
+        }
+        
+        trade_result, exit_idx, exit_price = simulate_backtest_outcome(pattern_dict, df)
+        pattern_dict.update({
+            "trade_result": trade_result, "Head Result": trade_result, "Shoulder Result": trade_result, 
+            "exit_idx": exit_idx, "exit_price": exit_price
+        })
+        patterns.append(pattern_dict)
+    return patterns
 
-    highs, lows, closes, opens = df["High"].values, df["Low"].values, df["Close"].values, df["Open"].values
-    rsi_vals = df["RSI"].values if "RSI" in df.columns else np.full(n, 50)
+def detect_all_inverse_head_shoulders(pivots, df):
+    patterns = []
+    if len(pivots) < 6: return patterns
+    for i in range(len(pivots) - 5):
+        p = pivots[i:i + 6]
+        if [x["type"] for x in p] != ["H", "L", "H", "L", "H", "L"]: continue
+        h0, l1, h1, l2, h2, l3 = [x["val"] for x in p]
+        if l2 >= l1 or l2 >= l3: continue
+        neckline_max = max(h1, h2)
+        head_depth = neckline_max - l2
+        if head_depth <= 0: continue
+        if abs(l1 - l3) > (head_depth * 0.35): continue
+        min_shoulder = min(l1, l3)
+        if (min_shoulder - l2) < (head_depth * 0.25): continue
+        if abs(h1 - h2) > (head_depth * 0.25): continue
+        positions = [x["pos"] for x in p]
+        if any((positions[j+1] - positions[j]) < MIN_WAVE_CANDLES for j in range(5)): continue
+        
+        idx_h0 = p[0]["idx"]
+        pre_left_df = df.loc[:idx_h0]
+        if len(pre_left_df) > 10:
+            past_max = float(pre_left_df["High"].iloc[-10:].max())
+            if past_max < p[0]["val"]: continue
+            
+        idx_l2 = p[3]["idx"]
+        post_head_df = df.loc[idx_l2:]
+        if not post_head_df.empty:
+            if float(post_head_df["Low"].min()) < l2: continue
+            
+        idx_l3 = p[5]["idx"]
+        if idx_l3 not in df.index: continue
+        rsi_val = float(df.loc[idx_l3, "RSI"])
+        if not (25 <= rsi_val <= 70): continue
+        ema50 = df.loc[idx_l3, "EMA50"]
+        ema200 = df.loc[idx_l3, "EMA200"]
+        if pd.isna(ema50) or pd.isna(ema200): continue
+        
+        h1_idx, h2_idx = p[2]["idx"], p[4]["idx"]
+        neckline_avg = (h1 + h2) / 2.0
+        post_l3_df = df.loc[idx_l3:]
+        breakout_candles = post_l3_df[post_l3_df["Close"] > neckline_avg]
+        if breakout_candles.empty: continue
+        
+        end_idx = breakout_candles.index[0]
+        end_val = float(breakout_candles["Close"].iloc[0])
+        entry = neckline_avg
+        sl = l2
+        actual_head_length = neckline_avg - l2
+        tp = entry + actual_head_length
+        
+        nodes = [(x["idx"], x["val"]) for x in p]
+        nodes.append((end_idx, end_val))
+        neckline_nodes = [(h1_idx, h1), (h2_idx, h2)]
+        target_nodes = [(end_idx, float(round(entry, 5))), (end_idx, float(round(tp, 5)))]
+        
+        pattern_dict = {
+            "name": "Inverse Head and Shoulders", "pattern": "Inverse Head and Shoulders", "bias": "Bullish", "match": 100.0, 
+            "nodes": nodes, "entry": float(round(entry, 5)), "entry_trigger": float(round(entry, 5)), 
+            "sl": float(round(sl, 5)), "tp": float(round(tp, 5)), 
+            "neckline_start_idx": h1_idx, "neckline_end_idx": end_idx, "neckline_nodes": neckline_nodes, "target_nodes": target_nodes, 
+            "end_pos": p[5]["pos"], "SL": float(round(sl, 5)), "Shoulder SL": float(round(sl, 5))
+        }
+        
+        trade_result, exit_idx, exit_price = simulate_backtest_outcome(pattern_dict, df)
+        pattern_dict.update({
+            "trade_result": trade_result, "Head Result": trade_result, "Shoulder Result": trade_result, 
+            "exit_idx": exit_idx, "exit_price": exit_price
+        })
+        patterns.append(pattern_dict)
+    return patterns
+
+_original_detect_all_head_shoulders = detect_all_head_shoulders
+def _detect_both_head_shoulders(pivots, df):
+    normal_patterns = _original_detect_all_head_shoulders(pivots, df)
+    inverse_patterns = detect_all_inverse_head_shoulders(pivots, df)
+    all_patterns = normal_patterns + inverse_patterns
+    all_patterns.sort(key=lambda x: x.get("end_pos", -1))
+    return all_patterns
+detect_all_head_shoulders = _detect_both_head_shoulders
+
+def backtest_strategy(df):
+    if df is None or df.empty or len(df) < 30: return []
+    df = df.copy()
+    required = ["Open", "High", "Low", "Close"]
+    for col in required:
+        if col not in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=required)
     
-    last_entry_idx = -1000
-    stats = {"raw_breakouts": 0, "rejected_sr": 0, "rejected_retest": 0, "rejected_rsi": 0, "rejected_impulse": 0}
+    df_active = calculate_indicators(df)
+    df_active = calculate_zigzag(df_active)
+    pivots = get_chronological_pivots(df_active)
+    all_patterns = detect_all_head_shoulders(pivots, df_active)
     
-    for i in range(60, n):
-        if i <= last_entry_idx + CONFIG["MIN_GAP_BETWEEN_TRADES"]: continue
-        candle_body = abs(closes[i] - opens[i])
-        if candle_body < (closes[i] * CONFIG["BREAKOUT_MIN_BODY_PCT"]): continue
-        
-        is_bull_breakout = closes[i] > opens[i]
-        is_bear_breakout = closes[i] < opens[i]
-        lookback_start = max(0, i - CONFIG["IMPULSE_MAX_LOOKBACK"])
-        
-        # 1. الموجة الحافزة
-        if is_bull_breakout:
-            impulse_start_idx = lookback_start + np.argmin(lows[lookback_start:i])
-            impulse_start_price = lows[impulse_start_idx]
-            impulse_move = closes[i] - impulse_start_price
-            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: 
-                stats["rejected_impulse"] += 1
-                continue
-            impulse_end_idx = impulse_start_idx + np.argmax(highs[impulse_start_idx:i])
-        else:
-            impulse_start_idx = lookback_start + np.argmax(highs[lookback_start:i])
-            impulse_start_price = highs[impulse_start_idx]
-            impulse_move = impulse_start_price - closes[i]
-            if (impulse_move / impulse_start_price) < CONFIG["IMPULSE_MIN_PCT"]: 
-                stats["rejected_impulse"] += 1
-                continue
-            impulse_end_idx = impulse_start_idx + np.argmin(lows[impulse_start_idx:i])
-
-        # 2. بداية الصندوق (بعد نهاية الموجة مباشرة)
-        box_start_idx = impulse_end_idx + 1 
-        
-        # 3. شرط التجميع الواقعي: أكثر من 5 شموع، وأقل من 60 شمعة
-        box_length = i - box_start_idx
-        if box_length < CONFIG["BOX_MIN_CANDLES"] or box_length > CONFIG["BOX_MAX_CANDLES"]: 
-            continue
-
-        # 4. رسم الصندوق من الواقع
-        box_highs = highs[box_start_idx:i]
-        box_lows = lows[box_start_idx:i]
-        box_top = np.max(box_highs)
-        box_bottom = np.min(box_lows)
-        box_height = box_top - box_bottom
-        
-        # شرط ألا يكون التصحيح عميقاً جداً
-        if (box_height / impulse_move) > CONFIG["MAX_RETRACEMENT_PCT"]: 
-            continue
-
-        stats["raw_breakouts"] += 1
-        actual_entry_idx = i
-        actual_entry_price = closes[i]
-        structural_sl = lows[i] if is_bull_breakout else highs[i]
-        retest_found = False
-
-        # 5. منطق الاختبار (عودة -> إغلاق بالداخل -> كسر ثاني)
-        if CONFIG.get("REQUIRE_RETEST", False):
-            state = 0 
-            retest_extreme = lows[i] if is_bull_breakout else highs[i]
-
-            for j in range(i + 1, min(n, i + 1 + CONFIG["RETEST_MAX_CANDLES"])):
-                if is_bull_breakout:
-                    if lows[j] < box_bottom: break 
-                    retest_extreme = min(retest_extreme, lows[j])
-
-                    if state == 0:
-                        if lows[j] <= box_top * (1 + CONFIG["RETEST_TOLERANCE"]): state = 1
-                    elif state == 1:
-                        if box_bottom <= closes[j] <= box_top: state = 2
-                        elif closes[j] > box_top: break 
-                    elif state == 2:
-                        if closes[j] > box_top:
-                            retest_found = True
-                            actual_entry_idx = j
-                            actual_entry_price = closes[j]
-                            structural_sl = retest_extreme
-                            break
-                        elif closes[j] < box_bottom: break 
-
-                elif is_bear_breakout:
-                    if highs[j] > box_top: break 
-                    retest_extreme = max(retest_extreme, highs[j])
-
-                    if state == 0:
-                        if highs[j] >= box_bottom * (1 - CONFIG["RETEST_TOLERANCE"]): state = 1
-                    elif state == 1:
-                        if box_bottom <= closes[j] <= box_top: state = 2
-                        elif closes[j] < box_bottom: break 
-                    elif state == 2:
-                        if closes[j] < box_bottom:
-                            retest_found = True
-                            actual_entry_idx = j
-                            actual_entry_price = closes[j]
-                            structural_sl = retest_extreme
-                            break
-                        elif closes[j] > box_top: break 
-
-            if not retest_found: 
-                stats["rejected_retest"] += 1
-                continue
-
-        if CONFIG.get("USE_RSI_FILTER", True):
-            current_rsi = rsi_vals[actual_entry_idx]
-            if is_bull_breakout and not (CONFIG["RSI_BUY_MIN"] < current_rsi < CONFIG["RSI_BUY_MAX"]): 
-                stats["rejected_rsi"] += 1; continue
-            if is_bear_breakout and not (CONFIG["RSI_SELL_MIN"] < current_rsi < CONFIG["RSI_SELL_MAX"]): 
-                stats["rejected_rsi"] += 1; continue
-
-        # ⬇️ الرسم: الصندوق من نهاية الموجة إلى الكسر
-        box_nodes = [(df.index[box_start_idx], box_top), (df.index[i], box_top), (df.index[box_start_idx], box_bottom), (df.index[i], box_bottom)]
-        trend_nodes = [(df.index[impulse_start_idx], impulse_start_price), (df.index[impulse_end_idx], highs[impulse_end_idx] if is_bull_breakout else lows[impulse_end_idx]), (df.index[actual_entry_idx], actual_entry_price)]
-
-        if is_bull_breakout and actual_entry_price > box_top:
-            final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bullish", actual_entry_price, structural_sl, impulse_move)
-            
-            if CONFIG.get("USE_SR_FILTER", True):
-                major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
-                sr_blocked = any(actual_entry_price * 1.0005 < lvl < tp * 0.9995 for lvl in major_levels)
-                if sr_blocked:
-                    stats["rejected_sr"] += 1
-                    continue
-
-            pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bullish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bullish)"}
-            pattern.update(simulate_trade(pattern, df))
-            pattern["Trade Recommendation"] = f"🟢 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}\n- RSI: {round(rsi_vals[actual_entry_idx], 1)}"
-            patterns.append(pattern)
-            last_entry_idx = actual_entry_idx
-            
-        elif is_bear_breakout and actual_entry_price < box_bottom:
-            final_sl, tp, safe_sl, struct_sl = compute_safe_sl_and_tp("Bearish", actual_entry_price, structural_sl, impulse_move)
-            
-            if CONFIG.get("USE_SR_FILTER", True):
-                major_levels = get_major_levels(df, actual_entry_idx, CONFIG["SR_LOOKBACK"], CONFIG["SR_WINDOW"])
-                sr_blocked = any(tp * 1.0005 < lvl < actual_entry_price * 0.9995 for lvl in major_levels)
-                if sr_blocked:
-                    stats["rejected_sr"] += 1
-                    continue
-
-            pattern = {"name": "Macro Box Breakout", "pattern": "Box Breakout", "pattern_type": "Continuation", "bias": "Bearish", "match": 100.0, "nodes": trend_nodes, "entry": float(round(actual_entry_price, 5)), "sl": float(round(final_sl, 5)), "tp": float(round(tp, 5)), "structural_sl": float(round(struct_sl, 5)), "safe_sl": float(round(safe_sl, 5)), "neckline_nodes": box_nodes, "end_pos": actual_entry_idx, "neckline_end_idx": df.index[actual_entry_idx], "Entry": float(round(actual_entry_price, 5)), "Pattern": "Box Breakout (Bearish)"}
-            pattern.update(simulate_trade(pattern, df))
-            pattern["Trade Recommendation"] = f"🔴 Box Breakout + Retest:\n- الدخول: {pattern['entry']}\n- SL: {pattern['sl']}\n- TP: {pattern['tp']}\n- RSI: {round(rsi_vals[actual_entry_idx], 1)}"
-            patterns.append(pattern)
-            last_entry_idx = actual_entry_idx
-            
-    return patterns, stats
-
-def run_full_analysis(df, interval="1h", symbol=None):
-    df = calculate_indicators(df)
-    patterns, _ = detect_box_breakouts(df, symbol, is_backtest=False)
-    if not patterns: return {"signal": "WAITING", "pattern": "NO PATTERN", "bias": "Neutral", "df": df}
-    
-    recent_patterns = []
-    last_idx_pos = len(df) - 1
-    for p in patterns:
-        try:
-            p_pos = df.index.get_loc(p["neckline_end_idx"])
-            if (last_idx_pos - p_pos) <= CONFIG["LIVE_MAX_BREAKOUT_CANDLES"]: recent_patterns.append(p)
-        except KeyError: continue
-
-    if not recent_patterns: return {"signal": "WAITING", "pattern": "NO RECENT PATTERN", "bias": "Neutral", "df": df}
-
-    latest = recent_patterns[-1]
-    return {"df": df, "signal": "STRONG BUY" if latest["bias"]=="Bullish" else "STRONG SELL", "pattern": latest["pattern"], "bias": latest["bias"], "entry": latest["entry"], "sl": latest["sl"], "tp": latest["tp"], "nodes": latest["nodes"], "neckline_nodes": latest["neckline_nodes"], "Trade Recommendation": latest["Trade Recommendation"]}
-
-def backtest_strategy(df, interval="1h", symbol=None):
-    df = calculate_indicators(df)
-    patterns, stats = detect_box_breakouts(df, symbol, is_backtest=True)
     trades = []
-    for p in patterns:
-        p["Symbol"] = symbol; p["Entry Price"] = p["entry"]; p["Stop Loss"] = p["sl"]; p["Take Profit"] = p["tp"]
-        trades.append(p)
-    return trades, stats
+    for pat in all_patterns:
+        trade_result, exit_idx, exit_price = simulate_backtest_outcome(pat, df_active)
+        trade_record = {
+            "Pattern": pat["pattern"], "Bias": pat["bias"], "Entry": pat["entry"], "SL": pat["sl"], "TP": pat["tp"],
+            "Shoulder SL": pat["sl"], "Head Result": trade_result, "Shoulder Result": trade_result,
+            "Exit Index": exit_idx, "Exit Price": exit_price, "trade_result": trade_result,
+            "nodes": pat["nodes"], "neckline_nodes": pat["neckline_nodes"], "target_nodes": pat.get("target_nodes", []),
+            "neckline_end_idx": pat["neckline_end_idx"], "end_pos": pat["end_pos"]
+        }
+        trades.append(trade_record)
+    return trades
 
-def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): return {}
+def run_full_analysis(df):
+    if df is None or df.empty: return {"df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral", "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []}
+    df = df.copy()
+    required = ["Open", "High", "Low", "Close"]
+    for col in required:
+        if col not in df.columns: raise ValueError(f"Missing required column: {col}")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=required)
+    
+    if len(df) < 30: return {"df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral", "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []}
+    
+    df_active = df.tail(200).copy()
+    df_active = calculate_indicators(df_active)
+    df_active = calculate_zigzag(df_active)
+    pivots = get_chronological_pivots(df_active)
+    all_patterns = detect_all_head_shoulders(pivots, df_active)
+    
+    if not all_patterns: return {"df": df, "signal": "WAITING", "pattern": "NO PATTERN DETECTED", "bias": "Neutral", "entry": None, "sl": None, "tp": None, "nodes": [], "neckline_nodes": [], "target_nodes": [], "all_patterns": []}
+    
+    latest_pattern = all_patterns[-1]
+    signal = "STRONG SELL" if latest_pattern["bias"] == "Bearish" else "STRONG BUY"
+    
+    return {
+        "df": df, "signal": signal, "pattern": latest_pattern["pattern"], "bias": latest_pattern["bias"], 
+        "entry": latest_pattern["entry"], "entry_trigger": latest_pattern["entry_trigger"], "sl": latest_pattern["sl"], "tp": latest_pattern["tp"], 
+        "nodes": latest_pattern["nodes"], "match": latest_pattern["match"], "neckline_start_idx": latest_pattern["neckline_start_idx"], 
+        "neckline_nodes": latest_pattern.get("neckline_nodes", []), "target_nodes": latest_pattern.get("target_nodes", []), 
+        "all_patterns": all_patterns, "trade_result": latest_pattern.get("trade_result", "OPEN"), "SL": latest_pattern.get("SL"), 
+        "Shoulder SL": latest_pattern.get("Shoulder SL"), "Head Result": latest_pattern.get("Head Result", "OPEN"), 
+        "Shoulder Result": latest_pattern.get("Shoulder Result", "OPEN")
+    }
 
-def diagnose_filters(df, interval="1h", symbol=None):
-    trades, _ = backtest_strategy(df, interval, symbol)
-    wins = [t for t in trades if "WIN" in str(t.get("Result","")).upper()]
-    losses = [t for t in trades if "LOSS" in str(t.get("Result","")).upper()]
-    total = len(wins) + len(losses)
-    wr = round(len(wins)/total*100, 1) if total > 0 else 0
-    verdict = "لا توجد صفقات كافية" if total == 0 else f"معدل الربح: {wr}%"
-    return {"smart_diagnosis": {"verdict": verdict, "win_breakdown": {}, "loss_breakdown": {}, "action_plan": []}}
+_original_run_full_analysis = run_full_analysis
+def _run_full_analysis_both_directions(df):
+    result = _original_run_full_analysis(df)
+    if result is None: return result
+    if result.get("pattern") == "Inverse Head and Shoulders":
+        result["signal"] = "STRONG BUY"
+        result["bias"] = "Bullish"
+    elif result.get("pattern") == "Head and Shoulders": # Fixed Syntax Error here
+        result["signal"] = "STRONG SELL"
+        result["bias"] = "Bearish"
+    return result
+run_full_analysis = _run_full_analysis_both_directions
+
+if __name__ == "__main__":
+    print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7 Fixed).")
