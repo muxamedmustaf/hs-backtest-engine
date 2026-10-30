@@ -5,11 +5,17 @@ import numpy as np
 from plotly.subplots import make_subplots
 from data_provider import fetch_data, get_github_repo
 
+# ⬇️ استيراد آمن يمنع الانهيار ⬇️
 try:
-    from engine import run_full_analysis, backtest_strategy, REASON_MAP, diagnose_no_signals, diagnose_filters
-except ImportError:
-    st.error("تأكد من وجود ملف engine.py")
+    from engine import run_full_analysis, backtest_strategy
+except Exception as e:
+    st.error(f"تأكد من وجود ملف engine.py وخلوه من الأخطاء: {e}")
     st.stop()
+
+try:
+    from engine import REASON_MAP
+except ImportError:
+    REASON_MAP = {}
 
 try:
     from ffff import get_symbols_from_sheet
@@ -183,9 +189,9 @@ def compute_pips(df):
     pips_l = []
     for _, row in df.iterrows():
         pip = pip_size_for(row.get("symbol") or row.get("Symbol") or "")
-        e = _f(row.get("Entry")) # New engine uses 'Entry'
-        x = _f(row.get("Exit Price")) # New engine uses 'Exit Price'
-        bias = str(row.get("Bias") or "").upper() # New engine uses 'Bias'
+        e = _f(row.get("Entry"))
+        x = _f(row.get("Exit Price"))
+        bias = str(row.get("Bias") or "").upper()
         is_sell = "BEAR" in bias
         p = (e - x) / pip if (e and x and is_sell) else (x - e) / pip if (e and x) else None
         pips_l.append(round(p, 1) if p is not None else None)
@@ -236,13 +242,11 @@ def draw_pattern(fig, source):
     nodes = source.get("nodes", [])
     neckline_nodes = source.get("neckline_nodes", [])
     
-    # رسم خطوط النموذج (الكتف والرأس)
     if len(nodes) > 0:
         nx = [n[0] for n in nodes]
         ny = [n[1] for n in nodes]
         fig.add_trace(go.Scatter(x=nx, y=ny, mode="lines+markers", name="Pattern", line=dict(color="#FF9800", width=2, dash="dot")), row=1, col=1)
         
-    # رسم خط العنق (Neckline)
     if len(neckline_nodes) == 2:
         nl_x = [neckline_nodes[0][0], neckline_nodes[1][0]]
         nl_y = [neckline_nodes[0][1], neckline_nodes[1][1]]
