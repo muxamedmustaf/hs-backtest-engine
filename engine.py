@@ -360,11 +360,25 @@ def _run_full_analysis_both_directions(df):
     if result.get("pattern") == "Inverse Head and Shoulders":
         result["signal"] = "STRONG BUY"
         result["bias"] = "Bullish"
-    elif result.get("pattern") == "Head and Shoulders": # Fixed Syntax Error here
+    elif result.get("pattern") == "Head and Shoulders": 
         result["signal"] = "STRONG SELL"
         result["bias"] = "Bearish"
     return result
 run_full_analysis = _run_full_analysis_both_directions
+
+# ⬇️ إضافة المتغيرات المفقودة لكي لا ينهار ملف الواجهة ⬇️
+REASON_MAP = {
+    "immediate_rejection": {"reason": "السعر رفض النموذج فورًا."},
+    "early_reversal": {"reason": "انعكاس مبكر قبل 30%."},
+    "mid_reversal": {"reason": "انعكاس متوسط."},
+    "late_reversal": {"reason": "وصل 70%+ ثم عاد."},
+    "breakeven": {"reason": "تعادل."},
+    "success": {"reason": "وصل الهدف."},
+    "open": {"reason": "مفتوحة."},
+}
+
+def diagnose_no_signals(df, interval="1h", symbol=None, is_backtest=True): return {}
+def diagnose_filters(df, interval="1h", symbol=None): return {}
 
 if __name__ == "__main__":
     print("ENGINE.PY loaded with Backtest Lab Support & Dynamic ATR Swing Scanner (v4.7 Fixed).")
